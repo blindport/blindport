@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Service terms | {{ brand_name }}{% endblock %}
+{% block content %}
+<article class="terms-page content-narrow prose" aria-labelledby="terms-title">
+  <header>
+    <p class="eyebrow">Plain-language beta terms</p>
+    <h1 id="terms-title">Service terms</h1>
+    <p class="lead">Blindport provides public ingress for lawful services running on hardware you control. By creating an order or operating an endpoint, you agree to these terms.</p>
+    <p class="muted">Effective August 3, 2026</p>
+  </header>
+
+  <section aria-labelledby="intended-use-title">
+    <h2 id="intended-use-title">Intended use</h2>
+    <p>Blindport is built for self-hosters who want easier public reachability and less exposure of their origin address to ordinary visitors and internet scans. Blindport's network path does not disclose the origin address to them, but application behavior, DNS history, headers, or third-party integrations may still reveal it. The application, data, and TLS termination can remain on your hardware while Blindport supplies the public network path.</p>
+    <p>You are responsible for the service behind your endpoint, its security, its users, and the content or activity it makes available.</p>
+  </section>
+
+  <section aria-labelledby="fair-use-title">
+    <h2 id="fair-use-title">Traffic and fair use</h2>
+    <p>There is currently no fixed traffic limit. This is a fair-use service, not a promise of unlimited capacity.</p>
+    <p>We may introduce reasonable traffic, bandwidth, connection, or rate limits when needed to keep the service reliable and available. We will publish material limits before they apply when practical. Urgent limits may be applied immediately to contain abuse, instability, security incidents, or harm to other users.</p>
+  </section>
+
+  <section aria-labelledby="lawful-use-title">
+    <h2 id="lawful-use-title">Lawful use and upstream providers</h2>
+    <p>You may not use a Blindport IP, Port, or Relay endpoint for content or activity that violates laws applicable to you, Blindport, or the infrastructure used to provide the service.</p>
+    <p>Blindport depends on network, hosting, DNS, and payment providers. We cannot prevent those providers from investigating use, filtering traffic, or suspending their services or Blindport infrastructure. We may suspend or remove an endpoint when we reasonably believe it is being used unlawfully, when an upstream provider requires action, or when continued operation threatens the service's security, reliability, or availability.</p>
+    <p><strong>An endpoint removed for illegal content or activity is not eligible for a refund.</strong></p>
+  </section>
+
+  <section aria-labelledby="threat-model-title">
+    <h2 id="threat-model-title">Privacy and threat model</h2>
+    <p>Blindport is privacy-enhancing ingress, not an anonymity network or censorship-resistance system. Blindport and its providers can observe connection metadata such as addresses, ports or SNI hostnames, timing, and traffic volume. Payloads are opaque to Blindport only when your service uses suitable end-to-end encryption.</p>
+    <p>This architecture is not designed to resist a state-level adversary, targeted traffic correlation, legal compulsion, infrastructure seizure, or coordinated pressure on upstream providers. It is intended for ordinary lawful self-hosting where origin-address privacy and ease of use matter.</p>
+    <p>Operators who require anonymity or censorship resistance should evaluate tools designed for those goals, such as Tor onion services, suitable mixnets, or other specialized systems, against their exact threat model. We support the broader goals of privacy, anonymity, and censorship resistance; Blindport itself provides only the limited privacy benefits described above.</p>
+  </section>
+
+  <section aria-labelledby="changes-title">
+    <h2 id="changes-title">Changes</h2>
+    <p>These beta terms may evolve as the service and its operating constraints become clearer. Material changes will be published on this page with a new effective date.</p>
+  </section>
+</article>
+{% endblock %}

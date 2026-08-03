@@ -1,0 +1,78 @@
+{
+	admin off
+	http_port 8080
+	https_port 8443
+	default_bind 127.0.0.1
+	skip_install_trust
+	grace_period 20s
+	servers 127.0.0.1:8443 {
+		protocols h1 h2
+		listener_wrappers {
+			proxy_protocol {
+				timeout 2s
+				allow 127.0.0.1/32 ::1/128
+				fallback_policy require
+			}
+			tls
+		}
+		timeouts {
+			read_header 10s
+			idle 2m
+		}
+		max_header_size 64KB
+	}
+}
+
+{$API_DOMAIN} {
+	tls internal
+	log {
+		output stdout
+		format json
+	}
+	request_body {
+		max_size 1MB
+	}
+
+	@downloads path /downloads/*
+	@internal path /internal/*
+	@admin_allowed {
+		path /admin* /api/v1/admin/* /api/v2/admin/*
+		remote_ip {$ADMIN_PRIVATE_CIDRS}
+	}
+	@admin path /admin* /api/v1/admin/* /api/v2/admin/*
+
+	handle @downloads {
+		root * /srv
+		file_server
+	}
+	handle @internal {
+		respond 404
+	}
+	handle @admin_allowed {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle @admin {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8000
+	}
+}
+
+http://{$ONION_HOST} {
+	request_body {
+		max_size 1MB
+	}
+	@downloads path /downloads/*
+	@private path /internal/* /admin* /api/v1/admin/* /api/v2/admin/*
+	handle @downloads {
+		root * /srv
+		file_server
+	}
+	handle @private {
+		respond 404
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8000
+	}
+}

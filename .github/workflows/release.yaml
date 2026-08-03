@@ -1,0 +1,192 @@
+name: release
+
+# Tag-driven release: pushing an annotated tag like v1.2.3 builds and
+# publishes:
+#   * ghcr.io/<owner>/blindport-backend:<version> (linux/amd64 + linux/arm64)
+#   * ghcr.io/<owner>/blindport-relay:<version>   (linux/amd64 + linux/arm64)
+#   * ghcr.io/<owner>/blindportd:<version>         (linux/amd64 + linux/arm64)
+#   * blindportd binaries for linux/amd64, linux/arm64 and linux/arm/v7
+#     attached as assets to the GitHub Release.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      commit: ${{ steps.v.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: v
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          tag="${tag#refs/tags/}"
+          [[ "$tag" == v* ]] || { echo "release tag must start with v" >&2; exit 1; }
+          git check-ref-format "refs/tags/$tag"
+          git show-ref --verify --quiet "refs/tags/$tag" || {
+            echo "requested tag does not exist: $tag" >&2
+            exit 1
+          }
+          commit="$(git rev-list -n 1 "refs/tags/$tag")"
+          git checkout --detach "$commit"
+          test "$(git rev-parse HEAD)" = "$commit"
+          {
+            echo "version=$tag"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+
+  deployment-config:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - name: Validate deployment configuration
+        run: ./deploy/validate.sh
+
+  binaries:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+            suffix: linux-armv7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - name: Build blindportd
+        working-directory: go
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          mkdir -p ../dist
+          out="../dist/blindportd-${{ needs.version.outputs.version }}-${{ matrix.suffix }}"
+          go build -trimpath -ldflags "-s -w -X main.version=${{ needs.version.outputs.version }}" -o "$out" ./cmd/blindportd
+          (cd ../dist && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blindportd-${{ matrix.suffix }}
+          path: dist/blindportd-*
+
+  images:
+    needs: [version, deployment-config]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component:
+          - name: backend
+            image: blindport-backend
+            dockerfile: docker/backend.Dockerfile
+            target: runtime
+          - name: relay
+            image: blindport-relay
+            dockerfile: docker/go.Dockerfile
+            target: relay
+          - name: blindportd
+            image: blindportd
+            dockerfile: docker/go.Dockerfile
+            target: blindportd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tags
+        id: tags
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner_lc}/${{ matrix.component.image }}"
+          {
+            echo "tags=${image}:${v}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.component.dockerfile }}
+          target: ${{ matrix.component.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: VERSION=${{ needs.version.outputs.version }}
+          provenance: false
+
+  release:
+    needs: [version, deployment-config, binaries, images]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate release notes
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "## ${v}"
+            echo
+            echo "Container images:"
+            echo "* \`ghcr.io/${owner_lc}/blindport-backend:${v}\`"
+            echo "* \`ghcr.io/${owner_lc}/blindport-relay:${v}\`"
+            echo "* \`ghcr.io/${owner_lc}/blindportd:${v}\`"
+            echo
+            echo "Binaries (linux): amd64, arm64, armv7. Verify with the bundled \`.sha256\` files."
+          } > release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.version }}
+          body_path: release-notes.md
+          files: dist/*
+          draft: false
+          prerelease: false

@@ -1,0 +1,235 @@
+# Blindport e2e stack. Uses mocked payment adapters so tests can settle
+# invoices without LN/Cashu infra.
+#
+# Network 10.50.0.0/24:
+#   10.50.0.4   mint (Cashu)
+#   10.50.0.5   backend
+#   10.50.0.10  relay primary; shared SNI and Blindport Port ingress
+#   10.50.0.11..17 dedicated Blindport IP ingress
+#   10.50.0.20  origin (nginx, simulates the user's local server)
+#   10.50.0.30  tester
+# Routed inventory 10.50.1.20/32 is never bound to relay eth0. The WireGuard
+# agent owns it in an isolated test network namespace. A test-only requester
+# shares the relay namespace so Docker bridge filtering cannot discard the
+# provider-routed source address on the return path.
+#
+# Relay listens on:
+#   - 10.50.0.11..17:80  (one Blindport IP per dedicated slot)
+#   - 10.50.0.10:10000-10007 (shared Blindport Port TCP and UDP sockets)
+#   - 10.50.0.10:4443    (SNI pool; tester sends ClientHello with target hostname)
+#   - :5443              (control plane for clients)
+
+name: blindport
+
+networks:
+  blindport:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.50.0.0/24
+
+services:
+  mint:
+    image: cashubtc/nutshell:0.20.0
+    command: ["poetry", "run", "mint"]
+    environment:
+      MINT_PRIVATE_KEY: dev-mint-private-key-change-me
+      MINT_LISTEN_HOST: 0.0.0.0
+      MINT_LISTEN_PORT: "3338"
+      MINT_BACKEND_BOLT11_SAT: FakeWallet
+      FAKEWALLET_BRR: "true"
+      MINT_RATE_LIMIT: "false"
+      MINT_INPUT_FEE_PPK: "0"
+      MINT_DATABASE: "/data/mint.sqlite3"
+      MINT_INFO_NAME: "Blindport dev mint"
+      MINT_INFO_DESCRIPTION: "Cashu mint bundled with the Blindport dev stack."
+    volumes:
+      - mint-data:/data
+    networks:
+      blindport:
+        ipv4_address: 10.50.0.4
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3338/v1/info')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    environment:
+      ENVIRONMENT: development
+      DATABASE_URL: sqlite:////data/blindport.db
+      DATABASE_MIGRATE_ON_STARTUP: "false"
+      CA_DIR: /data/ca
+      SECRET_KEY: dev-shared-secret-change-me
+      LND_INVOICE_HMAC_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      CREDENTIAL_ENCRYPTION_KEY: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+      ADMIN_TOKEN: ADMINDEV0000
+      BILLING_YEARLY_ENABLED: "true"
+      RELAY_PUBLIC_IPS: "10.50.0.11,10.50.0.12,10.50.0.13,10.50.0.14,10.50.0.15,10.50.0.16,10.50.0.17"
+      WIREGUARD_PUBLIC_IPS: "10.50.1.20"
+      WIREGUARD_RELAY_PUBLIC_KEY: "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw="
+      WIREGUARD_ENDPOINT: "10.50.0.10:51820"
+      WIREGUARD_RECONCILE_INTERVAL_SECONDS: "1"
+      WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS: "5"
+      RELAY_SHARED_IPS: "10.50.0.10"
+      RELAY_SHARED_TCP_PORTS: "10000-10007"
+      RELAY_SHARED_UDP_PORTS: "10000-10007"
+      RELAY_POOL_DOMAINS: "alice.relay.test,bob.relay.test"
+      RELAY_MANAGED_SUFFIXES: "relay.test"
+      RELAY_RENEWAL_GRACE_SECONDS: "604800"
+      RELAY_CONTROL_URL: "relay:5443"
+      PAYMENT_LIGHTNING_ADAPTER: mock-auto
+      PAYMENT_CASHU_ADAPTER: cashu
+      CASHU_MINTS: "http://mint:3338"
+      PAYMENT_NWC_ADAPTER: mock-auto
+      NWC_ALLOWED_RELAY_HOSTS: "relay.getalby.com"
+      PAYMENT_ENABLED_METHODS: "lightning,cashu,nwc"
+      PAYMENT_RECONCILIATION_ENABLED: "true"
+      PAYMENT_RECONCILIATION_INTERVAL_SECONDS: "0.5"
+      PAYMENT_RECONCILIATION_BATCH_SIZE: "100"
+      PAYMENT_RECONCILIATION_STARTUP_GRACE_SECONDS: "5"
+      PAYMENT_RECONCILIATION_STALE_AFTER_SECONDS: "5"
+      # E2E scenarios create isolated accounts through one tester source.
+      RATE_LIMIT_SIGNUP_REQUESTS: "1000"
+      BRAND_NAME: Blindport
+      BRAND_TAGLINE: "Private IPs and SNI relays, paid in Bitcoin."
+    volumes:
+      - backend-data:/data
+    command:
+      - /bin/sh
+      - -c
+      - blindport-migrate upgrade && exec uvicorn blindport.main:app --host 0.0.0.0 --port 8000
+    networks:
+      blindport:
+        ipv4_address: 10.50.0.5
+    ports:
+      - "8000:8000"
+    depends_on:
+      mint:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/ready')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # Bind the relay to multiple IPs on the bridge so Blindport IP listeners have
+  # somewhere to live. We use a sidecar init to add 10.50.0.11 as a secondary
+  # addresses on eth0; docker only assigns the shared primary 10.50.0.10.
+  relay:
+    build:
+      context: ..
+      dockerfile: docker/go.Dockerfile
+      target: relay
+    # Test-only: this service adds bridge addresses before starting the relay.
+    user: "0:0"
+    depends_on:
+      backend:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+    environment:
+      BLINDPORT_BACKEND_URL: http://backend:8000
+      BLINDPORT_RELAY_SECRET: dev-shared-secret-change-me
+      BLINDPORT_RELAY_IPS: "10.50.0.11,10.50.0.12,10.50.0.13,10.50.0.14,10.50.0.15,10.50.0.16,10.50.0.17"
+      BLINDPORT_RELAY_PORTS: "80"
+      BLINDPORT_RELAY_SHARED_IPS: "10.50.0.10"
+      BLINDPORT_RELAY_SHARED_TCP_PORTS: "10000-10007"
+      BLINDPORT_RELAY_SHARED_UDP_PORTS: "10000-10007"
+      BLINDPORT_RELAY_SNI: "10.50.0.10:4443"
+      BLINDPORT_RELAY_HTTP_CHALLENGE: "10.50.0.10:4080"
+      # The service alias resolves to 10.50.0.10 inside the Compose network;
+      # dedicated listener addresses are added separately from relay inventory.
+      BLINDPORT_RELAY_MTLS_HOSTS: "relay"
+      BLINDPORT_RELAY_ADMIN: ":9090"
+      BLINDPORT_RELAY_SHUTDOWN_TIMEOUT: "15s"
+      BLINDPORT_RELAY_WIREGUARD: "1"
+      # Fixed development key matching WIREGUARD_RELAY_PUBLIC_KEY above.
+      BLINDPORT_RELAY_WIREGUARD_KEY: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
+      BLINDPORT_RELAY_WIREGUARD_INTERVAL: "1s"
+      BLINDPORT_RELAY_WIREGUARD_MAX_STALENESS: "5s"
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      blindport:
+        ipv4_address: 10.50.0.10
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        for ip in 10.50.0.11 10.50.0.12 10.50.0.13 10.50.0.14 10.50.0.15 10.50.0.16 10.50.0.17; do
+          ip addr add "$$ip/24" dev eth0 || true
+        done
+        exec /usr/local/bin/blindport-relay -control :5443
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    stop_grace_period: 20s
+
+  origin:
+    image: nginx:1.27-alpine
+    networks:
+      blindport:
+        ipv4_address: 10.50.0.20
+    volumes:
+      - ./origin/index.html:/usr/share/nginx/html/index.html:ro
+
+  routed-requester:
+    image: blindport-tester
+    depends_on:
+      relay:
+        condition: service_healthy
+    network_mode: service:relay
+    environment:
+      BLINDPORT_ROUTED_TARGET: http://10.50.1.20:8080/
+    volumes:
+      - ../:/repo:ro
+    command: ["python", "/repo/tests/e2e/routed_requester.py"]
+
+  tester:
+    image: blindport-tester
+    build:
+      context: ..
+      dockerfile: docker/tester.Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      BLINDPORT_BACKEND_URL: http://backend:8000
+      BLINDPORT_RELAY_HOST: 10.50.0.10
+      BLINDPORT_SECOND_IP: 10.50.0.11
+      BLINDPORT_SNI_HOST: 10.50.0.10
+      BLINDPORT_SNI_PORT: "4443"
+      BLINDPORT_HTTP_CHALLENGE_PORT: "4080"
+      BLINDPORT_SHARED_IP: 10.50.0.10
+      BLINDPORT_ORIGIN_UPSTREAM: origin:80
+      BLINDPORT_RELAY_ADMIN_URL: http://relay:9090
+      BLINDPORT_WIREGUARD_BACKEND_URL: http://10.50.0.5:8000
+      BLINDPORT_WIREGUARD_AGENT_IP: 10.50.0.31
+      BLINDPORT_WIREGUARD_ROUTED_IP: 10.50.1.20
+      BLINDPORT_ROUTED_REQUESTER_URL: http://relay:9191
+    networks:
+      blindport:
+        ipv4_address: 10.50.0.30
+    extra_hosts:
+      - "alice.relay.test:10.50.0.10"
+      - "bob.relay.test:10.50.0.10"
+    volumes:
+      - ../:/repo:ro
+    working_dir: /repo
+    command: ["sleep", "infinity"]
+
+volumes:
+  backend-data:
+  mint-data:

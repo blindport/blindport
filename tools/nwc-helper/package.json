@@ -1,0 +1,22 @@
+{
+  "name": "@blindport/nwc-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "build": "bun build --compile --minify --outfile dist/blindport-nwc-helper src/main.ts"
+  },
+  "dependencies": {
+    "@getalby/sdk": "8.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.32.0",
+    "@types/bun": "1.2.19",
+    "eslint": "9.32.0",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.38.0"
+  }
+}

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{% block title %}{{ brand_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-cookie-secure="{{ 'true' if cookie_secure else 'false' }}">
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/" aria-label="{{ brand_name }} home">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span>{{ brand_name }}</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="/#order">Pricing</a>
+        <a href="/guide">Guide</a>
+        {% if onion_host %}<a href="http://{{ onion_host }}">Onion</a>{% endif %}
+        <a class="nav-dashboard" href="/dashboard">Dashboard</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main-content" tabindex="-1">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <div>
+      <strong>{{ brand_name }}</strong>
+      <span>Public reach for self-hosted services.</span>
+      <a href="/terms">Service terms</a>
+    </div>
+    <p>Blindport forwards traffic. For TLS services, your origin keeps the private key and terminates TLS.</p>
+    {% if onion_host %}<p>Onion service: <a href="http://{{ onion_host }}">{{ onion_host }}</a></p>{% endif %}
+  </footer>
+</body>
+</html>

@@ -1,0 +1,281 @@
+name: blindport-control
+
+x-service-defaults: &service-defaults
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 30s
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+x-backend-environment: &backend-environment
+  ENVIRONMENT: production
+  DEBUG: "false"
+  DATABASE_MIGRATE_ON_STARTUP: "false"
+  DATABASE_URL_FILE: /run/secrets/database-url
+  SECRET_KEY_FILE: /run/secrets/secret-key
+  TOKEN_HASH_KEY_FILE: /run/secrets/token-hash-key
+  RELAY_SECRET_FILE: /run/secrets/relay-secret
+  ADMIN_TOKEN_FILE: /run/secrets/admin-token
+  LND_INVOICE_HMAC_KEY_FILE: /run/secrets/lnd-invoice-hmac-key
+  CREDENTIAL_ENCRYPTION_KEY_FILE: ${CREDENTIAL_ENCRYPTION_KEY_FILE:-}
+  LNEMAIL_ACCESS_TOKEN_FILE: ${LNEMAIL_ACCESS_TOKEN_FILE:-}
+  LNEMAIL_ADMIN_NWC_URI_FILE: ${LNEMAIL_ADMIN_NWC_URI_FILE:-}
+  CA_DIR: /var/lib/blindport/ca
+  LEGACY_CLIENT_CERT_ISSUANCE_ENABLED: "false"
+  PAYMENT_ENABLED_METHODS: lightning
+  PAYMENT_LIGHTNING_ADAPTER: lnd
+  PAYMENT_CASHU_ADAPTER: mock
+  PAYMENT_NWC_ADAPTER: ${PAYMENT_NWC_ADAPTER:-mock}
+  NWC_ALLOWED_RELAY_HOSTS: ${NWC_ALLOWED_RELAY_HOSTS:-}
+  # NWC stays disabled until migration 0010 and a credential key secret are installed.
+  REMINDER_EMAIL_ENABLED: ${REMINDER_EMAIL_ENABLED:-false}
+  LNEMAIL_BASE_URL: ${LNEMAIL_BASE_URL:-https://lnemail.net}
+  LNEMAIL_MAX_SEND_PRICE_SATS: ${LNEMAIL_MAX_SEND_PRICE_SATS:-100}
+  PAYMENT_RECONCILIATION_ENABLED: "true"
+  PAYMENT_RECONCILIATION_INTERVAL_SECONDS: ${PAYMENT_RECONCILIATION_INTERVAL_SECONDS:-10}
+  PAYMENT_RECONCILIATION_BATCH_SIZE: ${PAYMENT_RECONCILIATION_BATCH_SIZE:-100}
+  PAYMENT_RECONCILIATION_STARTUP_GRACE_SECONDS: ${PAYMENT_RECONCILIATION_STARTUP_GRACE_SECONDS:-30}
+  PAYMENT_RECONCILIATION_STALE_AFTER_SECONDS: ${PAYMENT_RECONCILIATION_STALE_AFTER_SECONDS:-60}
+  LND_REST_URL: ${LND_REST_URL}
+  LND_CERT_PATH: /run/secrets/lnd-tls-cert
+  LND_MACAROON_PATH: /run/secrets/lnd-invoice-macaroon
+  LND_INVOICE_EXPIRY_SECONDS: ${LND_INVOICE_EXPIRY_SECONDS:-600}
+  LND_REQUEST_TIMEOUT_SECONDS: ${LND_REQUEST_TIMEOUT_SECONDS:-10}
+  IP_ENABLED: ${IP_ENABLED:-true}
+  IP_SALES_PAUSED: ${IP_SALES_PAUSED:-false}
+  IP_MONTHLY_SATS: ${IP_MONTHLY_SATS}
+  IP_YEARLY_SATS: ${IP_YEARLY_SATS}
+  BILLING_YEARLY_ENABLED: ${BILLING_YEARLY_ENABLED:-false}
+  PORT_ENABLED: ${PORT_ENABLED:-true}
+  PORT_SALES_PAUSED: ${PORT_SALES_PAUSED:-false}
+  PORT_MONTHLY_SATS: ${PORT_MONTHLY_SATS}
+  PORT_YEARLY_SATS: ${PORT_YEARLY_SATS}
+  RELAY_ENABLED: ${RELAY_ENABLED:-true}
+  RELAY_SALES_PAUSED: ${RELAY_SALES_PAUSED:-false}
+  RELAY_MONTHLY_SATS: ${RELAY_MONTHLY_SATS}
+  RELAY_YEARLY_SATS: ${RELAY_YEARLY_SATS}
+  RELAY_MANAGED_DOMAIN_CAP: ${RELAY_MANAGED_DOMAIN_CAP:-25}
+  RELAY_CUSTOMER_DOMAINS_ENABLED: ${RELAY_CUSTOMER_DOMAINS_ENABLED:-true}
+  ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS: ${ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS:-20}
+  ACCOUNT_MAX_OPEN_PAYMENTS: ${ACCOUNT_MAX_OPEN_PAYMENTS:-5}
+  RATE_LIMIT_SIGNUP_REQUESTS: ${RATE_LIMIT_SIGNUP_REQUESTS:-10}
+  RATE_LIMIT_SIGNUP_WINDOW_SECONDS: ${RATE_LIMIT_SIGNUP_WINDOW_SECONDS:-60}
+  RATE_LIMIT_ADMIN_LOGIN_REQUESTS: ${RATE_LIMIT_ADMIN_LOGIN_REQUESTS:-5}
+  RATE_LIMIT_ADMIN_LOGIN_WINDOW_SECONDS: ${RATE_LIMIT_ADMIN_LOGIN_WINDOW_SECONDS:-300}
+  RELAY_PUBLIC_IPS: ""
+  WIREGUARD_PUBLIC_IPS: ""
+  WIREGUARD_RELAY_PUBLIC_KEY: ""
+  WIREGUARD_ENDPOINT: ""
+  RELAY_SHARED_IPS: ${RELAY_PUBLIC_IP}
+  RELAY_SHARED_TCP_PORTS: ${PORT_TCP_RANGE}
+  RELAY_SHARED_UDP_PORTS: ${PORT_UDP_RANGE}
+  RELAY_POOL_DOMAINS: ${RELAY_POOL_DOMAINS}
+  RELAY_CONTROL_URL: ${RELAY_CONTROL_HOST}:5443
+  RELAY_CONTROL_URLS: ${RELAY_CONTROL_HOST}:5443
+  RELAY_MANAGED_SUFFIXES: ${RELAY_MANAGED_SUFFIXES}
+  BRAND_NAME: ${BRAND_NAME:-Blindport}
+  BRAND_TAGLINE: ${BRAND_TAGLINE:-Private relay access paid in Bitcoin.}
+
+x-backend-secrets: &backend-secrets
+  - source: database-url
+    target: database-url
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: relay-secret
+    target: relay-secret
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: secret-key
+    target: secret-key
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: token-hash-key
+    target: token-hash-key
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: admin-token
+    target: admin-token
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: lnd-invoice-hmac-key
+    target: lnd-invoice-hmac-key
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: lnd-tls-cert
+    target: lnd-tls-cert
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: lnd-invoice-macaroon
+    target: lnd-invoice-macaroon
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+
+services:
+  postgres:
+    <<: *service-defaults
+    image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+    environment:
+      POSTGRES_DB: blindport
+      POSTGRES_USER: blindport
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blindport -d blindport"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    pids_limit: 200
+    mem_limit: 1g
+    cpus: 2.0
+    shm_size: 256m
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  migrate:
+    image: ${BACKEND_IMAGE}
+    profiles: [tools]
+    restart: "no"
+    init: true
+    environment:
+      <<: *backend-environment
+      REMINDER_EMAIL_ENABLED: "false"
+      CREDENTIAL_ENCRYPTION_KEY_FILE: ""
+      LNEMAIL_ACCESS_TOKEN_FILE: ""
+      LNEMAIL_ADMIN_NWC_URI_FILE: ""
+    secrets: *backend-secrets
+    volumes:
+      - backend-ca:/var/lib/blindport/ca
+    networks:
+      - application
+      - database
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["blindport-migrate", "upgrade"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  backend:
+    <<: *service-defaults
+    image: ${BACKEND_IMAGE}
+    environment: *backend-environment
+    secrets: *backend-secrets
+    volumes:
+      - backend-ca:/var/lib/blindport/ca
+    networks:
+      - application
+      - database
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    pids_limit: 200
+    mem_limit: 768m
+    cpus: 2.0
+    ulimits:
+      nofile:
+        soft: 16384
+        hard: 16384
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  caddy:
+    <<: *service-defaults
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    user: "1000:1000"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      RELAY_PRIVATE_CIDRS: ${RELAY_PRIVATE_CIDRS}
+      ADMIN_PRIVATE_CIDRS: ${ADMIN_PRIVATE_CIDRS}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${STATE_DIR:-./state}/caddy-data:/data
+      - ${STATE_DIR:-./state}/caddy-config:/config
+    networks:
+      - application
+    ports:
+      - "${CONTROL_BIND_IP:-0.0.0.0}:80:8080/tcp"
+      - "${CONTROL_BIND_IP:-0.0.0.0}:443:8443/tcp"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    pids_limit: 100
+    mem_limit: 256m
+    cpus: 1.0
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  application:
+  database:
+    internal: true
+
+volumes:
+  postgres-data:
+  backend-ca:
+
+secrets:
+  database-url:
+    file: ${SECRETS_DIR:-./secrets}/database-url
+  postgres-password:
+    file: ${SECRETS_DIR:-./secrets}/postgres-password
+  relay-secret:
+    file: ${SECRETS_DIR:-./secrets}/relay-secret
+  secret-key:
+    file: ${SECRETS_DIR:-./secrets}/secret-key
+  token-hash-key:
+    file: ${SECRETS_DIR:-./secrets}/token-hash-key
+  admin-token:
+    file: ${SECRETS_DIR:-./secrets}/admin-token
+  lnd-invoice-hmac-key:
+    file: ${SECRETS_DIR:-./secrets}/lnd-invoice-hmac-key
+  lnd-tls-cert:
+    file: ${SECRETS_DIR:-./secrets}/lnd-tls-cert
+  lnd-invoice-macaroon:
+    file: ${SECRETS_DIR:-./secrets}/lnd-invoice-macaroon

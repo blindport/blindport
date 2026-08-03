@@ -1,0 +1,780 @@
+"""Subscription lifecycle and scarce relay resource reservations."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime, timedelta
+
+from loguru import logger
+from sqlalchemy import or_, text, update
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
+
+from ..config import settings
+from ..core.hostnames import canonicalize_hostname
+from ..core.models import (
+    BillingTerm,
+    DeliveryMode,
+    Payment,
+    PaymentStatus,
+    ProductType,
+    Subscription,
+    SubscriptionStatus,
+    Transport,
+    User,
+)
+from .allocator import NoCapacityError, ResourceAllocator
+from .catalog import require_product_available
+from .domain_verification import DomainVerificationResult, DomainVerifier
+
+MONTHLY_PERIOD_DAYS = 30
+YEARLY_PERIOD_DAYS = 365
+_SCARCE_PRODUCTS = (ProductType.IP, ProductType.PORT)
+_TERMINAL_PAYMENT_STATUSES = (
+    PaymentStatus.PAID,
+    PaymentStatus.EXPIRED,
+    PaymentStatus.FAILED,
+)
+
+
+class AccountLimitError(RuntimeError):
+    """A durable per-account subscription or payment limit was reached."""
+
+
+def billing_period_days(term: BillingTerm) -> int:
+    """Return the fixed service period for a supported billing term."""
+    return MONTHLY_PERIOD_DAYS if term == BillingTerm.MONTHLY else YEARLY_PERIOD_DAYS
+
+
+def require_billing_term_enabled(term: BillingTerm) -> None:
+    """Keep yearly issuance gated until a migration-first rollout is complete."""
+    if term == BillingTerm.YEARLY and not settings.BILLING_YEARLY_ENABLED:
+        raise ValueError("yearly billing is not enabled")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+def domain_challenge_name(domain: str) -> str:
+    """Return the stable TXT owner name for a canonical customer domain."""
+    name = f"_blindport-challenge.{domain}"
+    if len(name) > 253:
+        raise ValueError("domain is too long for DNS ownership verification")
+    return name
+
+
+def domain_challenge_value(token: str) -> str:
+    return f"blindport-verification={token}"
+
+
+def _is_managed_domain(domain: str) -> bool:
+    suffixes = settings.relay_managed_suffixes_list
+    if domain in suffixes:
+        raise ValueError("managed suffix apex cannot be claimed as a customer domain")
+    return any(domain.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def domain_payment_eligibility_deadline(sub: Subscription) -> datetime | None:
+    """Return the last instant at which a Blindport Relay payment may be started."""
+    if sub.product != ProductType.RELAY:
+        return None
+    if sub.status == SubscriptionStatus.PENDING:
+        return _aware(sub.domain_claim_expires_at)
+    if sub.status == SubscriptionStatus.EXPIRED:
+        return _aware(sub.domain_renewal_grace_expires_at)
+    if sub.status == SubscriptionStatus.ACTIVE:
+        period_end = _aware(sub.current_period_end)
+        if period_end is not None:
+            return period_end + timedelta(seconds=settings.RELAY_RENEWAL_GRACE_SECONDS)
+    return None
+
+
+def _reconcile_domain_payment(session: Session, payment: Payment) -> Payment:
+    # Import at call time because payments owns orchestration and imports this
+    # lifecycle module. Keeping the cycle out of module initialization is required.
+    from .payments import check_and_settle_payment, expire_pending_payment
+
+    if payment.status == PaymentStatus.PROCESSING:
+        return payment
+    if payment.method.value in {"lightning", "nwc"}:
+        return check_and_settle_payment(session, payment)
+    return expire_pending_payment(session, payment)
+
+
+def reap_expired_domain_claims(session: Session) -> int:
+    """Reconcile payments, then cancel elapsed unpaid domain claims and holds."""
+    now = _utcnow()
+
+    elapsed_active = session.exec(
+        select(Subscription).where(
+            Subscription.product == ProductType.RELAY,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            or_(
+                Subscription.current_period_end.is_(None),  # type: ignore[union-attr]
+                Subscription.current_period_end <= now,  # type: ignore[operator]
+            ),
+        )
+    ).all()
+    expire_elapsed_subscriptions(session, elapsed_active)
+
+    pending_without_deadlines = session.exec(
+        select(Subscription).where(
+            Subscription.product == ProductType.RELAY,
+            Subscription.status == SubscriptionStatus.PENDING,
+            Subscription.domain.is_not(None),  # type: ignore[union-attr]
+            Subscription.domain_claim_expires_at.is_(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    initialized = False
+    claim_ttl = timedelta(seconds=settings.RELAY_DOMAIN_CLAIM_TTL_SECONDS)
+    for sub in pending_without_deadlines:
+        anchor = _aware(sub.created_at) or _aware(sub.updated_at) or now
+        result = session.execute(
+            update(Subscription)
+            .where(
+                Subscription.id == sub.id,
+                Subscription.status == SubscriptionStatus.PENDING,
+                Subscription.domain.is_not(None),  # type: ignore[union-attr]
+                Subscription.domain_claim_expires_at.is_(None),  # type: ignore[union-attr]
+            )
+            .values(domain_claim_expires_at=anchor + claim_ttl, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        initialized = result.rowcount == 1 or initialized
+    if initialized:
+        session.commit()
+
+    # Existing expired rows may predate the explicit renewal deadline. Anchor
+    # their hold to the recorded period end (or last lifecycle update), not now.
+    expired_without_deadlines = session.exec(
+        select(Subscription).where(
+            Subscription.product == ProductType.RELAY,
+            Subscription.status == SubscriptionStatus.EXPIRED,
+            Subscription.domain.is_not(None),  # type: ignore[union-attr]
+            Subscription.domain_renewal_grace_expires_at.is_(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    initialized = False
+    grace = timedelta(seconds=settings.RELAY_RENEWAL_GRACE_SECONDS)
+    for sub in expired_without_deadlines:
+        anchor = _aware(sub.current_period_end) or _aware(sub.updated_at) or now
+        result = session.execute(
+            update(Subscription)
+            .where(
+                Subscription.id == sub.id,
+                Subscription.status == SubscriptionStatus.EXPIRED,
+                Subscription.domain.is_not(None),  # type: ignore[union-attr]
+                Subscription.domain_renewal_grace_expires_at.is_(None),  # type: ignore[union-attr]
+            )
+            .values(domain_renewal_grace_expires_at=anchor + grace, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        initialized = result.rowcount == 1 or initialized
+    if initialized:
+        session.commit()
+
+    release_values = {
+        "status": SubscriptionStatus.CANCELLED,
+        "domain": None,
+        "relay_pool_domain": None,
+        "domain_is_managed": False,
+        "domain_verification_token": None,
+        "domain_verified_at": None,
+        "domain_claim_expires_at": None,
+        "domain_renewal_grace_expires_at": None,
+        "auto_renew": False,
+        "updated_at": now,
+    }
+    candidates = session.exec(
+        select(Subscription).where(
+            Subscription.product == ProductType.RELAY,
+            Subscription.domain.is_not(None),  # type: ignore[union-attr]
+            or_(
+                (
+                    (Subscription.status == SubscriptionStatus.PENDING)
+                    & (Subscription.domain_claim_expires_at.is_not(None))  # type: ignore[union-attr]
+                    & (Subscription.domain_claim_expires_at <= now)  # type: ignore[operator]
+                ),
+                (
+                    (Subscription.status == SubscriptionStatus.EXPIRED)
+                    & (Subscription.domain_renewal_grace_expires_at.is_not(None))  # type: ignore[union-attr]
+                    & (Subscription.domain_renewal_grace_expires_at <= now)  # type: ignore[operator]
+                ),
+            ),
+        )
+    ).all()
+    released = 0
+    for sub in candidates:
+        open_payment = session.exec(
+            select(Payment).where(
+                Payment.subscription_id == sub.id,
+                Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+            )
+        ).first()
+        if open_payment is not None:
+            if open_payment.status == PaymentStatus.PROCESSING:
+                continue
+            try:
+                _reconcile_domain_payment(session, open_payment)
+            except Exception as e:
+                session.rollback()
+                logger.warning(
+                    "retaining expired Blindport Relay claim {} after payment reconciliation failed: {}",
+                    sub.id,
+                    e,
+                )
+                continue
+
+        session.expire_all()
+        current = session.get(Subscription, sub.id)
+        if current is None or current.domain is None:
+            continue
+        open_payment_exists = (
+            select(Payment.id)
+            .where(
+                Payment.subscription_id == current.id,
+                Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+            )
+            .exists()
+        )
+        if current.status == SubscriptionStatus.PENDING:
+            deadline_filter = (
+                Subscription.domain_claim_expires_at.is_not(None)  # type: ignore[union-attr]
+                & (Subscription.domain_claim_expires_at <= now)  # type: ignore[operator]
+            )
+        elif current.status == SubscriptionStatus.EXPIRED:
+            deadline_filter = (
+                Subscription.domain_renewal_grace_expires_at.is_not(None)  # type: ignore[union-attr]
+                & (Subscription.domain_renewal_grace_expires_at <= now)  # type: ignore[operator]
+            )
+        else:
+            continue
+        result = session.execute(
+            update(Subscription)
+            .where(
+                Subscription.id == current.id,
+                Subscription.status == current.status,
+                Subscription.domain.is_not(None),  # type: ignore[union-attr]
+                deadline_filter,
+                ~open_payment_exists,
+            )
+            .values(**release_values)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 1:
+            session.commit()
+            released += 1
+        else:
+            session.rollback()
+    return released
+
+
+def require_domain_payment_ready(sub: Subscription) -> None:
+    """Reject payment unless a Blindport Relay claim is managed or ownership-verified."""
+    if sub.product != ProductType.RELAY:
+        return
+    if sub.status == SubscriptionStatus.CANCELLED or not sub.domain:
+        raise ValueError(
+            "Blindport Relay domain expired and was released; create a new subscription"
+        )
+    deadline = domain_payment_eligibility_deadline(sub)
+    if sub.status == SubscriptionStatus.PENDING and (deadline is None or deadline <= _utcnow()):
+        raise ValueError("Blindport Relay domain claim expired; create a new subscription")
+    if sub.status == SubscriptionStatus.EXPIRED and (deadline is None or deadline <= _utcnow()):
+        raise ValueError("Blindport Relay renewal grace expired; create a new subscription")
+    if sub.domain_is_managed:
+        return
+    if sub.domain_verified_at is None:
+        raise ValueError("domain ownership must be verified before payment")
+
+
+def require_domain_payment_settlement_ready(sub: Subscription, payment: Payment) -> None:
+    """Validate ownership and that this payment began within domain eligibility."""
+    if sub.product != ProductType.RELAY:
+        return
+    if sub.status == SubscriptionStatus.CANCELLED or not sub.domain:
+        raise ValueError(
+            "Blindport Relay domain expired and was released; create a new subscription"
+        )
+    if not sub.domain_is_managed and sub.domain_verified_at is None:
+        raise ValueError("domain ownership must be verified before payment")
+    deadline = domain_payment_eligibility_deadline(sub)
+    created_at = _aware(payment.created_at)
+    if deadline is None or created_at is None or created_at > deadline:
+        raise ValueError("payment was not created during Blindport Relay domain eligibility")
+
+
+def verify_subscription_domain(
+    session: Session,
+    sub: Subscription,
+    verifier_factory: Callable[[], DomainVerifier],
+    *,
+    force: bool = False,
+) -> DomainVerificationResult:
+    """Verify a custom domain claim, optionally refreshing prior CNAME proof."""
+    reap_expired_domain_claims(session)
+    session.refresh(sub)
+    if sub.product != ProductType.RELAY:
+        raise ValueError("subscription is not a Blindport Relay subscription")
+    deadline = _aware(sub.domain_claim_expires_at)
+    if sub.status == SubscriptionStatus.CANCELLED or not sub.domain:
+        raise ValueError("domain claim expired; create a new subscription")
+    if sub.domain_is_managed:
+        return DomainVerificationResult(True, "provider-managed domain requires no DNS proof")
+    if sub.domain_verified_at is not None and not force:
+        return DomainVerificationResult(True, "domain ownership is already verified")
+    if sub.status != SubscriptionStatus.PENDING and not force:
+        raise ValueError("domain claim is not pending verification")
+    if sub.status == SubscriptionStatus.PENDING and deadline is None:
+        raise ValueError("domain claim has no active verification challenge")
+
+    verifier = verifier_factory()
+    if sub.domain_verification_token:
+        name = domain_challenge_name(sub.domain)
+        expected = domain_challenge_value(sub.domain_verification_token)
+        verification = verifier.verify_txt(name, expected)
+    elif sub.relay_pool_domain:
+        verification = verifier.verify_cname(sub.domain, sub.relay_pool_domain)
+    else:
+        raise ValueError("domain claim has no active verification challenge")
+    if not verification.verified:
+        return verification
+
+    now = _utcnow()
+    if force and sub.domain_verified_at is not None:
+        sub.domain_verified_at = now
+        sub.updated_at = now
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+        return verification
+    result = session.execute(
+        update(Subscription)
+        .where(
+            Subscription.id == sub.id,
+            Subscription.status == SubscriptionStatus.PENDING,
+            Subscription.domain_is_managed.is_(False),  # type: ignore[union-attr]
+            Subscription.domain_verified_at.is_(None),  # type: ignore[union-attr]
+            Subscription.domain_verification_token == sub.domain_verification_token,
+            Subscription.relay_pool_domain == sub.relay_pool_domain,
+            Subscription.domain_claim_expires_at > now,  # type: ignore[operator]
+        )
+        .values(
+            domain_verified_at=now,
+            domain_verification_token=None,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        raise ValueError("domain claim expired before verification completed")
+    session.commit()
+    session.refresh(sub)
+    return verification
+
+
+def uses_unique_cname_target(sub: Subscription) -> bool:
+    """Return whether a custom relay claim uses a generated per-claim target."""
+    target = sub.relay_pool_domain
+    if not target or "." not in target:
+        return False
+    label = target.split(".", 1)[0]
+    return len(label) == 32 and all(character in "0123456789abcdef" for character in label)
+
+
+def expire_elapsed_subscriptions(
+    session: Session,
+    subscriptions: Iterable[Subscription],
+) -> list[Subscription]:
+    """Conditionally revoke elapsed subscriptions and retain bounded resource holds."""
+    rows = list(subscriptions)
+    now = _utcnow()
+    changed = False
+    for sub in rows:
+        if sub.status != SubscriptionStatus.ACTIVE:
+            continue
+        period_end = _aware(sub.current_period_end)
+        if period_end is not None and period_end > now:
+            continue
+        values: dict[str, object] = {
+            "status": SubscriptionStatus.EXPIRED,
+            "reservation_expires_at": None,
+            "reservation_payment_id": None,
+            "updated_at": now,
+        }
+        if sub.product in _SCARCE_PRODUCTS and sub.assigned_ip:
+            values["resource_quarantined_until"] = now + timedelta(
+                seconds=settings.RESOURCE_REUSE_QUARANTINE_SECONDS
+            )
+        elif sub.product == ProductType.RELAY:
+            values["domain_renewal_grace_expires_at"] = (period_end or now) + timedelta(
+                seconds=settings.RELAY_RENEWAL_GRACE_SECONDS
+            )
+        result = session.execute(
+            update(Subscription)
+            .where(
+                Subscription.id == sub.id,
+                Subscription.status == SubscriptionStatus.ACTIVE,
+                Subscription.current_period_end == sub.current_period_end,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        changed = result.rowcount == 1 or changed
+    if changed:
+        session.commit()
+        for sub in rows:
+            session.refresh(sub)
+    return rows
+
+
+def create_subscription(
+    session: Session,
+    user: User,
+    product: ProductType,
+    domain: str | None = None,
+    transport: Transport = Transport.TCP,
+    delivery: DeliveryMode = DeliveryMode.FRAMED,
+    billing_term: BillingTerm = BillingTerm.MONTHLY,
+    *,
+    commit: bool = True,
+    reap_domains: bool = True,
+) -> Subscription:
+    """Create a pending subscription, optionally leaving its transaction to the caller."""
+    require_billing_term_enabled(billing_term)
+    if transport != Transport.TCP and product != ProductType.PORT:
+        raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
+    if delivery != DeliveryMode.FRAMED and product != ProductType.IP:
+        raise ValueError("WireGuard delivery is supported only for Blindport IP subscriptions")
+    if delivery == DeliveryMode.WIREGUARD and not settings.wireguard_enabled:
+        raise ValueError("WireGuard Blindport IP delivery is not configured")
+    if product == ProductType.RELAY and not domain:
+        raise ValueError("domain is required for Blindport Relay subscriptions")
+    domain_is_managed = False
+    domain_verification_token = None
+    domain_verified_at = None
+    domain_claim_expires_at = None
+    relay_pool_domain = None
+    if product == ProductType.RELAY:
+        domain = canonicalize_hostname(domain or "")
+        domain_is_managed = _is_managed_domain(domain)
+        if reap_domains:
+            reap_expired_domain_claims(session)
+    else:
+        domain = None
+
+    if user.id is None:
+        raise ValueError("user has no id")
+    session.exec(select(User).where(User.id == user.id).with_for_update()).one()
+    active_count = len(
+        session.exec(
+            select(Subscription.id).where(
+                Subscription.user_id == user.id,
+                Subscription.status != SubscriptionStatus.CANCELLED,
+            )
+        ).all()
+    )
+    if active_count >= settings.ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS:
+        raise AccountLimitError(
+            "account has reached the non-cancelled subscription limit "
+            f"({settings.ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS})"
+        )
+    if domain_is_managed and session.get_bind().dialect.name == "postgresql":
+        # Serialize claims against the operator-configured global cap.
+        session.execute(text("SELECT pg_advisory_xact_lock(1886547825)"))
+    require_product_available(
+        session,
+        product,
+        delivery=delivery,
+        transport=transport,
+        domain_is_managed=domain_is_managed,
+    )
+
+    if product == ProductType.RELAY:
+        existing = session.exec(select(Subscription).where(Subscription.domain == domain)).first()
+        if existing is not None:
+            raise ValueError("domain already has a subscription")
+        now = _utcnow()
+        domain_claim_expires_at = now + timedelta(seconds=settings.RELAY_DOMAIN_CLAIM_TTL_SECONDS)
+        if domain_is_managed:
+            domain_verified_at = now
+        else:
+            if session.get_bind().dialect.name == "postgresql":
+                session.execute(text("SELECT pg_advisory_xact_lock(1886547826)"))
+            relay_pool_domain = ResourceAllocator(session).allocate_relay_cname_target()
+    monthly = {
+        ProductType.IP: settings.IP_MONTHLY_SATS,
+        ProductType.PORT: settings.PORT_MONTHLY_SATS,
+        ProductType.RELAY: settings.RELAY_MONTHLY_SATS,
+    }[product]
+    yearly = {
+        ProductType.IP: settings.IP_YEARLY_SATS,
+        ProductType.PORT: settings.PORT_YEARLY_SATS,
+        ProductType.RELAY: settings.RELAY_YEARLY_SATS,
+    }[product]
+    sub = Subscription(
+        user_id=user.id,  # type: ignore[arg-type]
+        product=product,
+        delivery=delivery,
+        status=SubscriptionStatus.PENDING,
+        domain=domain,
+        relay_pool_domain=relay_pool_domain,
+        domain_is_managed=domain_is_managed,
+        domain_verification_token=domain_verification_token,
+        domain_verified_at=domain_verified_at,
+        domain_claim_expires_at=domain_claim_expires_at,
+        transport=transport,
+        billing_term=billing_term,
+        monthly_price_sats=monthly,
+        yearly_price_sats=yearly,
+    )
+    session.add(sub)
+    try:
+        if commit:
+            session.commit()
+        else:
+            session.flush()
+    except IntegrityError as e:
+        session.rollback()
+        if domain is not None:
+            existing = session.exec(
+                select(Subscription).where(Subscription.domain == domain)
+            ).first()
+            if existing is not None:
+                raise ValueError("domain already has a subscription") from e
+        raise
+    if commit:
+        session.refresh(sub)
+    return sub
+
+
+def release_reservation(session: Session, sub: Subscription, payment_id: int) -> bool:
+    """Release only the unpaid scarce reservation owned by ``payment_id``."""
+    if (
+        sub.status == SubscriptionStatus.ACTIVE
+        or sub.reservation_payment_id != payment_id
+        or sub.reservation_expires_at is None
+    ):
+        return False
+    sub.assigned_ip = None
+    sub.assigned_port = None
+    sub.reservation_expires_at = None
+    sub.reservation_payment_id = None
+    sub.updated_at = _utcnow()
+    session.add(sub)
+    return True
+
+
+def reap_elapsed_resource_holds(session: Session) -> None:
+    """Release elapsed quarantines and settle or expire elapsed payment-owned holds."""
+    now = _utcnow()
+    quarantined = session.exec(
+        select(Subscription).where(
+            Subscription.resource_quarantined_until.is_not(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    for sub in quarantined:
+        deadline = _aware(sub.resource_quarantined_until)
+        if sub.status != SubscriptionStatus.EXPIRED or deadline is None or deadline > now:
+            continue
+
+        open_payment = session.exec(
+            select(Payment).where(
+                Payment.subscription_id == sub.id,
+                Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+            )
+        ).first()
+        if open_payment is not None:
+            if open_payment.status == PaymentStatus.PROCESSING:
+                continue
+            try:
+                from .payments import check_and_settle_payment
+
+                check_and_settle_payment(session, open_payment)
+            except Exception as e:
+                session.rollback()
+                logger.warning(
+                    "retaining expired {} assignment for subscription {} after payment "
+                    "reconciliation failed: {}",
+                    sub.product.value,
+                    sub.id,
+                    e,
+                )
+                continue
+
+        session.expire_all()
+        open_payment_exists = (
+            select(Payment.id)
+            .where(
+                Payment.subscription_id == sub.id,
+                Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+            )
+            .exists()
+        )
+        result = session.execute(
+            update(Subscription)
+            .where(
+                Subscription.id == sub.id,
+                Subscription.status == SubscriptionStatus.EXPIRED,
+                Subscription.resource_quarantined_until.is_not(None),  # type: ignore[union-attr]
+                Subscription.resource_quarantined_until <= now,  # type: ignore[operator]
+                ~open_payment_exists,
+            )
+            .values(
+                assigned_ip=None,
+                assigned_port=None,
+                resource_quarantined_until=None,
+                updated_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount == 1:
+            session.commit()
+        else:
+            session.rollback()
+
+    reservations = session.exec(
+        select(Subscription).where(
+            Subscription.reservation_expires_at.is_not(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    for sub in reservations:
+        deadline = _aware(sub.reservation_expires_at)
+        if deadline is None or deadline > now:
+            continue
+        payment_id = sub.reservation_payment_id
+        if payment_id is None:
+            sub.assigned_ip = None
+            sub.assigned_port = None
+            sub.reservation_expires_at = None
+            sub.updated_at = now
+            session.add(sub)
+            session.commit()
+            continue
+        payment = session.get(Payment, payment_id, populate_existing=True)
+        if payment is None or payment.status in _TERMINAL_PAYMENT_STATUSES:
+            if release_reservation(session, sub, payment_id):
+                session.commit()
+            continue
+        if payment.status == PaymentStatus.PROCESSING:
+            continue
+
+        # Provider-backed payments must be checked before local expiration so a
+        # boundary settlement is credited instead of releasing its assignment.
+        from .payments import check_and_settle_payment
+
+        check_and_settle_payment(session, payment)
+
+
+def reserve_subscription_resource(
+    session: Session,
+    sub: Subscription,
+    payment_id: int,
+) -> bool:
+    """Reserve current capacity for one payment without committing the transaction."""
+    if sub.status == SubscriptionStatus.ACTIVE or sub.product == ProductType.RELAY:
+        return False
+    quarantine_end = _aware(sub.resource_quarantined_until)
+    if sub.assigned_ip and quarantine_end and quarantine_end > _utcnow():
+        raise NoCapacityError(
+            f"{sub.product.value} assignment is quarantined; retry after "
+            f"{quarantine_end.isoformat()}"
+        )
+    if sub.assigned_ip or sub.reservation_expires_at or sub.reservation_payment_id:
+        raise NoCapacityError(f"{sub.product.value} assignment is not yet reusable")
+
+    candidates: list[tuple[str, int | None]]
+    if sub.product == ProductType.IP:
+        ips = (
+            settings.wireguard_public_ips_list
+            if sub.delivery == DeliveryMode.WIREGUARD
+            else settings.relay_public_ips_list
+        )
+        candidates = [(ip, None) for ip in ips]
+        no_capacity = "no Blindport IP capacity"
+    elif sub.product == ProductType.PORT:
+        ports = (
+            settings.relay_shared_udp_ports_list
+            if sub.transport == Transport.UDP
+            else settings.relay_shared_tcp_ports_list
+        )
+        candidates = [(ip, port) for ip in settings.relay_shared_ips_list for port in ports]
+        no_capacity = "no Blindport Port capacity"
+    else:  # pragma: no cover - ProductType is exhaustive
+        return False
+
+    for ip, port in candidates:
+        try:
+            with session.begin_nested():
+                now = _utcnow()
+                sub.assigned_ip = ip
+                sub.assigned_port = port
+                sub.reservation_expires_at = now + timedelta(
+                    seconds=settings.RESOURCE_RESERVATION_TTL_SECONDS
+                )
+                sub.reservation_payment_id = payment_id
+                sub.resource_quarantined_until = None
+                sub.updated_at = now
+                session.add(sub)
+                session.flush()
+        except IntegrityError:
+            session.refresh(sub)
+            continue
+        return True
+    raise NoCapacityError(no_capacity)
+
+
+def activate_subscription(
+    session: Session,
+    sub: Subscription,
+    reservation_payment_id: int | None,
+    period_days: int,
+) -> Subscription:
+    """Convert the caller's reservation into an active billing period."""
+    if sub.product in _SCARCE_PRODUCTS:
+        if sub.reservation_payment_id != reservation_payment_id:
+            raise NoCapacityError(f"{sub.product.value} reservation is no longer available")
+        if sub.product == ProductType.IP and not sub.assigned_ip:
+            raise NoCapacityError("Blindport IP reservation is no longer available")
+        if sub.product == ProductType.PORT and not (sub.assigned_ip and sub.assigned_port):
+            raise NoCapacityError("Blindport Port reservation is no longer available")
+    if sub.product == ProductType.RELAY:
+        if not sub.domain or (not sub.domain_is_managed and sub.domain_verified_at is None):
+            raise ValueError("Blindport Relay domain ownership is not eligible for activation")
+        if not sub.relay_pool_domain:
+            sub.relay_pool_domain = ResourceAllocator(session).allocate_relay_pool_domain()
+    now = _utcnow()
+    sub.status = SubscriptionStatus.ACTIVE
+    sub.current_period_start = now
+    sub.current_period_end = now + timedelta(days=period_days)
+    sub.domain_claim_expires_at = None
+    sub.domain_renewal_grace_expires_at = None
+    sub.reservation_expires_at = None
+    sub.reservation_payment_id = None
+    sub.resource_quarantined_until = None
+    sub.updated_at = now
+    session.add(sub)
+    return sub
+
+
+def renew_subscription(session: Session, sub: Subscription, period_days: int) -> Subscription:
+    """Extend the billing period by the settled payment's fixed term."""
+    now = _utcnow()
+    period_end = _aware(sub.current_period_end)
+    base = period_end if period_end and period_end > now else now
+    sub.current_period_start = now
+    sub.current_period_end = base + timedelta(days=period_days)
+    sub.status = SubscriptionStatus.ACTIVE
+    sub.domain_renewal_grace_expires_at = None
+    sub.resource_quarantined_until = None
+    sub.updated_at = now
+    session.add(sub)
+    return sub

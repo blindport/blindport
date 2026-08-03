@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Admin sign in | {{ brand_name }}{% endblock %}
+{% block content %}
+<section class="auth-page content-narrow" aria-labelledby="admin-login-title">
+  <p class="eyebrow">Restricted access</p>
+  <h1 id="admin-login-title">Admin sign in</h1>
+  <form method="post" action="/admin/login" class="auth-form">
+    <label for="adminToken">Admin token</label>
+    <input id="adminToken" type="password" name="token" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+{% endblock %}

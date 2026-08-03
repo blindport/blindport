@@ -1,0 +1,65 @@
+name: blindport-relay
+
+x-service-defaults: &service-defaults
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 30s
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  relay:
+    <<: *service-defaults
+    image: ${RELAY_IMAGE}
+    network_mode: host
+    environment:
+      BLINDPORT_BACKEND_URL: ${BACKEND_INTERNAL_URL}
+      BLINDPORT_RELAY_SECRET_FILE: /run/secrets/relay-secret
+      BLINDPORT_RELAY_IPS: ""
+      BLINDPORT_RELAY_PORTS: ""
+      BLINDPORT_RELAY_SHARED_IPS: ${RELAY_PUBLIC_IP}
+      BLINDPORT_RELAY_SHARED_TCP_PORTS: ${PORT_TCP_RANGE}
+      BLINDPORT_RELAY_SHARED_UDP_PORTS: ${PORT_UDP_RANGE}
+      BLINDPORT_RELAY_SNI: ${RELAY_PUBLIC_IP}:443
+      BLINDPORT_RELAY_HTTP_CHALLENGE: ${RELAY_PUBLIC_IP}:80
+      BLINDPORT_RELAY_MTLS_HOSTS: ${RELAY_CONTROL_HOST}
+      BLINDPORT_RELAY_ADMIN: 127.0.0.1:9090
+      BLINDPORT_RELAY_MAX_CONTROL_HANDSHAKES: ${RELAY_MAX_CONTROL_HANDSHAKES:-256}
+      BLINDPORT_RELAY_MAX_INGRESS: ${RELAY_MAX_INGRESS:-4096}
+      BLINDPORT_RELAY_MAX_SNI_PEEKS: ${RELAY_MAX_SNI_PEEKS:-512}
+      BLINDPORT_RELAY_MAX_HTTP_CHALLENGES: ${RELAY_MAX_HTTP_CHALLENGES:-64}
+      BLINDPORT_RELAY_HTTP_CHALLENGE_RATE: ${RELAY_HTTP_CHALLENGE_RATE:-600}
+      BLINDPORT_RELAY_HTTP_CHALLENGE_BURST: ${RELAY_HTTP_CHALLENGE_BURST:-100}
+      BLINDPORT_RELAY_MAX_CONTROL_PER_SOURCE: ${RELAY_MAX_CONTROL_PER_SOURCE:-8}
+      BLINDPORT_RELAY_MAX_INGRESS_PER_SOURCE: ${RELAY_MAX_INGRESS_PER_SOURCE:-128}
+      BLINDPORT_RELAY_MAX_STREAMS_PER_TUNNEL: ${RELAY_MAX_STREAMS_PER_TUNNEL:-256}
+      BLINDPORT_RELAY_SHUTDOWN_TIMEOUT: 25s
+      BLINDPORT_RELAY_WIREGUARD: "0"
+    secrets:
+      - source: relay-secret
+        target: relay-secret
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+    command: ["-control", "${RELAY_PUBLIC_IP}:5443"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    pids_limit: 500
+    mem_limit: 1g
+    cpus: 4.0
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+secrets:
+  relay-secret:
+    file: ${SECRETS_DIR:-./secrets}/relay-secret

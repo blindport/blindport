@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Guide | {{ brand_name }}{% endblock %}
+{% block content %}
+<div class="guide-layout content-width">
+  <aside class="guide-nav" aria-label="Guide sections">
+    <strong>Guide</strong>
+    <a href="#install">Install</a>
+    <a href="#credentials">Credentials</a>
+    <a href="#run">Run</a>
+    <a href="#static-config">Static config</a>
+    <a href="#docker">Docker</a>
+    <a href="#tls">TLS and HTTP-01</a>
+    <a href="#wireguard">WireGuard</a>
+    <a href="#tor">Tor</a>
+    <a href="#troubleshooting">Troubleshooting</a>
+    <a href="#limitations">Limitations</a>
+  </aside>
+
+  <article class="guide prose" aria-labelledby="guide-title">
+    <header class="guide-header">
+      <p class="eyebrow">Client operations</p>
+      <h1 id="guide-title">Run <code>blindportd</code></h1>
+      <p class="lead">Connect paid subscriptions to services on one Linux host. One daemon can serve every framed mapping in an account.</p>
+    </header>
+
+    <section id="install">
+      <h2>Install and verify</h2>
+      <p>Versioned static Linux binaries are available for amd64, arm64, and armv7. Download the binary and matching <code>.sha256</code> file for the same release, then verify before installation:</p>
+      {% if blindportd_version != "dev" %}
+      <ul>
+        <li><a href="/downloads/blindportd-{{ blindportd_version }}-linux-amd64">Linux amd64</a> (<a href="/downloads/blindportd-{{ blindportd_version }}-linux-amd64.sha256">checksum</a>)</li>
+        <li><a href="/downloads/blindportd-{{ blindportd_version }}-linux-arm64">Linux arm64</a> (<a href="/downloads/blindportd-{{ blindportd_version }}-linux-arm64.sha256">checksum</a>)</li>
+        <li><a href="/downloads/blindportd-{{ blindportd_version }}-linux-armv7">Linux armv7</a> (<a href="/downloads/blindportd-{{ blindportd_version }}-linux-armv7.sha256">checksum</a>)</li>
+      </ul>
+      {% endif %}
+      <pre><code>sha256sum -c blindportd-{{ blindportd_version }}-linux-amd64.sha256
+sudo install -m 0755 blindportd-{{ blindportd_version }}-linux-amd64 /usr/local/bin/blindportd
+blindportd -version</code></pre>
+      <p>A successful checksum says <code>OK</code>. Do not rename the binary until after verification because the checksum file contains the release filename.</p>
+    </section>
+
+    <section id="credentials">
+      <h2>Token and state</h2>
+      <p>The account token is a bearer credential. Put exactly one token in an owner-only regular file; avoid command-line and environment values in production because they can be exposed through process inspection.</p>
+      <pre><code>install -d -m 0700 "$HOME/.config/blindport" "$HOME/.local/state/blindport"
+bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
+  printf "%s\n" "$token" | install -m 0600 /dev/stdin "$HOME/.config/blindport/token"'</code></pre>
+      <p>The state directory stores the client Ed25519 identity and, in routed mode, a WireGuard key. It must be absolute, owned by the daemon user, and inaccessible to group and other users. Back it up as a secret. Production permits one enrolled client identity per account; losing <code>credential.json</code> requires an operator reset before enrollment can be repeated.</p>
+    </section>
+
+    <section id="run">
+      <h2>Run framed mode</h2>
+      <p>Create at least one active subscription and mapping, then start the agent:</p>
+      <pre><code>blindportd \
+  -backend={{ request.url.scheme }}://{{ request.url.netloc }} \
+  -token-file="$HOME/.config/blindport/token" \
+  -state-dir="$HOME/.local/state/blindport" \
+  -config="$HOME/.config/blindport/config.json"</code></pre>
+      <p>The backend returns only active subscriptions. Restart the daemon after adding, removing, or changing a subscription.</p>
+    </section>
+
+    <section id="static-config">
+      <h2>Static mappings</h2>
+      <p>Use the subscription references shown in the dashboard-generated configuration. The paid product determines TCP or UDP behavior.</p>
+      <pre><code>{
+  "version": 1,
+  "mappings": [
+    {
+      "subscription_id": 123,
+      "upstream": "reverse-proxy:443",
+      "http_challenge_upstream": "reverse-proxy:80"
+    },
+    {
+      "subscription_id": 456,
+      "upstream": "photos:8080"
+    }
+  ]
+}</code></pre>
+      <p>The file must be a regular, owner-only file, not a symlink. Mapping IDs must be positive and unique. Upstreams use <code>host:port</code>; bracket IPv6 addresses, for example <code>[::1]:8080</code>.</p>
+    </section>
+
+    <section id="docker">
+      <h2>Docker discovery</h2>
+      <p>One long-running agent continuously discovers running containers, registers declared orders, refreshes active provisioning, and starts or stops mappings without a restart.</p>
+      <p>Build the local image from a trusted source checkout with <code>docker build -f docker/go.Dockerfile --target blindportd -t blindportd:{{ blindportd_version }} .</code>, then use:</p>
+      <pre><code>services:
+  reverse-proxy:
+    labels:
+      tech.blindport.mapping.web.product: "relay"
+      tech.blindport.mapping.web.domain: "web.relay.blindport.com"
+      tech.blindport.mapping.web.billing_term: "monthly"
+      tech.blindport.mapping.web.upstream: "reverse-proxy:443"
+      tech.blindport.mapping.web.http_challenge_upstream: "reverse-proxy:80"
+
+  blindportd:
+    image: blindportd:{{ blindportd_version }}
+    command: ["--docker"]
+    environment:
+      BLINDPORT_BACKEND_URL: "{{ request.url.scheme }}://{{ request.url.netloc }}"
+      BLINDPORT_TOKEN_FILE: /run/secrets/blindport_token
+      BLINDPORT_STATE_DIR: /var/lib/blindportd
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/blindport/token:/run/secrets/blindport_token:ro
+      - blindportd-state:/var/lib/blindportd</code></pre>
+      <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
+      <p>The mapping name is a stable order key. Relay also requires a domain; Port accepts TCP or UDP; IP uses framed delivery. Existing <code>.subscription</code> labels remain supported. With NWC, an eligible new declaration starts one initial payment; without NWC it appears in the dashboard for manual payment. Removing a label stops forwarding but does not cancel service.</p>
+      <p>Run the agent and targets on a shared Docker network so labeled upstream names resolve. The agent polls every 10 seconds by default; set <code>BLINDPORT_DOCKER_POLL_INTERVAL</code> between <code>1s</code> and <code>5m</code>.</p>
+    </section>
+
+    <section id="tls">
+      <h2>TLS and HTTP-01</h2>
+      <p>Blindport Relay reads ClientHello SNI and forwards the original TCP stream. Keep the TLS private key and certificate at the origin and configure the TLS service as the mapping's <code>upstream</code>. Blindport does not terminate customer TLS.</p>
+      <p>For a managed hostname, the optional <code>http_challenge_upstream</code> receives only relay-validated ACME HTTP-01 requests on port 80. It must be a separate plaintext challenge listener. Normal HTTP and all TLS traffic continue to the regular upstream. Customer-owned domains can use their normal DNS-01 workflow.</p>
+      <p>Customer-owned names must be subdomains with a direct CNAME. Zone apexes, wildcard claims, CNAME flattening, and CDN-proxied records are not supported. Keep the record in DNS-only mode so Blindport can verify it before each invoice.</p>
+    </section>
+
+    <section id="wireguard">
+      <h2>Routed WireGuard mode</h2>
+      <p>WireGuard is available only for Blindport IP orders configured for routed delivery. It is separate from framed mappings and Docker discovery. Create root-owned credential and state paths because the agent requires network administration capability:</p>
+      <pre><code>sudo install -d -m 0700 /etc/blindport /var/lib/blindport
+bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
+  printf "%s\n" "$token" | sudo install -m 0600 /dev/stdin /etc/blindport/token'
+
+sudo blindportd \
+  -wireguard \
+  -backend={{ request.url.scheme }}://{{ request.url.netloc }} \
+  -token-file=/etc/blindport/token \
+  -state-dir=/var/lib/blindport</code></pre>
+      <p>The host needs Linux kernel WireGuard and <code>CAP_NET_ADMIN</code> or equivalent privileges. The agent creates <code>bpwg0</code>, assigns the leased public /32, and installs source policy routing without replacing the host's main default route. Your application must listen on the assigned address or a wildcard socket; routed mode does not dial an upstream.</p>
+    </section>
+
+    <section id="tor">
+      <h2>Tor SOCKS5 transport</h2>
+      <p>Send backend and relay connections through a local Tor SOCKS5 listener. SOCKS mode fails closed and does not fall back to direct connections. WireGuard mode is rejected because kernel UDP cannot traverse SOCKS:</p>
+      <pre><code>blindportd \
+  -socks5=127.0.0.1:9050 \
+  -backend=http://{{ onion_host or "BACKEND_ONION" }} \
+  -relay={{ onion_host or "RELAY_ONION" }}:5443 \
+  -server-name={{ relay_server_name }} \
+  -token-file=/etc/blindport/token \
+  -state-dir=/var/lib/blindport \
+  -config=/etc/blindport/config.json</code></pre>
+      <p>The client uses SOCKS authentication isolation for its outbound path and does not fall back to a direct connection when the proxy fails. SOCKS5 transport is available only in framed mode; the client rejects combining <code>-socks5</code> with <code>-wireguard</code> because the kernel WireGuard UDP data plane cannot use the proxy. Tor can conceal the client's source address from the backend and relay, subject to endpoint and traffic-correlation risks. Blindport remains a reachability service, not an anonymity network.</p>
+    </section>
+
+    <section id="troubleshooting">
+      <h2>Troubleshooting</h2>
+      <dl class="troubleshooting-list">
+        <div><dt><code>no token</code> or token file rejected</dt><dd>Confirm the file contains one token, is regular, owner-only, owned by the daemon user, and is not a symlink.</dd></div>
+        <div><dt>Subscription is missing</dt><dd>Confirm payment is settled and the subscription is active. Docker mode will discover it on the next poll; static and legacy modes still require a restart.</dd></div>
+        <div><dt>Domain payment is unavailable</dt><dd>For a customer domain, publish the one exact CNAME name and target from the dashboard and run the DNS check before creating an invoice.</dd></div>
+        <div><dt>TLS certificate fails</dt><dd>Confirm SNI matches the ordered hostname and the origin serves its complete certificate chain. Blindport does not issue the public service certificate.</dd></div>
+        <div><dt>HTTP-01 fails</dt><dd>Configure a separate plaintext challenge upstream and make sure the origin ACME client answers the requested token there.</dd></div>
+        <div><dt>WireGuard setup fails</dt><dd>Confirm Linux WireGuard support, <code>CAP_NET_ADMIN</code>, an active routed Blindport IP order, and no conflicts with interface, table, or rule-priority values.</dd></div>
+      </dl>
+    </section>
+
+    <section id="limitations">
+      <h2>Current limitations</h2>
+      <ul>
+        <li>Docker and active framed provisioning changes can take up to one configured poll interval. Static configuration and routed WireGuard changes require a restart.</li>
+        <li>One production client identity is enrolled per account. Docker labels can initiate one idempotent order and initial NWC payment, but cancellation and renewal policy remain account actions.</li>
+        <li>Established TCP sessions do not migrate across relay reconnects or DNS changes.</li>
+        <li>Framed UDP crosses the TCP/mTLS tunnel and may experience head-of-line blocking.</li>
+        <li>Routed mode supports Linux IPv4 /32 leases only. It does not manage host firewalls, application listeners, IPv6, or DNS.</li>
+      </ul>
+    </section>
+  </article>
+</div>
+{% endblock %}

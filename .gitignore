@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.coverage
+htmlcov/
+
+# JavaScript / Bun
+node_modules/
+dist/
+
+# Go
+client/blindportd
+relay/blindport-relay
+*.test
+*.out
+
+# Project local
+tmp/
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.macaroon
+id_rsa*
+id_ed25519*
+
+# Runtime state (per-deployment): databases, dumps, generated CA material, etc.
+backend/data/
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+dev-data/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Docker
+.docker-cache/
