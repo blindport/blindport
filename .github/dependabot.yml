@@ -1,0 +1,34 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose
+    directory: /deploy/canary
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose
+    directory: /deploy/split/control
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose
+    directory: /deploy/split/relay
+    schedule:
+      interval: weekly
+  - package-ecosystem: gomod
+    directory: /go
+    schedule:
+      interval: weekly
+  - package-ecosystem: bun
+    directory: /tools/nwc-helper
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly

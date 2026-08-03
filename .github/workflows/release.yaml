@@ -1,74 +1,191 @@
 name: release
 
-# Tag-driven release: pushing an annotated tag like v1.2.3 builds and
-# publishes:
-#   * ghcr.io/<owner>/blindport-backend:<version> (linux/amd64 + linux/arm64)
-#   * ghcr.io/<owner>/blindport-relay:<version>   (linux/amd64 + linux/arm64)
-#   * ghcr.io/<owner>/blindportd:<version>         (linux/amd64 + linux/arm64)
-#   * blindportd binaries for linux/amd64, linux/arm64 and linux/arm/v7
-#     attached as assets to the GitHub Release.
-
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag to (re)build, e.g. v0.1.0"
-        required: true
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yaml
+
   version:
+    needs: ci
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.v.outputs.version }}
-      commit: ${{ steps.v.outputs.commit }}
+      commit: ${{ steps.release.outputs.commit }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      stable: ${{ steps.release.outputs.stable }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
-      - id: v
-        shell: bash
+      - name: Import Blindport release key
         env:
-          REQUESTED_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          EXPECTED_FINGERPRINT: 18EDE4726C1414844923D6FF14EABFF739C16205
         run: |
           set -euo pipefail
-          tag="$REQUESTED_TAG"
-          tag="${tag#refs/tags/}"
-          [[ "$tag" == v* ]] || { echo "release tag must start with v" >&2; exit 1; }
-          git check-ref-format "refs/tags/$tag"
-          git show-ref --verify --quiet "refs/tags/$tag" || {
-            echo "requested tag does not exist: $tag" >&2
+          gpg --batch --import maintainers/blindport-release-key.asc
+          actual="$(gpg --batch --with-colons --fingerprint "$EXPECTED_FINGERPRINT" | awk -F: '$1 == "fpr" { print $10; exit }')"
+          test "$actual" = "$EXPECTED_FINGERPRINT" || {
+            echo "release key fingerprint mismatch: $actual" >&2
             exit 1
           }
-          commit="$(git rev-list -n 1 "refs/tags/$tag")"
-          git checkout --detach "$commit"
-          test "$(git rev-parse HEAD)" = "$commit"
+      - id: release
+        name: Validate signed annotated SemVer tag
+        env:
+          EXPECTED_FINGERPRINT: 18EDE4726C1414844923D6FF14EABFF739C16205
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          identifier='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
+          semver="^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-${identifier}(\.${identifier})*)?$"
+          if [[ "$tag" =~ $semver ]]; then
+            release_major="${BASH_REMATCH[1]}"
+            release_minor="${BASH_REMATCH[2]}"
+            release_patch="${BASH_REMATCH[3]}"
+          else
+            echo "release tag must be strict SemVer without build metadata: $tag" >&2
+            exit 1
+          fi
+          test "$(git cat-file -t "refs/tags/$tag")" = tag || {
+            echo "release tag must be annotated: $tag" >&2
+            exit 1
+          }
+          verification="$(git verify-tag --raw "$tag" 2>&1)" || {
+            printf '%s\n' "$verification" >&2
+            exit 1
+          }
+          valid_fingerprint="$(printf '%s\n' "$verification" | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3; exit }')"
+          test "$valid_fingerprint" = "$EXPECTED_FINGERPRINT" || {
+            echo "tag signature fingerprint mismatch: $valid_fingerprint" >&2
+            exit 1
+          }
+          commit="$(git rev-parse "refs/tags/$tag^{commit}")"
+          test "$commit" = "$(git rev-parse HEAD)" || {
+            echo "release tag does not resolve to the checked-out commit" >&2
+            exit 1
+          }
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor "$commit" origin/master || {
+            echo "release tag must resolve to a commit on origin/master" >&2
+            exit 1
+          }
+          project_version="$(python - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          backend = tomllib.loads(pathlib.Path("backend/pyproject.toml").read_text())["project"]["version"]
+          helper = json.loads(pathlib.Path("tools/nwc-helper/package.json").read_text())["version"]
+          if backend != helper:
+              raise SystemExit(f"component versions differ: {backend} != {helper}")
+          print(backend)
+          PY
+          )"
+          tag_version="${tag#v}"
+          tag_version="${tag_version%%-*}"
+          test "$tag_version" = "$project_version" || {
+            echo "release tag version $tag_version does not match project version $project_version" >&2
+            exit 1
+          }
+          prerelease=false
+          stable=true
+          if [[ "$tag" == *-* ]]; then
+            prerelease=true
+            stable=false
+          fi
+          if [[ "$stable" == true ]]; then
+            released_tags="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts \
+              --exclude-pre-releases --limit 1000 --json tagName --jq '.[].tagName')"
+            while IFS= read -r released_tag; do
+              [[ -n "$released_tag" ]] || continue
+              stable_semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+              [[ "$released_tag" =~ $stable_semver ]] || {
+                echo "published stable release is not a SemVer tag: $released_tag" >&2
+                exit 1
+              }
+              published_major="${BASH_REMATCH[1]}"
+              published_minor="${BASH_REMATCH[2]}"
+              published_patch="${BASH_REMATCH[3]}"
+              if (( release_major < published_major ||
+                    (release_major == published_major && release_minor < published_minor) ||
+                    (release_major == published_major && release_minor == published_minor && release_patch <= published_patch) )); then
+                echo "stable release $tag must be newer than $released_tag" >&2
+                exit 1
+              fi
+            done <<< "$released_tags"
+          fi
           {
-            echo "version=$tag"
             echo "commit=$commit"
+            echo "prerelease=$prerelease"
+            echo "stable=$stable"
+            echo "version=$tag"
           } >> "$GITHUB_OUTPUT"
 
   deployment-config:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version.outputs.commit }}
       - name: Validate deployment configuration
         run: ./deploy/validate.sh
 
+  image-preflight:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reject existing immutable image tags
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          for image in blindport-backend blindport-relay blindportd; do
+            ref="ghcr.io/blindport/$image:$RELEASE_VERSION"
+            if output="$(docker buildx imagetools inspect "$ref" 2>&1)"; then
+              echo "immutable image tag already exists: $ref" >&2
+              exit 1
+            fi
+            case "$output" in
+              *"not found"*|*"manifest unknown"*|*"NAME_UNKNOWN"*|*"404 Not Found"*) ;;
+              *)
+                echo "could not confirm that immutable image tag is absent: $ref" >&2
+                printf '%s\n' "$output" >&2
+                exit 1
+                ;;
+            esac
+          done
+
   binaries:
     needs: version
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -84,10 +201,10 @@ jobs:
             goarm: "7"
             suffix: linux-armv7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version.outputs.commit }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26.5"
       - name: Build blindportd
@@ -102,91 +219,228 @@ jobs:
           out="../dist/blindportd-${{ needs.version.outputs.version }}-${{ matrix.suffix }}"
           go build -trimpath -ldflags "-s -w -X main.version=${{ needs.version.outputs.version }}" -o "$out" ./cmd/blindportd
           (cd ../dist && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
-      - uses: actions/upload-artifact@v4
+      - name: Attest binary
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: dist/blindportd-${{ needs.version.outputs.version }}-${{ matrix.suffix }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: blindportd-${{ matrix.suffix }}
           path: dist/blindportd-*
+          if-no-files-found: error
+          retention-days: 7
 
   images:
-    needs: [version, deployment-config]
+    needs: [version, deployment-config, image-preflight]
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
     strategy:
+      fail-fast: false
       matrix:
         component:
           - name: backend
             image: blindport-backend
+            description: Blindport FastAPI control plane and Web interface
             dockerfile: docker/backend.Dockerfile
             target: runtime
+            platforms: linux/amd64,linux/arm64
+            smoke-platforms: linux/amd64 linux/arm64
           - name: relay
             image: blindport-relay
+            description: Blindport provider edge relay
             dockerfile: docker/go.Dockerfile
             target: relay
+            platforms: linux/amd64,linux/arm64
+            smoke-platforms: linux/amd64 linux/arm64
           - name: blindportd
             image: blindportd
+            description: Blindport customer tunnel and Docker discovery agent
             dockerfile: docker/go.Dockerfile
             target: blindportd
+            platforms: linux/amd64,linux/arm64,linux/arm/v7
+            smoke-platforms: linux/amd64 linux/arm64 linux/arm/v7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version.outputs.commit }}
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Compute image tags
-        id: tags
+      - id: image
+        name: Compute immutable image tag
+        env:
+          IMAGE_NAME: ${{ matrix.component.image }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          v="${{ needs.version.outputs.version }}"
-          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          image="ghcr.io/${owner_lc}/${{ matrix.component.image }}"
+          set -euo pipefail
+          image="ghcr.io/blindport/$IMAGE_NAME"
           {
-            echo "tags=${image}:${v}"
+            echo "name=$image"
+            echo "tags<<EOF"
+            echo "$image:$RELEASE_VERSION"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v5
+      - id: metadata
+        name: Generate OCI metadata
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: type=raw,value=${{ needs.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=${{ matrix.component.image }}
+            org.opencontainers.image.description=${{ matrix.component.description }}
+            org.opencontainers.image.documentation=https://github.com/blindport/blindport#readme
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=Blindport
+          annotations: |
+            org.opencontainers.image.title=${{ matrix.component.image }}
+            org.opencontainers.image.description=${{ matrix.component.description }}
+            org.opencontainers.image.documentation=https://github.com/blindport/blindport#readme
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.vendor=Blindport
+      - id: build
+        name: Build and publish image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ${{ matrix.component.dockerfile }}
           target: ${{ matrix.component.target }}
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.component.platforms }}
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ steps.image.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          annotations: ${{ steps.metadata.outputs.annotations }}
           build-args: VERSION=${{ needs.version.outputs.version }}
-          provenance: false
+          cache-from: type=gha,scope=${{ matrix.component.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component.name }}
+          provenance: mode=max
+          sbom: true
+      - name: Smoke-test published digest
+        env:
+          COMPONENT: ${{ matrix.component.name }}
+          IMAGE_REF: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}
+          SMOKE_PLATFORMS: ${{ matrix.component.smoke-platforms }}
+        run: |
+          set -euo pipefail
+          for platform in $SMOKE_PLATFORMS; do
+            case "$COMPONENT" in
+              backend)
+                docker run --rm --platform "$platform" --entrypoint python "$IMAGE_REF" -c "import blindport"
+                ;;
+              relay)
+                docker run --rm --platform "$platform" --entrypoint /usr/local/bin/blindport-relay "$IMAGE_REF" -h
+                ;;
+              blindportd)
+                docker run --rm --platform "$platform" "$IMAGE_REF" -version
+                ;;
+            esac
+          done
+      - name: Attest image
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Record digest-pinned image reference
+        env:
+          COMPONENT: ${{ matrix.component.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          mkdir -p image-reference
+          variable="$(printf '%s' "$COMPONENT" | tr '[:lower:]-' '[:upper:]_')_IMAGE"
+          printf '%s=%s@%s\n' "$variable" "$IMAGE" "$DIGEST" > "image-reference/$COMPONENT.env"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-reference-${{ matrix.component.name }}
+          path: image-reference/${{ matrix.component.name }}.env
+          if-no-files-found: error
+          retention-days: 7
 
   release:
     needs: [version, deployment-config, binaries, images]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version.outputs.commit }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: blindportd-*
           path: dist
           merge-multiple: true
-      - name: Generate release notes
-        run: |
-          v="${{ needs.version.outputs.version }}"
-          owner_lc="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          {
-            echo "## ${v}"
-            echo
-            echo "Container images:"
-            echo "* \`ghcr.io/${owner_lc}/blindport-backend:${v}\`"
-            echo "* \`ghcr.io/${owner_lc}/blindport-relay:${v}\`"
-            echo "* \`ghcr.io/${owner_lc}/blindportd:${v}\`"
-            echo
-            echo "Binaries (linux): amd64, arm64, armv7. Verify with the bundled \`.sha256\` files."
-          } > release-notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          tag_name: ${{ needs.version.outputs.version }}
-          name: ${{ needs.version.outputs.version }}
-          body_path: release-notes.md
-          files: dist/*
-          draft: false
-          prerelease: false
+          pattern: image-reference-*
+          path: image-references
+          merge-multiple: true
+      - name: Generate release metadata
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sort image-references/*.env > dist/blindport-images.env
+          printf '## %s\n\n' "$RELEASE_VERSION" > release-notes.md
+          cat >> release-notes.md <<'EOF'
+          Container images are published to GHCR. The attached `blindport-images.env` contains digest-pinned references for this release.
+
+          Agent binaries are available for Linux amd64, arm64, and armv7. Verify each binary with its `.sha256` file or GitHub artifact attestation.
+
+          Verify an image with `gh attestation verify oci://IMAGE@DIGEST -R blindport/blindport`.
+          EOF
+      - if: needs.version.outputs.stable == 'true'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - if: needs.version.outputs.stable == 'true'
+        name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote stable image aliases
+        if: needs.version.outputs.stable == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION#v}"
+          IFS=. read -r major minor _patch <<< "$version"
+          while IFS='=' read -r variable image_ref; do
+            [[ "$variable" == *_IMAGE && "$image_ref" == *@sha256:* ]] || {
+              echo "invalid image reference entry: $variable=$image_ref" >&2
+              exit 1
+            }
+            image="${image_ref%@*}"
+            tags=(--tag "$image:v$major.$minor" --tag "$image:latest")
+            if [[ "$major" != 0 ]]; then
+              tags+=(--tag "$image:v$major")
+            fi
+            docker buildx imagetools create "${tags[@]}" "$image_ref"
+          done < dist/blindport-images.env
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          args=("$RELEASE_VERSION" --verify-tag --title "$RELEASE_VERSION" --notes-file release-notes.md)
+          if [[ "$PRERELEASE" == true ]]; then
+            args+=(--prerelease --latest=false)
+          else
+            args+=(--latest)
+          fi
+          gh release create "${args[@]}" dist/*

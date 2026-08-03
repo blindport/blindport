@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from sqlmodel import select
 
+from . import __version__
 from .adapters.factory import get_lightning_adapter, get_nwc_adapter
 from .api import internal, pages, v1, v2
 from .config import settings
@@ -59,7 +60,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=settings.BRAND_NAME, version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title=settings.BRAND_NAME, version=__version__, lifespan=lifespan)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

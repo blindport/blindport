@@ -9,7 +9,7 @@ COPY go /src
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o /out/blindport-relay ./cmd/blindport-relay \
  && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid= -X main.version=${VERSION}" -o /out/blindportd ./cmd/blindportd
 
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS relay
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS relay
 RUN apk add --no-cache ca-certificates iproute2 \
  && addgroup -g 10001 -S blindport \
  && adduser -u 10001 -S -D -H -G blindport blindport
@@ -22,7 +22,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["relay-entrypoint"]
 CMD ["-control", ":5443"]
 
-FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc AS blindportd
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS blindportd
 RUN apk add --no-cache ca-certificates \
  && addgroup -g 10001 -S blindport \
  && adduser -u 10001 -S -D -H -G blindport blindport \
