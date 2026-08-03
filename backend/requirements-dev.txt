@@ -319,9 +319,9 @@ dnspython==2.8.0 \
     --hash=sha256:01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af \
     --hash=sha256:181d3c6996452cb1189c4046c61599b84a5a86e099562ffde77d26984ff26d0f
     # via blindport (backend/pyproject.toml)
-fastapi==0.139.2 \
-    --hash=sha256:333145a6891e9b5b3cfceb69baf817e8240cde4d4588ae5a10bf56ffacb6255e \
-    --hash=sha256:b9ad015a835173d59865e2f5d8296fbc2b317bf56a2ba1a5bfbdd03de2fd4b1c
+fastapi==0.141.1 \
+    --hash=sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3 \
+    --hash=sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1
     # via blindport (backend/pyproject.toml)
 greenlet==3.5.3 \
     --hash=sha256:0909f9355a9f24845d3299f3112e266a06afb68302041989fd26bd68894933db \
