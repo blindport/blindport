@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/moby/moby/api v1.55.0
-	github.com/moby/moby/client v0.5.0
+	github.com/moby/moby/client v0.5.1
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/net v0.33.0
 	golang.org/x/sys v0.33.0
