@@ -305,7 +305,7 @@ services:
 
   sni-mux:
     <<: *service-defaults
-    image: haproxy:3.2.1-alpine@sha256:ac79fe145f2bb6626ff26b584a2d0a34e791906c01015f2ae037aa3137b683d9
+    image: haproxy:3.4.3-alpine@sha256:fb87fc81943143b9acaea7442973e6ba654035fff76ffe7af6829dd1bcb0f7a5
     user: "99:99"
     network_mode: host
     environment:
