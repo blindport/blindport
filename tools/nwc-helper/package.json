@@ -17,6 +17,6 @@
     "@types/bun": "1.2.19",
     "eslint": "9.32.0",
     "typescript": "5.9.2",
-    "typescript-eslint": "8.38.0"
+    "typescript-eslint": "8.65.0"
   }
 }
