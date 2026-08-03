@@ -6,6 +6,14 @@ streams or UDP datagrams to configured local upstreams. Routed Blindport IP deli
 uses WireGuard to assign a provider-routed public IPv4 `/32` directly to the
 customer host without NAT.
 
+[Source](https://github.com/blindport/blindport) |
+[Issues](https://github.com/blindport/blindport/issues) |
+[Releases](https://github.com/blindport/blindport/releases) |
+[Security](SECURITY.md)
+
+> Blindport is pre-1.0 software. Review the threat model, deployment manifests,
+> and operational requirements before exposing production services.
+
 The three products use distinct ingress identities:
 
 - **Blindport IP** leases one dedicated public IP. `framed` delivery forwards
@@ -57,7 +65,33 @@ budget-limited NWC connection to pay LNemail's per-message Lightning invoice.
 | `docs/` | Architecture, protocol, and operating notes. |
 | `tools/nwc-helper/` | Single-shot Bun NWC protocol executable built into the backend image. |
 
-## Quick start
+## Container images
+
+Signed releases publish these multi-architecture images from this repository:
+
+| Image | Purpose | Platforms |
+| --- | --- | --- |
+| `ghcr.io/blindport/blindport-backend` | Control plane, Web UI, migrations, and NWC helper. | `linux/amd64`, `linux/arm64` |
+| `ghcr.io/blindport/blindport-relay` | Provider edge relay. | `linux/amd64`, `linux/arm64` |
+| `ghcr.io/blindport/blindportd` | Customer tunnel and Docker discovery agent. | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
+
+Release notes include a `blindport-images.env` asset with digest-pinned image
+references. Prefer those immutable references for deployments. Stable releases
+also update `latest`, `vMAJOR.MINOR`, and, after `v1.0.0`, `vMAJOR` aliases.
+Prereleases update only their exact tag.
+
+```sh
+docker pull ghcr.io/blindport/blindportd:latest
+gh attestation verify oci://ghcr.io/blindport/blindportd:latest \
+  -R blindport/blindport \
+  --signer-workflow blindport/blindport/.github/workflows/release.yaml
+```
+
+See [Self-hosting Blindport](docs/self-hosting.md) for control-plane and relay
+deployment. Agent configuration is documented in [docs/agent.md](docs/agent.md).
+Maintainer release steps are documented in [docs/releasing.md](docs/releasing.md).
+
+## Development stack
 
 ```sh
 docker compose -f docker/docker-compose.yaml up -d --build
@@ -71,7 +105,8 @@ keypair. Routed e2e coverage requires a Linux host with kernel WireGuard support
 
 The development Compose stack is not a production deployment. Production canary
 and split control/relay manifests, secret preparation, and validation are under
-[`deploy/`](deploy/OPERATIONS.md).
+[`deploy/`](deploy/OPERATIONS.md). These deployments pull released GHCR images;
+they do not build application images on the server.
 
 ## Local development
 
@@ -146,4 +181,4 @@ and provider route.
 
 ## License
 
-TBD.
+Blindport is available under the [MIT License](LICENSE).

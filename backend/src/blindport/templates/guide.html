@@ -25,7 +25,7 @@
 
     <section id="install">
       <h2>Install and verify</h2>
-      <p>Versioned static Linux binaries are available for amd64, arm64, and armv7. Download the binary and matching <code>.sha256</code> file for the same release, then verify before installation:</p>
+      <p>Versioned static Linux binaries are available for amd64, arm64, and armv7 from <a href="https://github.com/blindport/blindport/releases">GitHub Releases</a>. Download the binary and matching <code>.sha256</code> file for the same release, then verify before installation:</p>
       {% if blindportd_version != "dev" %}
       <ul>
         <li><a href="/downloads/blindportd-{{ blindportd_version }}-linux-amd64">Linux amd64</a> (<a href="/downloads/blindportd-{{ blindportd_version }}-linux-amd64.sha256">checksum</a>)</li>
@@ -82,7 +82,7 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     <section id="docker">
       <h2>Docker discovery</h2>
       <p>One long-running agent continuously discovers running containers, registers declared orders, refreshes active provisioning, and starts or stops mappings without a restart.</p>
-      <p>Build the local image from a trusted source checkout with <code>docker build -f docker/go.Dockerfile --target blindportd -t blindportd:{{ blindportd_version }} .</code>, then use:</p>
+      <p>Pull <code>ghcr.io/blindport/blindportd</code> from GHCR. For production, use the digest-pinned reference in the matching release's <code>blindport-images.env</code> asset. Set <code>DOCKER_GID</code> to the numeric group owner from <code>stat -c '%g' /var/run/docker.sock</code>, and make the mounted token owner-only for UID/GID 10001.</p>
       <pre><code>services:
   reverse-proxy:
     labels:
@@ -93,19 +93,34 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
       tech.blindport.mapping.web.http_challenge_upstream: "reverse-proxy:80"
 
   blindportd:
-    image: blindportd:{{ blindportd_version }}
+    image: ghcr.io/blindport/blindportd:{{ blindportd_version if blindportd_version != "dev" else "latest" }}
+    init: true
+    restart: unless-stopped
     command: ["--docker"]
+    group_add: ["${DOCKER_GID}"]
     environment:
       BLINDPORT_BACKEND_URL: "{{ request.url.scheme }}://{{ request.url.netloc }}"
       BLINDPORT_TOKEN_FILE: /run/secrets/blindport_token
-      BLINDPORT_STATE_DIR: /var/lib/blindportd
+      BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/blindport/token:/run/secrets/blindport_token:ro
-      - blindportd-state:/var/lib/blindportd</code></pre>
+      - blindport-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+volumes:
+  blindport-state:</code></pre>
       <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
       <p>The mapping name is a stable order key. Relay also requires a domain; Port accepts TCP or UDP; IP uses framed delivery. Existing <code>.subscription</code> labels remain supported. With NWC, an eligible new declaration starts one initial payment; without NWC it appears in the dashboard for manual payment. Removing a label stops forwarding but does not cancel service.</p>
       <p>Run the agent and targets on a shared Docker network so labeled upstream names resolve. The agent polls every 10 seconds by default; set <code>BLINDPORT_DOCKER_POLL_INTERVAL</code> between <code>1s</code> and <code>5m</code>.</p>
+    </section>
+
+    <section>
+      <h2>Source and support</h2>
+      <p>Review the <a href="https://github.com/blindport/blindport">source code</a> or <a href="https://github.com/blindport/blindport/issues">open an issue</a>. Report security vulnerabilities privately using the repository's security policy.</p>
     </section>
 
     <section id="tls">

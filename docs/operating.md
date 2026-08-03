@@ -439,8 +439,8 @@ still verifies that the database is at this build's migration head and refuses
 to serve unless the revisions match exactly. Consequently, an old application
 image also refuses to run against a newer schema.
 
-This repository was unpublished when Alembic was introduced. Discard old
-pre-Alembic prototype SQLite volumes and start with a fresh database. Do not
+Pre-Alembic prototype SQLite volumes are unsupported. Discard them and start
+with a fresh database. Do not
 stamp an old volume as current because its schema has not been migration-tested.
 
 The product namespace rename is also a clean break. Do not reuse a pre-rename

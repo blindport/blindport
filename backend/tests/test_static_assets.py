@@ -228,8 +228,16 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "Troubleshooting",
         "Current limitations",
         "CAP_NET_ADMIN",
+        "ghcr.io/blindport/blindportd",
+        "https://github.com/blindport/blindport/issues",
     ):
         assert term in guide
+
+    base = _asset("templates/base.html")
+    assert "https://github.com/blindport/blindport" in base
+    assert "https://github.com/blindport/blindport/issues" in base
+    assert "Build the local image" not in guide
+    assert "volumes:\n  blindport-state:" in guide
 
 
 def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
@@ -262,6 +270,7 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
     guide = client.get("/guide")
     terms = client.get("/terms")
     swagger = client.get("/docs")
+    openapi = client.get("/openapi.json")
     signup = client.post("/api/v2/signup").json()
     client.cookies.set("blindport_token", signup["token"])
     dashboard = client.get("/dashboard")
@@ -280,6 +289,7 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
 
     assert swagger.status_code == 200
     assert "Swagger UI" in swagger.text
+    assert openapi.json()["info"]["version"] == "0.2.0"
     assert signup["account_id"] in dashboard.text
     assert "User #" not in dashboard.text
     assert "User</th>" not in admin.text

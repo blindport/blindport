@@ -1,16 +1,24 @@
 # Production deployment artifacts
 
-These Compose stacks are intentionally single-instance deployments. The canary is for
-manual and friends testing on one VPS. The split stack separates control and relay
+These Compose stacks are intentionally single-instance deployments. The canary runs on
+one dedicated host. The split stack separates control and relay
 failure domains, but neither stack provides database, proxy, relay, or API high
 availability.
+
+Start with the [self-hosting guide](../docs/self-hosting.md). Report deployment
+problems through the [public issue tracker](https://github.com/blindport/blindport/issues),
+but report vulnerabilities through the process in [SECURITY.md](../SECURITY.md).
 
 ## Required host preparation
 
 Use an immutable release reference for every Blindport image, for example
-`ghcr.io/OWNER/blindport-relay:v0.1.0@sha256:<manifest-digest>`. Copy the relevant
+`ghcr.io/blindport/blindport-relay:v0.2.0@sha256:<manifest-digest>`. Download the
+`blindport-images.env` asset from the matching
+[GitHub release](https://github.com/blindport/blindport/releases), then copy the relevant
 `.env.example` to `.env`, replace all example addresses and names, and create a
-separate `secrets/` directory. Do not modify or use the checked-in placeholder files.
+separate `secrets/` directory. The `.env.example` image tags are convenient discovery
+aliases only; replace them with the release asset's digest-pinned values before going
+live. Do not modify or use the checked-in placeholder files.
 Set all monthly and yearly price variables to positive satoshi amounts; the checked-in
 defaults are 7,500/75,000 for IP, 1,500/15,000 for Port, and 3,000/30,000 for Relay.
 Keep `BILLING_YEARLY_ENABLED=false` until migration `0009` is applied and all old
@@ -212,7 +220,7 @@ docker compose --env-file .env -f compose.yaml ps
 
 ## Validation
 
-The repository validator uses example values and does not start services, contact
+The repository validator uses example values and does not start Blindport services, contact
 LND, request certificates, or require usable secrets:
 
 ```sh

@@ -95,6 +95,17 @@ lists running containers and refreshes backend provisioning every 10 seconds by
 default. Set `--docker-poll-interval` or `BLINDPORT_DOCKER_POLL_INTERVAL` to a
 duration between `1s` and `5m`.
 
+Pull the agent from GHCR. Stable aliases are convenient for evaluation, but use
+the digest-pinned `BLINDPORTD_IMAGE` reference from the matching release's
+`blindport-images.env` asset in production:
+
+```sh
+docker pull ghcr.io/blindport/blindportd:latest
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+sudo install -d -o 10001 -g 10001 -m 0700 /etc/blindport
+sudo install -o 10001 -g 10001 -m 0600 /path/to/blindport-token /etc/blindport/token
+```
+
 Declare a Relay order before it exists in the dashboard by using the mapping name
 as its stable account-scoped order key:
 
@@ -110,16 +121,29 @@ services:
       tech.blindport.mapping.web.http_challenge_upstream: "web:80"
 
   blindportd:
-    image: ghcr.io/OWNER/blindportd:v0.1.0
+    image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    init: true
+    restart: unless-stopped
     command: ["--docker"]
+    group_add:
+      - "${DOCKER_GID}"
     environment:
       BLINDPORT_BACKEND_URL: "https://api.blindport.example"
       BLINDPORT_TOKEN_FILE: /run/secrets/blindport_token
-      BLINDPORT_STATE_DIR: /var/lib/blindportd
+      BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/blindport/token:/run/secrets/blindport_token:ro
-      - blindportd-state:/var/lib/blindportd
+      - blindport-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+volumes:
+  blindport-state:
 ```
 
 Mapping names contain lowercase ASCII letters, digits, underscores, or hyphens,
@@ -158,6 +182,10 @@ socket proxy where practical. Anyone allowed to deploy labeled containers can
 publish internal services and, for an NWC-enabled account, initiate bounded
 subscription spending. Restrict deployment authority and enforce a wallet-side
 NWC budget.
+
+The published image runs as UID/GID `10001`. Set `DOCKER_GID` to the numeric
+group owner of the host socket so Compose grants only the required supplementary
+group. The mounted token must be owned by `10001:10001` with mode `0600`.
 
 The token file must be a regular, owner-only file owned by the daemon's
 effective UID. Linux opens it with `O_NOFOLLOW`; symlinks, oversized values,
