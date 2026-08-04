@@ -33,6 +33,9 @@ bytes, including a valid zero-length datagram. Stream IDs are nonzero unsigned
 32-bit integers. One
 tunnel permits a configured number of concurrent streams (256 by default, with
 a hard maximum of 1024), and each stream has a 32-item, 512 KiB receive queue.
+When a TCP queue is full, the tunnel reader waits and propagates backpressure to
+the sender; TCP bytes are never dropped and temporary saturation does not close
+the stream. UDP retains the nonblocking drop policy described below.
 Serialized frame writes have a 10-second deadline; a peer that stops reading
 loses that tunnel instead of holding its write mutex and ingress handlers
 indefinitely.

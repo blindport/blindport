@@ -140,14 +140,17 @@ func (c *Conn) Run() error {
 				_ = s.Close()
 				continue
 			}
-			if s.queuePayload(f.Data) {
+			if s.Protocol == protocol.TransportTCP {
+				// Blocking this tunnel's reader propagates bounded TCP backpressure to
+				// the peer. Dropping or closing here corrupts otherwise healthy streams
+				// whenever their public-facing socket is temporarily slower.
+				s.queueTCPPayload(f.Data)
 				continue
 			}
-			if s.Protocol == protocol.TransportTCP {
-				// TCP cannot discard bytes without corrupting the stream. Closing the
-				// saturated stream asks the peer to stop producing data for it.
-				_ = s.Close()
-			} else if c.onUDPDrop != nil {
+			if s.queueUDPPayload(f.Data) {
+				continue
+			}
+			if c.onUDPDrop != nil {
 				c.onUDPDrop()
 			}
 		case protocol.TypeClose:
@@ -172,11 +175,17 @@ func (c *Conn) Close() error {
 	if c.closed.Swap(true) {
 		return nil
 	}
-	return c.raw.Close()
+	err := c.raw.Close()
+	c.closeStreams()
+	return err
 }
 
 func (c *Conn) closeAll() {
 	_ = c.Close()
+	c.closeStreams()
+}
+
+func (c *Conn) closeStreams() {
 	c.streamsMu.Lock()
 	streams := make([]*Stream, 0, len(c.streams))
 	for _, s := range c.streams {
@@ -257,7 +266,17 @@ func normalizeProtocol(value string) (protocol.Transport, error) {
 	}
 }
 
-func (s *Stream) queuePayload(payload []byte) bool {
+func (s *Stream) queueTCPPayload(payload []byte) {
+	size := int64(len(payload))
+	s.rxQueued.Add(size)
+	select {
+	case s.rxCh <- payload:
+	case <-s.doneCh:
+		s.rxQueued.Add(-size)
+	}
+}
+
+func (s *Stream) queueUDPPayload(payload []byte) bool {
 	size := int64(len(payload))
 	for {
 		queued := s.rxQueued.Load()
@@ -377,11 +396,15 @@ func (s *Stream) WriteDatagram(p []byte) (int, error) {
 
 // Close signals the peer to close the stream and tears down local state.
 func (s *Stream) Close() error {
+	closed := false
 	s.once.Do(func() {
-		_ = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeClose, Stream: s.ID})
 		s.conn.removeStream(s.ID)
 		close(s.doneCh)
+		closed = true
 	})
+	if closed {
+		_ = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeClose, Stream: s.ID})
+	}
 	return nil
 }
 

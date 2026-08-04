@@ -286,9 +286,9 @@ func TestRunIgnoresDataForUnknownStream(t *testing.T) {
 	}
 }
 
-func TestRunClosesOnlySaturatedStream(t *testing.T) {
+func TestRunBackpressuresSaturatedTCPStreamWithoutLosingData(t *testing.T) {
 	tunnelSide, peer := net.Pipe()
-	opened := make(chan *Stream, 2)
+	opened := make(chan *Stream, 1)
 	c := New(tunnelSide, func(stream *Stream) { opened <- stream })
 	runDone := make(chan error, 1)
 	go func() { runDone <- c.Run() }()
@@ -296,39 +296,86 @@ func TestRunClosesOnlySaturatedStream(t *testing.T) {
 	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeOpen, Stream: 1}); err != nil {
 		t.Fatalf("open saturated stream: %v", err)
 	}
-	first := <-opened
-	for range streamReceiveQueueSize + 1 {
-		if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeData, Stream: 1, Data: []byte("queued")}); err != nil {
-			t.Fatalf("fill receive queue: %v", err)
+	stream := <-opened
+	payload := bytes.Repeat([]byte("q"), protocol.MaxDataPayloadSize)
+	frameCount := streamReceiveQueueSize + 16
+	writeDone := make(chan error, 1)
+	go func() {
+		for range frameCount {
+			if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeData, Stream: 1, Data: payload}); err != nil {
+				writeDone <- err
+				return
+			}
 		}
-	}
-	closed, err := protocol.ReadFrame(peer)
-	if err != nil {
-		t.Fatalf("read saturated stream close: %v", err)
-	}
-	if closed.Type != protocol.TypeClose || closed.Stream != first.ID {
-		t.Fatalf("close frame = %+v", closed)
+		writeDone <- protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypePing})
+	}()
+
+	select {
+	case err := <-writeDone:
+		t.Fatalf("producer did not encounter backpressure: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
 
-	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeOpen, Stream: 2}); err != nil {
-		t.Fatalf("open healthy stream: %v", err)
-	}
-	second := <-opened
-	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeData, Stream: 2, Data: []byte("healthy")}); err != nil {
-		t.Fatalf("write healthy stream: %v", err)
-	}
-	buf := make([]byte, 16)
-	n, err := second.Read(buf)
+	got, err := io.ReadAll(io.LimitReader(stream, int64(frameCount*len(payload))))
 	if err != nil {
-		t.Fatalf("read healthy stream: %v", err)
+		t.Fatal(err)
 	}
-	if string(buf[:n]) != "healthy" {
-		t.Fatalf("healthy stream data = %q", buf[:n])
+	if len(got) != frameCount*len(payload) || !bytes.Equal(got, bytes.Repeat(payload, frameCount)) {
+		t.Fatalf("received %d bytes after backpressure, want %d", len(got), frameCount*len(payload))
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("finish producer: %v", err)
+	}
+	reply, err := protocol.ReadFrame(peer)
+	if err != nil || reply.Type != protocol.TypePong {
+		t.Fatalf("post-backpressure reply = %+v, %v", reply, err)
+	}
+	if _, ok := c.getStream(stream.ID); !ok {
+		t.Fatal("TCP receive backpressure closed the stream")
 	}
 
 	_ = peer.Close()
 	if err := <-runDone; err != nil {
 		t.Fatalf("Run error = %v, want nil", err)
+	}
+}
+
+func TestSaturatedTCPQueueUnblocksWhenTunnelCloses(t *testing.T) {
+	tunnelSide, peer := net.Pipe()
+	opened := make(chan *Stream, 1)
+	c := New(tunnelSide, func(stream *Stream) { opened <- stream })
+	runDone := make(chan error, 1)
+	go func() { runDone <- c.Run() }()
+
+	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeOpen, Stream: 1}); err != nil {
+		t.Fatal(err)
+	}
+	<-opened
+	writeDone := make(chan error, 1)
+	go func() {
+		for range streamReceiveQueueSize + 2 {
+			if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeData, Stream: 1, Data: []byte("blocked")}); err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- nil
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("tunnel reader remained blocked on a saturated TCP queue")
+	}
+	_ = peer.Close()
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("peer writer remained blocked after tunnel close")
 	}
 }
 
