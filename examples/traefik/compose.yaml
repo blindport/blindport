@@ -3,7 +3,6 @@ name: blindport-traefik-demo
 services:
   site:
     image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
-    user: "101:101"
     restart: unless-stopped
     volumes:
       - ./site/index.html:/usr/share/nginx/html/index.html:ro
@@ -12,74 +11,59 @@ services:
     labels:
       traefik.enable: "true"
       traefik.docker.network: blindport-demo-ingress
-      traefik.http.routers.demo.rule: "Host(`${DOMAIN:?set DOMAIN in .env}`)"
-      traefik.http.routers.demo.entrypoints: websecure
-      traefik.http.routers.demo.tls: "true"
-      traefik.http.routers.demo.tls.certresolver: letsencrypt
-      traefik.http.services.demo.loadbalancer.server.port: "80"
-      tech.blindport.mapping.demo.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID in .env}"
-      tech.blindport.mapping.demo.upstream: traefik:443
-      tech.blindport.mapping.demo.http_challenge_upstream: traefik:80
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /var/cache/nginx:size=16m,uid=101,gid=101,mode=0700
-      - /var/run:size=1m,uid=101,gid=101,mode=0700
-
+      traefik.http.routers.site.rule: "Host(`${DOMAIN:?set DOMAIN in .env}`)"
+      traefik.http.routers.site.entrypoints: websecure
+      traefik.http.routers.site.tls: "true"
+      traefik.http.routers.site.tls.certresolver: letsencrypt
+      traefik.http.services.site.loadbalancer.server.port: "80"
+      tech.blindport.mapping.site.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID in .env}"
+      tech.blindport.mapping.site.upstream: traefik:443
+      tech.blindport.mapping.site.http_challenge_upstream: traefik:80
   traefik:
     image: traefik:v3.6@sha256:31267173a15b4944e797a76ffd9c419707c8d8b32fe5b610f80cd0cfa05f372d
     restart: unless-stopped
+    depends_on:
+      blindportd:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c", "sleep 30; exec /entrypoint.sh \"$$@\"", "--"]
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=blindport-demo-ingress
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?set ACME_EMAIL in .env}
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    environment:
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL: "${ACME_EMAIL:-}"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
       - letsencrypt:/letsencrypt
     networks:
       - ingress
-    read_only: true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
 
   blindportd:
-    image: ${BLINDPORTD_IMAGE:?set BLINDPORTD_IMAGE in .env}
+    image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    user: "${BLINDPORTD_USER:-0:0}"
     init: true
     restart: unless-stopped
+    depends_on:
+      site:
+        condition: service_started
     command: ["--docker"]
     group_add:
-      - "${DOCKER_GID:?set DOCKER_GID in .env}"
+      - "${DOCKER_GID:-0}"
     environment:
-      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:?set BLINDPORT_BACKEND_URL in .env}"
+      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
+      BLINDPORT_DOCKER_POLL_INTERVAL: 1s
       BLINDPORT_TOKEN_FILE: /run/secrets/blindport_token
       BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ${BLINDPORT_TOKEN_PATH:?set BLINDPORT_TOKEN_PATH in .env}:/run/secrets/blindport_token:ro
-      - ${BLINDPORT_STATE_PATH:?set BLINDPORT_STATE_PATH in .env}:/var/lib/blindport
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ${BLINDPORT_TOKEN_PATH:-${HOME}/.config/blindport/token}:/run/secrets/blindport_token:ro
+      - ${BLINDPORT_STATE_PATH:-${HOME}/.local/state/blindport}:/var/lib/blindport
     networks:
       - ingress
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
 
 volumes:
   letsencrypt:
