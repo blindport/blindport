@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blindport demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #f4f6f3;
+      color: #17201b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    main { width: min(100%, 640px); }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 24px;
+      color: #245c3d;
+      font-weight: 700;
+    }
+    .status::before {
+      content: "";
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #29a866;
+      box-shadow: 0 0 0 5px #d9efe3;
+    }
+    h1 {
+      margin: 0 0 16px;
+      font-size: 5rem;
+      line-height: 0.95;
+      letter-spacing: 0;
+    }
+    p {
+      max-width: 54ch;
+      margin: 0;
+      color: #526159;
+      font-size: 1.1rem;
+      line-height: 1.65;
+    }
+    dl {
+      margin: 40px 0 0;
+      border-top: 1px solid #ccd3ce;
+    }
+    dl > div {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid #ccd3ce;
+    }
+    dt { color: #69766f; }
+    dd {
+      margin: 0;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 480px) {
+      h1 { font-size: 3.5rem; }
+      dl > div { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="status">HTTPS is online</div>
+    <h1>It works.</h1>
+    <p>This static page is served by Nginx. Traefik obtained the TLS certificate from Let's Encrypt, and Blindport carries the connection to this Docker network.</p>
+    <dl>
+      <div><dt>Origin</dt><dd>nginx</dd></div>
+      <div><dt>TLS</dt><dd>traefik + let's encrypt</dd></div>
+      <div><dt>Ingress</dt><dd>blindport relay</dd></div>
+    </dl>
+  </main>
+</body>
+</html>

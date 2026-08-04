@@ -69,6 +69,7 @@ and automatic renewals.
 | `backend/` | FastAPI control plane, allocation, payments, UI, and tunnel certificate authority. |
 | `go/` | `blindport-relay`, `blindportd`, and the v0 tunnel implementation. |
 | `docker/` | Container builds and the local Compose stack. |
+| `examples/` | Runnable customer deployment examples. |
 | `tests/e2e/` | Full-stack tests for payment, authorization, and forwarding. |
 | `docs/` | Architecture, protocol, and operating notes. |
 | `tools/nwc-helper/` | Single-shot Bun NWC protocol executable built into the backend image. |
@@ -100,6 +101,9 @@ the checked-out source locally.
 See [Self-hosting Blindport](docs/self-hosting.md) for control-plane and relay
 deployment. Agent configuration is documented in [docs/agent.md](docs/agent.md).
 Maintainer release steps are documented in [docs/releasing.md](docs/releasing.md).
+
+To publish a complete HTTPS site without host port forwarding, follow the
+[Blindport, Traefik, and Let's Encrypt example](examples/traefik/README.md).
 
 ## Development stack
 

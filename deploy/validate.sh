@@ -131,9 +131,61 @@ assert "\"status_code\": 404" in onion_config
 '
 }
 
+traefik_example_check() {
+    docker compose \
+        --env-file "$root/examples/traefik/.env.example" \
+        -f "$root/examples/traefik/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+assert set(services) == {"blindportd", "site", "traefik"}
+assert all(not service.get("ports") for service in services.values())
+assert all(set(service["networks"]) == {"ingress"} for service in services.values())
+assert all(service.get("read_only") is True for service in services.values())
+assert all("ALL" in service.get("cap_drop", []) for service in services.values())
+assert services["site"]["user"] == "101:101"
+
+labels = services["site"]["labels"]
+assert labels["tech.blindport.mapping.demo.subscription"] == "12312312-3123-4123-8123-123123123123"
+assert labels["tech.blindport.mapping.demo.upstream"] == "traefik:443"
+assert labels["tech.blindport.mapping.demo.http_challenge_upstream"] == "traefik:80"
+assert labels["traefik.http.routers.demo.rule"] == "Host(`your-name.relay.blindport.com`)"
+assert labels["traefik.http.routers.demo.entrypoints"] == "websecure"
+assert labels["traefik.http.routers.demo.tls"] == "true"
+assert labels["traefik.http.routers.demo.tls.certresolver"] == "letsencrypt"
+
+command = services["traefik"]["command"]
+assert "--providers.docker.exposedbydefault=false" in command
+assert "--entrypoints.web.address=:80" in command
+assert "--entrypoints.websecure.address=:443" in command
+assert "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web" in command
+
+for name in ("blindportd", "traefik"):
+    socket = next(
+        volume
+        for volume in services[name]["volumes"]
+        if volume["target"] == "/var/run/docker.sock"
+    )
+    assert socket["read_only"] is True
+
+state = next(
+    volume
+    for volume in services["blindportd"]["volumes"]
+    if volume["target"] == "/var/lib/blindport"
+)
+assert state["type"] == "bind"
+assert state["source"] == "/var/lib/blindport"
+assert not state.get("read_only", False)
+'
+}
+
 compose_check deploy/canary
 compose_check deploy/split/control
 compose_check deploy/split/relay
+compose_check examples/traefik
 backend_healthcheck_policy_check deploy/canary
 backend_healthcheck_policy_check deploy/split/control
 smtp_secret_scope_check deploy/canary
@@ -148,5 +200,6 @@ caddy_admin_policy_check deploy/canary Caddyfile.internal
 caddy_admin_policy_check deploy/split/control
 canary_proxy_protocol_check Caddyfile
 canary_proxy_protocol_check Caddyfile.internal
+traefik_example_check
 
 echo "deployment configuration validation passed"
