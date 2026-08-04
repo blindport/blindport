@@ -194,11 +194,14 @@ Blindport Relay reads only enough TLS ClientHello bytes to obtain SNI, then repl
 those bytes through the tunnel. User TLS remains end to end between the external
 client and local upstream.
 
-When the optional HTTP-01 listener is enabled, it accepts only one bounded
-HTTP/1.1 `GET` below `/.well-known/acme-challenge/`. The validated Host selects
-the same active Blindport Relay claim, but the tunnel stream has destination port 80
-so `blindportd` can dial a separate plaintext challenge upstream. Other methods,
-paths, request bodies, malformed hosts, and general HTTP traffic are rejected.
+When the optional HTTP listener is enabled, it accepts bounded HTTP/1.1 `GET`
+requests with a canonical domain Host. Requests below
+`/.well-known/acme-challenge/` select the same active Blindport Relay claim, but
+the tunnel stream has destination port 80 so `blindportd` can dial a separate
+plaintext challenge upstream. Other paths receive a bodyless `308 Permanent
+Redirect` to the same host, path, and query over HTTPS without a tunnel lookup.
+Other methods, request bodies, malformed hosts, and malformed ACME paths are
+rejected.
 
 One tunnel carries length-prefixed JSON control frames and multiplexed stream or
 datagram frames. See `protocol.md` for framing limits and claim definitions.

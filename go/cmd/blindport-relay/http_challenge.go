@@ -28,6 +28,7 @@ const (
 
 const (
 	challengeSuccess = iota
+	challengeRedirected
 	challengeInvalid
 	challengeRateLimited
 	challengeNoTunnel
@@ -41,7 +42,7 @@ var (
 )
 
 func (r *relay) serveHTTPChallenges(ctx context.Context, ln net.Listener) {
-	r.log.Info("HTTP-01 challenge ingress listening", "addr", ln.Addr().String())
+	r.log.Info("HTTP redirect and HTTP-01 ingress listening", "addr", ln.Addr().String())
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -73,7 +74,7 @@ func (r *relay) handleHTTPChallengeConn(conn net.Conn) {
 		writeChallengeError(conn, http.StatusBadRequest)
 		return
 	}
-	host, err := validateChallengeRequest(req)
+	host, isChallenge, err := validateHTTPIngressRequest(req)
 	if err != nil {
 		r.metrics.challenge[challengeInvalid].Add(1)
 		writeChallengeError(conn, challengeStatus(err))
@@ -87,6 +88,11 @@ func (r *relay) handleHTTPChallengeConn(conn net.Conn) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
+	if !isChallenge {
+		r.metrics.challenge[challengeRedirected].Add(1)
+		writeHTTPSRedirect(conn, host, req)
+		return
+	}
 	t := r.getTunnel("domain:" + host)
 	if t == nil {
 		r.metrics.challenge[challengeNoTunnel].Add(1)
@@ -176,33 +182,50 @@ type challengeRequestError struct{ status int }
 func (e challengeRequestError) Error() string { return http.StatusText(e.status) }
 
 func validateChallengeRequest(req *http.Request) (string, error) {
+	host, isChallenge, err := validateHTTPIngressRequest(req)
+	if err != nil {
+		return "", err
+	}
+	if !isChallenge {
+		return "", challengeRequestError{status: http.StatusNotFound}
+	}
+	return host, nil
+}
+
+func validateHTTPIngressRequest(req *http.Request) (string, bool, error) {
 	if req.Method != http.MethodGet {
-		return "", challengeRequestError{status: http.StatusMethodNotAllowed}
+		return "", false, challengeRequestError{status: http.StatusMethodNotAllowed}
 	}
 	if req.ProtoMajor != 1 || req.ProtoMinor != 1 {
-		return "", errors.New("HTTP/1.1 required")
+		return "", false, errors.New("HTTP/1.1 required")
 	}
 	if req.ContentLength > 0 || len(req.TransferEncoding) != 0 || req.Header.Get("Expect") != "" || req.Header.Get("Upgrade") != "" {
-		return "", errors.New("request body is not allowed")
+		return "", false, errors.New("request body is not allowed")
 	}
 	host, err := canonicalChallengeHost(req.Host)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if req.URL.IsAbs() {
 		absoluteHost, err := canonicalChallengeHost(req.URL.Host)
 		if err != nil || req.URL.Scheme != "http" || req.URL.User != nil || absoluteHost != host {
-			return "", errors.New("absolute request target does not match Host")
+			return "", false, errors.New("absolute request target does not match Host")
 		}
 	}
-	if req.URL.RawQuery != "" || req.URL.Fragment != "" || req.URL.RawPath != "" || !strings.HasPrefix(req.URL.Path, challengePathPrefix) {
-		return "", challengeRequestError{status: http.StatusNotFound}
+	if req.URL.Fragment != "" || req.URL.Path == "" || !strings.HasPrefix(req.URL.Path, "/") {
+		return "", false, errors.New("invalid request target")
+	}
+	if !strings.HasPrefix(req.URL.Path, challengePathPrefix) {
+		return host, false, nil
+	}
+	if req.URL.RawQuery != "" || req.URL.RawPath != "" {
+		return "", false, challengeRequestError{status: http.StatusNotFound}
 	}
 	token := strings.TrimPrefix(req.URL.Path, challengePathPrefix)
 	if !challengeToken.MatchString(token) {
-		return "", challengeRequestError{status: http.StatusNotFound}
+		return "", false, challengeRequestError{status: http.StatusNotFound}
 	}
-	return host, nil
+	return host, true, nil
 }
 
 func canonicalChallengeHost(value string) (string, error) {
@@ -265,6 +288,21 @@ func writeChallengeError(conn net.Conn, status int) {
 	_ = conn.SetWriteDeadline(time.Now().Add(challengeWriteTimeout))
 	message := http.StatusText(status) + "\n"
 	_, _ = fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", status, http.StatusText(status), len(message), message)
+}
+
+func writeHTTPSRedirect(conn net.Conn, host string, req *http.Request) {
+	_ = conn.SetWriteDeadline(time.Now().Add(challengeWriteTimeout))
+	target := *req.URL
+	target.Scheme = "https"
+	target.Host = host
+	target.User = nil
+	_, _ = fmt.Fprintf(
+		conn,
+		"HTTP/1.1 %d %s\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+		http.StatusPermanentRedirect,
+		http.StatusText(http.StatusPermanentRedirect),
+		target.String(),
+	)
 }
 
 type headerLimitReader struct {

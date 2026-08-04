@@ -71,6 +71,21 @@ haproxy_check() {
         haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
 }
 
+canary_http_routing_check() {
+    python3 - "$root/deploy/canary/haproxy.cfg" <<'PY'
+from pathlib import Path
+import sys
+
+config = Path(sys.argv[1]).read_text(encoding="utf-8")
+assert 'acl api_host hdr(host),field(1,:) -i "${API_DOMAIN}"' in config
+assert "use_backend api_http if api_host" in config
+assert "default_backend relay_http" in config
+assert "backend relay_http" in config
+assert "acl acme_path" not in config
+assert "relay_acme" not in config
+PY
+}
+
 caddy_runtime_policy_check() {
     docker run --rm \
         --user 1000:1000 \
@@ -138,30 +153,40 @@ traefik_example_check() {
         config --format json \
         | python3 -c '
 import json
+import os
 import sys
 
 services = json.load(sys.stdin)["services"]
 assert set(services) == {"blindportd", "site", "traefik"}
 assert all(not service.get("ports") for service in services.values())
 assert all(set(service["networks"]) == {"ingress"} for service in services.values())
-assert all(service.get("read_only") is True for service in services.values())
-assert all("ALL" in service.get("cap_drop", []) for service in services.values())
-assert services["site"]["user"] == "101:101"
+assert services["blindportd"]["user"] == "0:0"
+assert services["blindportd"]["depends_on"]["site"]["condition"] == "service_started"
+assert services["traefik"]["depends_on"]["blindportd"]["condition"] == "service_started"
+assert services["traefik"]["entrypoint"] == [
+    "/bin/sh",
+    "-c",
+    "sleep 30; exec /entrypoint.sh \"$$@\"",
+    "--",
+]
+assert services["blindportd"]["environment"]["BLINDPORT_DOCKER_POLL_INTERVAL"] == "1s"
 
 labels = services["site"]["labels"]
-assert labels["tech.blindport.mapping.demo.subscription"] == "12312312-3123-4123-8123-123123123123"
-assert labels["tech.blindport.mapping.demo.upstream"] == "traefik:443"
-assert labels["tech.blindport.mapping.demo.http_challenge_upstream"] == "traefik:80"
-assert labels["traefik.http.routers.demo.rule"] == "Host(`your-name.relay.blindport.com`)"
-assert labels["traefik.http.routers.demo.entrypoints"] == "websecure"
-assert labels["traefik.http.routers.demo.tls"] == "true"
-assert labels["traefik.http.routers.demo.tls.certresolver"] == "letsencrypt"
+assert labels["tech.blindport.mapping.site.subscription"] == "12312312-3123-4123-8123-123123123123"
+assert labels["tech.blindport.mapping.site.upstream"] == "traefik:443"
+assert labels["tech.blindport.mapping.site.http_challenge_upstream"] == "traefik:80"
+assert labels["traefik.http.routers.site.rule"] == "Host(`your-name.relay.blindport.com`)"
+assert labels["traefik.http.routers.site.entrypoints"] == "websecure"
+assert labels["traefik.http.routers.site.tls"] == "true"
+assert labels["traefik.http.routers.site.tls.certresolver"] == "letsencrypt"
 
 command = services["traefik"]["command"]
 assert "--providers.docker.exposedbydefault=false" in command
 assert "--entrypoints.web.address=:80" in command
 assert "--entrypoints.websecure.address=:443" in command
 assert "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web" in command
+assert not any("acme.email" in item for item in command)
+assert services["traefik"]["environment"]["TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL"] == ""
 
 for name in ("blindportd", "traefik"):
     socket = next(
@@ -177,8 +202,48 @@ state = next(
     if volume["target"] == "/var/lib/blindport"
 )
 assert state["type"] == "bind"
-assert state["source"] == "/var/lib/blindport"
+assert state["source"] == os.path.expanduser("~/.local/state/blindport")
 assert not state.get("read_only", False)
+
+token = next(
+    volume
+    for volume in services["blindportd"]["volumes"]
+    if volume["target"] == "/run/secrets/blindport_token"
+)
+assert token["source"] == os.path.expanduser("~/.config/blindport/token")
+'
+
+    DOCKER_SOCKET_PATH=/run/user/1234/docker.sock docker compose \
+        --env-file "$root/examples/traefik/.env.example" \
+        -f "$root/examples/traefik/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+for name in ("blindportd", "traefik"):
+    socket = next(
+        volume
+        for volume in services[name]["volumes"]
+        if volume["target"] == "/var/run/docker.sock"
+    )
+    assert socket["source"] == "/run/user/1234/docker.sock"
+'
+
+    BLINDPORTD_USER=1234:1234 DOCKER_GID=999 ACME_EMAIL=owner@example.com \
+        docker compose \
+        --env-file "$root/examples/traefik/.env.example" \
+        -f "$root/examples/traefik/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+assert services["blindportd"]["user"] == "1234:1234"
+assert services["blindportd"]["group_add"] == ["999"]
+assert services["traefik"]["environment"]["TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL"] == "owner@example.com"
 '
 }
 
@@ -194,6 +259,7 @@ caddy_check deploy/canary
 caddy_check deploy/canary Caddyfile.internal
 caddy_check deploy/split/control
 haproxy_check deploy/canary
+canary_http_routing_check
 caddy_runtime_policy_check
 caddy_admin_policy_check deploy/canary
 caddy_admin_policy_check deploy/canary Caddyfile.internal

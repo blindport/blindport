@@ -70,8 +70,9 @@ by group or others. On Linux these properties are checked after opening with
 
 `http_challenge_upstream` is optional and valid only for Blindport Relay. It receives
 relay-validated ACME HTTP-01 requests on destination port 80. Normal Blindport Relay
-TLS continues to `upstream` on port 443. Legacy mode exposes the same setting
-through `--http-challenge-upstream` or
+TLS continues to `upstream` on port 443. Other valid HTTP GET requests receive a
+permanent same-host HTTPS redirect directly from the relay and never reach the
+agent. Legacy mode exposes the same setting through `--http-challenge-upstream` or
 `BLINDPORT_HTTP_CHALLENGE_UPSTREAM`.
 
 Every configured subscription must appear in the backend's active provisioning

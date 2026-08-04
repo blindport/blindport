@@ -197,6 +197,108 @@ func TestHTTPChallengeNoTunnelDoesNotOpenGeneralProxy(t *testing.T) {
 	}
 }
 
+func TestHTTPIngressRedirectsWithoutTunnel(t *testing.T) {
+	r := newChallengeTestRelay(t, 10, 2)
+
+	client, server := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		r.handleHTTPChallengeConn(&challengeAddrConn{Conn: server})
+		close(done)
+	}()
+	_, _ = io.WriteString(client, "GET /some%20path?q=a%2Fb&x=1 HTTP/1.1\r\nHost: Example.COM:80\r\n\r\n")
+	response, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	_ = client.Close()
+	<-done
+
+	if response.StatusCode != http.StatusPermanentRedirect {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusPermanentRedirect)
+	}
+	if got := response.Header.Get("Location"); got != "https://example.com/some%20path?q=a%2Fb&x=1" {
+		t.Fatalf("Location = %q", got)
+	}
+	if len(body) != 0 || response.ContentLength != 0 {
+		t.Fatalf("body/content length = %q/%d", body, response.ContentLength)
+	}
+	if r.metrics.challenge[challengeRedirected].Load() != 1 || r.metrics.streams[claimKindIndex(protocol.ClaimRelay)].total.Load() != 0 {
+		t.Fatal("redirect metrics or stream count are incorrect")
+	}
+}
+
+func TestHTTPIngressRedirectSecurity(t *testing.T) {
+	tests := []struct {
+		name         string
+		request      string
+		wantStatus   int
+		wantLocation string
+	}{
+		{
+			name:         "query cannot select another host",
+			request:      "GET /login?next=https://evil.example/path HTTP/1.1\r\nHost: Example.COM:80\r\n\r\n",
+			wantStatus:   http.StatusPermanentRedirect,
+			wantLocation: "https://example.com/login?next=https://evil.example/path",
+		},
+		{
+			name:         "network path remains on canonical host",
+			request:      "GET //evil.example/path HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			wantStatus:   http.StatusPermanentRedirect,
+			wantLocation: "https://example.com//evil.example/path",
+		},
+		{
+			name:         "encoded header delimiters remain encoded",
+			request:      "GET /path?value=%0d%0aX-Injected:%20yes HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			wantStatus:   http.StatusPermanentRedirect,
+			wantLocation: "https://example.com/path?value=%0d%0aX-Injected:%20yes",
+		},
+		{
+			name:       "absolute target cannot select another host",
+			request:    "GET http://evil.example/path HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "absolute target cannot contain user info",
+			request:    "GET http://user@example.com/path HTTP/1.1\r\nHost: example.com\r\n\r\n",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := newChallengeTestRelay(t, 10, 2)
+			client, server := net.Pipe()
+			done := make(chan struct{})
+			go func() {
+				r.handleHTTPChallengeConn(&challengeAddrConn{Conn: server})
+				close(done)
+			}()
+			_, _ = io.WriteString(client, test.request)
+			response, err := http.ReadResponse(bufio.NewReader(client), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			_ = client.Close()
+			<-done
+
+			if response.StatusCode != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.StatusCode, test.wantStatus)
+			}
+			if got := response.Header.Get("Location"); got != test.wantLocation {
+				t.Fatalf("Location = %q, want %q", got, test.wantLocation)
+			}
+			if got := response.Header.Get("X-Injected"); got != "" {
+				t.Fatalf("injected response header = %q", got)
+			}
+		})
+	}
+}
+
 func TestHTTPChallengeListenerFailureRemovesReadiness(t *testing.T) {
 	r := newChallengeTestRelay(t, 10, 2)
 	ctx, cancel := context.WithCancel(context.Background())

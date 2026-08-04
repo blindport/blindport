@@ -242,13 +242,14 @@ their normal DNS-01 workflow. Managed names can use the optional HTTP-01 path:
 3. Configure the origin ACME client to answer HTTP-01 on that second upstream.
 4. Test with the CA staging directory before requesting a production certificate.
 
-The relay accepts only bounded HTTP/1.1 `GET` requests for
-`/.well-known/acme-challenge/<token>`, processes one response, and closes the
-connection. It does not forward arbitrary HTTP. Validation requests are rate
-limited, but Blindport cannot determine whether a CA issued a certificate and does
-not enforce an issuance count. Operators must account for CA limits across all
-managed names. Let's Encrypt currently documents a limit of 50 new certificates
-per registered domain per seven days; keep `RELAY_MANAGED_DOMAIN_CAP`
+The relay accepts only bounded HTTP/1.1 `GET` requests with canonical domain Host
+headers. It forwards `/.well-known/acme-challenge/<token>` to the dedicated
+challenge upstream, processes one response, and closes the connection. Other valid
+paths receive a bodyless same-host `308` redirect to HTTPS and are never forwarded.
+HTTP ingress is rate limited, but Blindport cannot determine whether a CA issued a
+certificate and does not enforce an issuance count. Operators must account for CA
+limits across all managed names. Let's Encrypt currently documents a limit of 50
+new certificates per registered domain per seven days; keep `RELAY_MANAGED_DOMAIN_CAP`
 conservative and prefer customer-owned domains as usage grows.
 
 The backend is a recursive DNS client, not an authoritative DNS server. Give it
@@ -291,7 +292,7 @@ movement outside Blindport.
 | Surface | Protocol | Required access |
 | --- | --- | --- |
 | backend API (8000 or reverse-proxied 443) | TCP | users and relays |
-| Blindport Relay HTTP-01 listener | TCP 80 | public ACME validators |
+| Blindport Relay HTTP redirect and HTTP-01 listener | TCP 80 | public HTTP clients and ACME validators |
 | relay control (default 5443) | TCP with mutual TLS | blindportd clients |
 | dedicated Blindport IP listener ports | TCP | public clients |
 | shared Blindport Port TCP range | TCP | public clients |
@@ -356,11 +357,11 @@ the proxy is the observed source, and large NAT populations share one source
 budget. Adjust these limits for that topology; Blindport does not currently parse
 the PROXY protocol.
 
-HTTP-01 adds `BLINDPORT_RELAY_MAX_HTTP_CHALLENGES`,
+HTTP ingress adds the backward-compatible `BLINDPORT_RELAY_MAX_HTTP_CHALLENGES`,
 `BLINDPORT_RELAY_HTTP_CHALLENGE_RATE`, and
-`BLINDPORT_RELAY_HTTP_CHALLENGE_BURST`. The rate is valid challenge requests per
-minute per direct peer and counts requests, not certificates. Behind one L7
-frontend, all validations share that frontend's allowance.
+`BLINDPORT_RELAY_HTTP_CHALLENGE_BURST` settings. The rate counts valid redirect and
+challenge requests per minute per direct peer, not certificate issuances. Behind
+one L7 frontend, all requests share that frontend's allowance.
 
 `BLINDPORT_RELAY_SHUTDOWN_TIMEOUT` defaults to 15 seconds. On `SIGINT` or
 `SIGTERM`, the relay stops accepting traffic, closes every registered tunnel,

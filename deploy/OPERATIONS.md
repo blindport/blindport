@@ -168,20 +168,20 @@ HAProxy sends PROXY v2 only on the API path, and Caddy accepts it only from loop
 so Caddy and the backend receive the API client address in `X-Forwarded-For`. The
 relay protocol does not accept PROXY headers. Every SNI connection therefore appears
 to come from HAProxy; the Compose file deliberately sets relay per-source ingress to
-the total ingress limit while retaining the total and SNI-peek bounds. HTTP challenge
-rate limits also see HAProxy as one source and are explicitly sized for multi-vantage
-ACME retries.
+the total ingress limit while retaining the total and SNI-peek bounds. HTTP ingress
+rate limits also see HAProxy as one source and are explicitly sized for redirects and
+multi-vantage ACME retries.
 
 The Caddy `servers` selector must remain the exact `127.0.0.1:8443` listener produced
 by `default_bind`; a port-only selector silently omits the PROXY protocol wrapper.
 HTTP/3 remains disabled on this listener because the HAProxy frontend proxies only
 TCP and must not advertise the internal `:8443` UDP endpoint to public clients.
 
-API ACME HTTP traffic is routed to Caddy. For a Blindport Relay domain, HAProxy sends only
-`/.well-known/acme-challenge/` to the relay's loopback HTTP challenge listener. That
-listener validates and bounds the request, applies challenge-specific concurrency and
-rate limits, then opens a port-80 stream. Other HTTP paths are rejected. The friend
-must configure `BLINDPORT_HTTP_CHALLENGE_UPSTREAM=host:port`, the
+API HTTP traffic is routed to Caddy. For every other host, HAProxy sends HTTP to the
+relay's loopback listener. That listener validates and bounds each request, redirects
+non-ACME GETs to the same canonical host, path, and query over HTTPS, and forwards valid
+`/.well-known/acme-challenge/` requests over a port-80 stream. The origin must configure
+`BLINDPORT_HTTP_CHALLENGE_UPSTREAM=host:port`, the
 `-http-challenge-upstream` flag, a static mapping's `http_challenge_upstream`, or the
 equivalent Docker label. `blindportd` refuses port-80 streams when that separate
 plaintext HTTP upstream is absent; normal Blindport Relay TLS remains on its usual upstream.
@@ -209,7 +209,7 @@ Run `pull`, the one-shot `migrate` command, and `up -d` as shown for the canary,
 ## Split relay host
 
 Ensure `RELAY_PUBLIC_IP` is configured on the relay host. The relay binds that IP on
-`:80` for HTTP-01 only, `:443` for SNI, `:5443` for client control, and every
+`:80` for HTTPS redirects and HTTP-01, `:443` for SNI, `:5443` for client control, and every
 configured TCP/UDP Blindport Port. Relay admin remains on loopback
 `:9090`. Permit the relay host's private source address through the control Caddy
 allowlist and verify `BACKEND_INTERNAL_URL` resolves over that private route.

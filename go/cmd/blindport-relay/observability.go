@@ -282,7 +282,7 @@ func (m *relayMetrics) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	writeFixedOutcomes(w, "blindport_relay_control_outcomes_total", "Control handshake outcomes.", controlOutcomeLabels, m.control[:])
 	writeFixedOutcomes(w, "blindport_relay_auth_outcomes_total", "Backend authorization outcomes.", authOutcomeLabels, m.auth[:])
 	writeFixedOutcomes(w, "blindport_relay_sni_outcomes_total", "SNI inspection outcomes.", sniOutcomeLabels, m.sni[:])
-	writeFixedOutcomes(w, "blindport_relay_http_challenge_outcomes_total", "HTTP-01 forwarding outcomes.", challengeOutcomeLabels, m.challenge[:])
+	writeFixedOutcomes(w, "blindport_relay_http_challenge_outcomes_total", "HTTP ingress outcomes.", challengeOutcomeLabels, m.challenge[:])
 	writeHelpType(w, "blindport_relay_ready", "Whether the relay is ready.", "gauge")
 	ready := uint64(0)
 	if m.health.ready(time.Now()) {
@@ -317,7 +317,7 @@ var claimKindLabels = []string{"ip", "port", "relay"}
 var controlOutcomeLabels = []string{"accepted", "bad_hello", "inventory_denied", "auth_denied", "auth_error", "identity_denied", "write_error"}
 var authOutcomeLabels = []string{"allowed", "denied", "infrastructure", "secret"}
 var sniOutcomeLabels = []string{"success", "invalid", "no_tunnel"}
-var challengeOutcomeLabels = []string{"success", "invalid", "rate_limited", "no_tunnel", "upstream_error"}
+var challengeOutcomeLabels = []string{"success", "redirected", "invalid", "rate_limited", "no_tunnel", "upstream_error"}
 
 const (
 	listenerKindCount = 5

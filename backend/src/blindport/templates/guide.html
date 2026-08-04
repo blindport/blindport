@@ -133,7 +133,7 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     <section id="tls">
       <h2>TLS and HTTP-01</h2>
       <p>Blindport Relay reads ClientHello SNI and forwards the original TCP stream. Keep the TLS private key and certificate at the origin and configure the TLS service as the mapping's <code>upstream</code>. Blindport does not terminate customer TLS.</p>
-      <p>For a managed hostname, the optional <code>http_challenge_upstream</code> receives only relay-validated ACME HTTP-01 requests on port 80. It must be a separate plaintext challenge listener. Normal HTTP and all TLS traffic continue to the regular upstream. Customer-owned domains can use their normal DNS-01 workflow.</p>
+      <p>For a managed hostname, the optional <code>http_challenge_upstream</code> receives only relay-validated ACME HTTP-01 requests on port 80. It must be a separate plaintext challenge listener. The relay permanently redirects other valid HTTP GET requests to the same HTTPS URL without forwarding them. All TLS traffic continues to the regular upstream. Customer-owned domains can use their normal DNS-01 workflow.</p>
       <p>Customer-owned names must be subdomains with a direct CNAME. Zone apexes, wildcard claims, CNAME flattening, and CDN-proxied records are not supported. Keep the record in DNS-only mode so Blindport can verify it before each invoice.</p>
     </section>
 

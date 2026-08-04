@@ -29,9 +29,10 @@ The three products use distinct ingress identities:
 - **Blindport Port** leases exactly one `(shared public IP, port, TCP or UDP)` socket.
   Shared addresses are separate inventory from dedicated Blindport IP addresses.
 - **Blindport Relay** leases one hostname. A shared TLS listener reads ClientHello SNI
-  without terminating TLS and forwards the raw TCP stream. An optional,
-  challenge-only HTTP listener forwards bounded ACME HTTP-01 validation requests
-  to a separate customer upstream; it is not a general HTTP relay.
+  without terminating TLS and forwards the raw TCP stream. An optional HTTP
+  listener permanently redirects normal GET requests to the same HTTPS URL and
+  forwards bounded ACME HTTP-01 validation requests to a separate customer
+  upstream; it is not a general HTTP relay.
 
 TLS for user traffic, when used, terminates at the user's upstream. Blindport Port
 supports TCP or UDP. WireGuard Blindport IP is the only routed interface mode; framed

@@ -706,6 +706,22 @@ def test_relay_end_to_end():
             assert challenge_status == 200, challenge_response
             assert challenge_response == challenge_body
 
+            with socket.create_connection(
+                (SNI_HOST, HTTP_CHALLENGE_PORT), timeout=5
+            ) as sock:
+                sock.sendall(
+                    f"GET /relay/path?source=http HTTP/1.1\r\n"
+                    f"Host: {domain}\r\n"
+                    "Connection: close\r\n\r\n".encode()
+                )
+                response = HTTPResponse(sock)
+                response.begin()
+                assert response.status == 308
+                assert response.getheader("Location") == (
+                    f"https://{domain}/relay/path?source=http"
+                )
+                assert response.read() == b""
+
             client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             client_context.check_hostname = False
             client_context.verify_mode = ssl.CERT_NONE

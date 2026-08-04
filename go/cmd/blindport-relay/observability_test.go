@@ -108,6 +108,7 @@ func TestAdminEndpointsAndMetricsUseFixedLabels(t *testing.T) {
 		"blindport_relay_wireguard_prefixes_active 0",
 		"blindport_relay_ready 1",
 		`blindport_relay_http_challenge_outcomes_total{outcome="success"} 0`,
+		`blindport_relay_http_challenge_outcomes_total{outcome="redirected"} 0`,
 	} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("metrics missing %q:\n%s", required, text)
