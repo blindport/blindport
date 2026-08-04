@@ -512,6 +512,12 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
             page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
             assert page.get_by_text("Framed tunnel").first.is_visible()
             assert page.locator("#wireGuardSetupCommand").count() == 0
+            card = page.locator(f'[data-sub-id="{subscription["id"]}"]')
+            assert card.get_by_text("Subscription ID").is_visible()
+            assert card.get_by_text(subscription["id"], exact=True).is_visible()
+            assert page.get_by_text(
+                "One blindportd process runs all active framed subscriptions"
+            ).is_visible()
             command = page.locator("#framedConfigInstallCommand").text_content()
             assert subscription["id"] in command
             assert '"upstream": "127.0.0.1:443"' in command

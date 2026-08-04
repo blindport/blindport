@@ -231,10 +231,13 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         if subscription.delivery == DeliveryMode.WIREGUARD
         and subscription.status != SubscriptionStatus.CANCELLED
     ]
+    client_subscriptions = [
+        subscription
+        for subscription in framed_subscriptions
+        if subscription.status == SubscriptionStatus.ACTIVE
+    ]
     client_mappings: list[dict[str, str]] = []
-    for subscription in framed_subscriptions:
-        if subscription.status != SubscriptionStatus.ACTIVE:
-            continue
+    for subscription in client_subscriptions:
         if subscription.product == ProductType.RELAY:
             mapping = {
                 "subscription_id": str(subscription.public_id),
@@ -256,6 +259,7 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
             user=user,
             subscriptions=subs,
             framed_subscriptions=framed_subscriptions,
+            client_subscriptions=client_subscriptions,
             wireguard_subscriptions=wireguard_subscriptions,
             client_config_json=(
                 json.dumps({"version": 1, "mappings": client_mappings}, indent=2)

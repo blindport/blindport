@@ -49,6 +49,7 @@
             <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
           </header>
           <dl class="sub-details">
+            <div><dt>Subscription ID</dt><dd><code>{{ s.public_id }}</code></dd></div>
             <div><dt>Configuration</dt><dd>{% if s.product.value == "ip" %}{{ s.delivery.value | capitalize }}{% elif s.product.value == "port" %}{{ s.transport.value | upper }} tuple{% else %}{{ "Managed subdomain" if s.domain_is_managed else "Customer domain" }}{% endif %}</dd></div>
             <div><dt>Delivery</dt><dd>{{ "Framed tunnel" if s.delivery.value == "framed" else "Routed WireGuard /32" }}</dd></div>
             <div><dt>Ingress</dt><dd>{% if s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.product.value == "relay" and s.domain %}<code>{{ s.domain }}</code>{% else %}<span class="muted">Assigned after payment</span>{% endif %}</dd></div>
@@ -273,6 +274,15 @@
       <h3>Framed tunnel</h3>
       <p><strong>Use this mode for your Relay and Port subscriptions and for framed IP subscriptions.</strong> It connects out to Blindport and forwards only the configured local services without host network privileges.</p>
       {% if client_config_json %}
+      <p>One <code>blindportd</code> process runs all active framed subscriptions in this configuration. Pending, expired, and cancelled subscriptions are not included.</p>
+      <ul>
+        {% for s in client_subscriptions %}
+        <li>
+          <code>{{ s.public_id }}</code>
+          ({% if s.product.value == "relay" %}Relay, <code>{{ s.domain }}</code>{% elif s.product.value == "port" %}Port, <code>{{ s.assigned_ip }}:{{ s.assigned_port }}/{{ s.transport.value }}</code>{% else %}IP, <code>{{ s.assigned_ip }}</code>{% endif %})
+        </li>
+        {% endfor %}
+      </ul>
       <p>Review the local upstream addresses, then run these three steps in order.</p>
       <details>
         <summary>Generated configuration</summary>

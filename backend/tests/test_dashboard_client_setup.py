@@ -95,6 +95,11 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
 
     assert "Framed tunnel" in dashboard
     assert "Install generated configuration" in dashboard
+    assert f"<dt>Subscription ID</dt><dd><code>{public_id}</code></dd>" in dashboard
+    assert "One <code>blindportd</code> process runs all active framed subscriptions" in dashboard
+    assert (
+        f"<code>{public_id}</code>\n          (Relay, <code>setup.relay.test</code>)" in dashboard
+    )
     assert config == {
         "version": 1,
         "mappings": [
@@ -181,6 +186,10 @@ def test_generated_nonrelay_mappings_use_local_port_80(app_client) -> None:
         port_id: {"subscription_id": port_id, "upstream": "127.0.0.1:80"},
         ip_id: {"subscription_id": ip_id, "upstream": "127.0.0.1:80"},
     }
+
+    dashboard = _dashboard(client, token)
+    assert f"<code>{port_id}</code>" in dashboard
+    assert f"<code>{ip_id}</code>" in dashboard
 
 
 def test_setup_visibility_tracks_non_cancelled_delivery_modes(app_client) -> None:
