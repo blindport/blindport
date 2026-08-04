@@ -227,7 +227,7 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path)
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0014", "0014")
+    assert database_revisions(engine) == ("0015", "0015")
     verify_database_current(engine)
 
     inspector = inspect(engine)
@@ -400,7 +400,7 @@ def test_0014_upgrades_deployed_0013_subscription_identity(tmp_path) -> None:
 
     original_public_ids = {row.id: str(row.public_id) for row in rows}
     downgrade_database(engine, "0013")
-    assert database_revisions(engine) == ("0013", "0014")
+    assert database_revisions(engine) == ("0013", "0015")
     downgraded = Table("subscription", MetaData(), autoload_with=engine)
     assert "public_id" in downgraded.c
     assert any(
@@ -648,7 +648,7 @@ def test_sqlite_upgrade_from_0003_preserves_tcp_lease_and_adds_transport_identit
 
     with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
         downgrade_database(engine, "0003")
-    assert database_revisions(engine) == ("0014", "0014")
+    assert database_revisions(engine) == ("0015", "0015")
     assert any(
         constraint["column_names"] == ["assigned_ip", "assigned_port", "transport"]
         for constraint in inspect(engine).get_unique_constraints("subscription")
@@ -671,6 +671,49 @@ def test_sqlite_upgrade_from_0006_adds_empty_rate_limit_tables(tmp_path) -> None
     with engine.connect() as connection:
         assert connection.execute(select(buckets)).all() == []
         assert connection.execute(select(maintenance)).all() == []
+
+
+def test_0015_scrubs_only_direct_client_rate_limit_rows(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path)
+    upgrade_database(engine, "0014")
+    buckets = Table("ratelimitbucket", MetaData(), autoload_with=engine)
+    maintenance = Table("ratelimitmaintenance", MetaData(), autoload_with=engine)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            maintenance.insert().values(
+                name="rate-limit-buckets",
+                next_cleanup_at=now,
+                bucket_count=4,
+            )
+        )
+        for index, scope in enumerate(("signup", "admin-login", "browser-login", "payment-create")):
+            connection.execute(
+                buckets.insert().values(
+                    scope=scope,
+                    identifier_hash=f"{index:064x}",
+                    window_start=now,
+                    request_count=1,
+                    expires_at=now,
+                )
+            )
+        connection.execute(
+            maintenance.insert().values(
+                name="unrelated-maintenance",
+                next_cleanup_at=now,
+                bucket_count=99,
+            )
+        )
+
+    upgrade_database(engine)
+
+    with engine.connect() as connection:
+        scopes = connection.execute(select(buckets.c.scope)).scalars().all()
+        counts = dict(
+            connection.execute(select(maintenance.c.name, maintenance.c.bucket_count)).all()
+        )
+    assert scopes == ["payment-create"]
+    assert counts == {"rate-limit-buckets": 1, "unrelated-maintenance": 99}
 
 
 def test_sqlite_0008_backfills_unique_uuid4_public_ids_and_enforces_immutability(
@@ -833,7 +876,7 @@ def test_sqlite_0009_backfills_billing_snapshots_and_supports_rolling_inserts(
     assert (rolling_payment.billing_term, rolling_payment.period_days) == ("monthly", 30)
 
     downgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0014")
+    assert database_revisions(engine) == ("0008", "0015")
     assert "billing_term" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -877,7 +920,7 @@ def test_sqlite_downgrade_rejects_wireguard_subscriptions(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="cannot downgrade while WireGuard subscriptions exist"):
         downgrade_database(engine, "0004")
 
-    assert database_revisions(engine) == ("0014", "0014")
+    assert database_revisions(engine) == ("0015", "0015")
     assert "delivery" in {column["name"] for column in inspect(engine).get_columns("subscription")}
     assert inspect(engine).has_table("wireguardpeer")
 
@@ -888,10 +931,10 @@ def test_sqlite_downgrade_and_upgrade_round_trip(tmp_path) -> None:
     downgrade_database(engine, "base")
 
     assert inspect(engine).get_table_names() == ["alembic_version"]
-    assert database_revisions(engine) == (None, "0014")
+    assert database_revisions(engine) == (None, "0015")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0014", "0014")
+    assert database_revisions(engine) == ("0015", "0015")
 
 
 def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypatch) -> None:
@@ -910,7 +953,7 @@ def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypa
 
     assert not inspect(engine).has_table("injected_migration_failure")
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0014", "0014")
+    assert database_revisions(engine) == ("0015", "0015")
 
 
 def test_all_persisted_datetimes_are_timezone_aware_in_metadata() -> None:
@@ -940,15 +983,15 @@ def test_current_cli_can_check_head(tmp_path, monkeypatch, capsys) -> None:
 
     assert cli.main(["upgrade"]) == 0
     assert cli.main(["current", "--check"]) == 0
-    assert "current: 0014\nhead: 0014" in capsys.readouterr().out
+    assert "current: 0015\nhead: 0015" in capsys.readouterr().out
 
     cli.main(["downgrade", "base"])
     capsys.readouterr()
     assert cli.main(["current", "--check"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "current: unversioned\nhead: 0014\n"
+    assert captured.out == "current: unversioned\nhead: 0015\n"
     assert captured.err == (
-        "error: database revision is unversioned, expected migration head 0014\n"
+        "error: database revision is unversioned, expected migration head 0015\n"
     )
     assert "Traceback" not in captured.err
 
@@ -977,8 +1020,8 @@ def test_current_cli_check_subprocess_exits_without_traceback(tmp_path) -> None:
     )
 
     assert result.returncode == 1
-    assert result.stdout == "current: unversioned\nhead: 0014\n"
+    assert result.stdout == "current: unversioned\nhead: 0015\n"
     assert result.stderr == (
-        "error: database revision is unversioned, expected migration head 0014\n"
+        "error: database revision is unversioned, expected migration head 0015\n"
     )
     assert "Traceback" not in result.stderr

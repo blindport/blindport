@@ -48,7 +48,7 @@ func (r *relay) serveUDPPort(ctx context.Context, packetConn net.PacketConn, ip 
 		destination: destination, ctx: ctx,
 		associations: make(map[string]*udpAssociation),
 	}
-	r.log.Info("port UDP listening", "addr", destination)
+	r.log.Info("shared UDP port listener ready")
 	buffer := make([]byte, protocol.MaxDatagramPayloadSize)
 	for {
 		n, source, err := packetConn.ReadFrom(buffer)
@@ -148,7 +148,7 @@ func (a *udpAssociation) run() {
 	defer a.finish()
 	stream, err := a.tunnel.OpenStream("udp", a.source.String(), a.forwarder.destination)
 	if err != nil {
-		a.forwarder.relay.log.Warn("open UDP association stream", "err", err)
+		a.forwarder.relay.log.Warn("open UDP association stream failed")
 		return
 	}
 	a.stream = stream

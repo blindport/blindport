@@ -1,10 +1,13 @@
-"""Durable fixed-window request rate limiting for public endpoints."""
+"""Fixed-window request limits without persisting direct-client addresses."""
 
 from __future__ import annotations
 
 import hashlib
+import heapq
 import hmac
 import math
+import secrets
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -20,6 +23,69 @@ from ..config import settings
 from ..core.models import RateLimitBucket, RateLimitMaintenance
 
 _CLEANUP_LEASE_NAME = "rate-limit-buckets"
+
+
+@dataclass
+class _DirectBucket:
+    window_end: datetime
+    request_count: int
+
+
+class DirectRateLimiter:
+    """Process-local direct-client limits whose identifiers expire with the window."""
+
+    def __init__(self, max_buckets: int) -> None:
+        self._max_buckets = max_buckets
+        self._secret = secrets.token_bytes(32)
+        self._buckets: dict[tuple[str, int, bytes], _DirectBucket] = {}
+        self._expirations: list[tuple[float, tuple[str, int, bytes]]] = []
+        self._lock = threading.Lock()
+
+    def _discard_expired(self, current_timestamp: float) -> None:
+        while self._expirations and self._expirations[0][0] <= current_timestamp:
+            _, key = heapq.heappop(self._expirations)
+            self._buckets.pop(key, None)
+
+    def consume(
+        self,
+        spec: RateLimitSpec,
+        identifier: str,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        current = now or datetime.now(UTC)
+        window_epoch = int(current.timestamp()) // spec.window_seconds * spec.window_seconds
+        window_start = datetime.fromtimestamp(window_epoch, UTC)
+        window_end = window_start + timedelta(seconds=spec.window_seconds)
+        message = (
+            f"blindport:direct-rate-limit:v1:{spec.scope.value}:{window_epoch}:{identifier}"
+        ).encode()
+        identifier_hash = hmac.new(self._secret, message, hashlib.sha256).digest()
+        key = (spec.scope.value, window_epoch, identifier_hash)
+
+        with self._lock:
+            self._discard_expired(current.timestamp())
+
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                if len(self._buckets) >= self._max_buckets:
+                    retry_after = spec.window_seconds
+                    if self._expirations:
+                        retry_after = max(
+                            1,
+                            math.ceil(self._expirations[0][0] - current.timestamp()),
+                        )
+                    raise RateLimitExceeded(retry_after)
+                bucket = _DirectBucket(window_end, 0)
+                self._buckets[key] = bucket
+                heapq.heappush(self._expirations, (window_end.timestamp(), key))
+
+            bucket.request_count += 1
+            consumed = bucket.request_count
+
+        if consumed > spec.requests:
+            retry_after = max(1, math.ceil((window_end - current).total_seconds()))
+            raise RateLimitExceeded(retry_after)
 
 
 class RateLimitScope(StrEnum):
@@ -86,8 +152,19 @@ def account_identifier(user_id: int) -> str:
     return f"account:{user_id}"
 
 
+def enforce_direct_rate_limit(
+    request: Request,
+    spec: RateLimitSpec,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Consume a transient direct-client bucket owned by this application process."""
+    limiter: DirectRateLimiter = request.app.state.direct_rate_limiter
+    limiter.consume(spec, direct_client_identifier(request), now=now)
+
+
 def hash_identifier(scope: RateLimitScope, identifier: str) -> str:
-    """Return a domain-separated HMAC so raw IPs and account ids are never persisted."""
+    """Return a domain-separated HMAC for durable account-derived identifiers."""
     message = f"blindport:rate-limit:v1:{scope.value}:{identifier}".encode()
     return hmac.new(settings.token_hash_key.encode(), message, hashlib.sha256).hexdigest()
 
@@ -203,7 +280,9 @@ def enforce_rate_limit(
     *,
     now: datetime | None = None,
 ) -> None:
-    """Atomically consume one request from a durable fixed window."""
+    """Atomically consume a durable account-derived fixed window."""
+    if identifier.startswith("client:"):
+        raise ValueError("direct-client identifiers must use transient rate limiting")
     now = now or datetime.now(UTC)
     window_epoch = int(now.timestamp()) // spec.window_seconds * spec.window_seconds
     window_start = datetime.fromtimestamp(window_epoch, UTC)

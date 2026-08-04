@@ -1,9 +1,10 @@
-"""Durable public request rate-limit behavior and SQLite atomicity tests."""
+"""Transient direct-client and durable account rate-limit tests."""
 
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 from uuid import uuid4
 
 from cryptography import x509
@@ -33,7 +34,7 @@ def _csr() -> str:
     return request.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
 
-def test_signup_uses_trusted_client_and_returns_retry_after(app_client, monkeypatch) -> None:
+def test_signup_uses_transient_trusted_client_limit(app_client, monkeypatch) -> None:
     from blindport.core.models import RateLimitBucket
     from blindport.db import engine
     from blindport.services import rate_limits
@@ -48,11 +49,10 @@ def test_signup_uses_trusted_client_and_returns_retry_after(app_client, monkeypa
     assert limited.json()["detail"] == "request rate limit exceeded"
     assert int(limited.headers["Retry-After"]) >= 1
     with Session(engine) as session:
-        bucket = session.exec(
+        buckets = session.exec(
             select(RateLimitBucket).where(RateLimitBucket.scope == "signup")
-        ).one()
-    assert len(bucket.identifier_hash) == 64
-    assert bucket.identifier_hash not in {"198.51.100.1", "203.0.113.2", "testclient"}
+        ).all()
+    assert buckets == []
 
 
 def test_admin_login_is_direct_client_limited(app_client, monkeypatch) -> None:
@@ -68,7 +68,7 @@ def test_admin_login_is_direct_client_limited(app_client, monkeypatch) -> None:
     assert int(limited.headers["Retry-After"]) >= 1
 
 
-def test_regular_browser_login_has_a_separate_durable_limit(app_client, monkeypatch) -> None:
+def test_regular_browser_login_has_a_separate_transient_limit(app_client, monkeypatch) -> None:
     from blindport.core.models import RateLimitBucket
     from blindport.db import engine
     from blindport.services import rate_limits
@@ -82,9 +82,50 @@ def test_regular_browser_login_has_a_separate_durable_limit(app_client, monkeypa
     assert limited.status_code == 429
     assert limited.headers["Cache-Control"] == "no-store"
     with Session(engine) as session:
-        assert session.exec(
-            select(RateLimitBucket).where(RateLimitBucket.scope == "browser-login")
-        ).one()
+        assert (
+            session.exec(
+                select(RateLimitBucket).where(RateLimitBucket.scope == "browser-login")
+            ).all()
+            == []
+        )
+
+
+def test_direct_client_bucket_expires_without_persistent_cleanup() -> None:
+    from blindport.services.rate_limits import DirectRateLimiter, RateLimitScope, RateLimitSpec
+
+    limiter = DirectRateLimiter(max_buckets=1)
+    spec = RateLimitSpec(RateLimitScope.SIGNUP, requests=1, window_seconds=60)
+    start = datetime(2030, 1, 1, tzinfo=UTC)
+
+    limiter.consume(spec, "client:198.51.100.1", now=start)
+    limiter.consume(spec, "client:203.0.113.2", now=start + timedelta(seconds=60))
+
+
+def test_direct_client_limit_is_atomic_across_threads() -> None:
+    from blindport.services.rate_limits import (
+        DirectRateLimiter,
+        RateLimitExceeded,
+        RateLimitScope,
+        RateLimitSpec,
+    )
+
+    limiter = DirectRateLimiter(max_buckets=10)
+    spec = RateLimitSpec(RateLimitScope.SIGNUP, requests=7, window_seconds=60)
+    start = datetime(2030, 1, 1, tzinfo=UTC)
+    barrier = Barrier(20)
+
+    def consume() -> bool:
+        barrier.wait(timeout=5)
+        try:
+            limiter.consume(spec, "client:198.51.100.1", now=start)
+        except RateLimitExceeded:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        allowed = list(executor.map(lambda _: consume(), range(20)))
+
+    assert sum(allowed) == 7
 
 
 def test_payment_retries_work_and_accounts_do_not_share_quota(app_client, monkeypatch) -> None:
@@ -240,11 +281,11 @@ def test_cleanup_lease_deletes_only_one_bounded_stale_batch(app_client, monkeypa
             )
         session.commit()
     monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_CLEANUP_BATCH_SIZE", 2)
-    spec = rate_limits.RateLimitSpec(rate_limits.RateLimitScope.SIGNUP, 10, 60)
+    spec = rate_limits.RateLimitSpec(rate_limits.RateLimitScope.PAYMENT_CREATE, 10, 60)
     with Session(engine) as session:
-        rate_limits.enforce_rate_limit(session, spec, "client:cleanup", now=now)
+        rate_limits.enforce_rate_limit(session, spec, "account:cleanup", now=now)
     with Session(engine) as session:
-        rate_limits.enforce_rate_limit(session, spec, "client:cleanup-second", now=now)
+        rate_limits.enforce_rate_limit(session, spec, "account:cleanup-second", now=now)
 
     with Session(engine) as session:
         stale_rows = session.exec(
@@ -288,10 +329,10 @@ def test_bucket_cardinality_cap_fails_closed_without_evicting_active_quota(
             )
         session.commit()
     monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_MAX_BUCKETS", 2)
-    spec = rate_limits.RateLimitSpec(rate_limits.RateLimitScope.SIGNUP, 10, 60)
+    spec = rate_limits.RateLimitSpec(rate_limits.RateLimitScope.PAYMENT_CREATE, 10, 60)
     with Session(engine) as session:
         try:
-            rate_limits.enforce_rate_limit(session, spec, "client:over-cap", now=now)
+            rate_limits.enforce_rate_limit(session, spec, "account:over-cap", now=now)
         except rate_limits.RateLimitExceeded as error:
             assert error.retry_after == rate_limits.settings.RATE_LIMIT_CLEANUP_INTERVAL_SECONDS
         else:  # pragma: no cover - keeps the failure message focused

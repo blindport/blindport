@@ -384,12 +384,22 @@ That secret protects relay-to-backend resolution and certificate issuance, so it
 must not be exposed to clients. Relay certificate requests are restricted to
 configured control endpoint hostnames and inventory addresses.
 
-Public signup, admin login, payment creation, domain verification, and client
-certificate enrollment use durable fixed-window rate limits. Direct-client
-limits trust the ASGI client address, so expose the backend only through a proxy
-whose forwarded-address handling is explicitly trusted. The application never
-parses arbitrary forwarded headers itself. Per-account subscription and open
-payment limits remain authoritative across source addresses.
+Public signup and browser/admin login use process-local fixed-window limits. They
+trust the ASGI client address and HMAC it with a per-process key. Buckets stop
+enforcing at the end of the window and are removed on a subsequent direct-limit
+check; they are never written to the database.
+Expose the backend only through a proxy whose forwarded-address handling is
+explicitly trusted. The application never parses arbitrary forwarded headers
+itself. Payment creation, domain verification, and client certificate enrollment
+use durable account-derived limits. Per-account subscription and open payment
+limits remain authoritative across source addresses.
+
+Hosted Blindport access logging is disabled at HAProxy, Caddy, and Uvicorn. Relay
+logs use fixed event and claim-kind fields rather than visitor addresses, leased
+addresses, domains, or account identifiers. Production containers use journald,
+and the host must install `deploy/journald-blindport.conf` to delete operational
+logs within 30 days. Source addresses still exist transiently in sockets, active
+admission state, tunnel metadata, routed packets, and customer-controlled origins.
 
 Production requires `LEGACY_CLIENT_CERT_ISSUANCE_ENABLED=false`. Current agents
 enroll a locally generated Ed25519 key through the v2 CSR endpoint and retain it

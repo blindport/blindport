@@ -99,7 +99,7 @@ func (m *certificateManager) run(ctx context.Context) {
 				break
 			}
 			m.health.observeAuth(err)
-			m.log.Warn("relay server certificate renewal failed", "err", err)
+			m.log.Warn("relay server certificate renewal failed")
 			if !sleepContext(ctx, backoff) {
 				return
 			}

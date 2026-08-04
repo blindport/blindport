@@ -33,7 +33,7 @@ from ..services.rate_limits import (
     RateLimitExceeded,
     RateLimitScope,
     account_identifier,
-    direct_client_identifier,
+    enforce_direct_rate_limit,
     enforce_rate_limit,
     spec_for,
 )
@@ -59,11 +59,7 @@ def signup(
     """Create an anonymous account identified externally only by its public UUID."""
     response.headers["Cache-Control"] = "no-store"
     try:
-        enforce_rate_limit(
-            session,
-            spec_for(RateLimitScope.SIGNUP),
-            direct_client_identifier(request),
-        )
+        enforce_direct_rate_limit(request, spec_for(RateLimitScope.SIGNUP))
     except RateLimitExceeded as error:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -145,11 +141,7 @@ def anonymous_order(
     """Create an anonymous account and unbilled pending subscription atomically."""
     response.headers["Cache-Control"] = "no-store"
     try:
-        enforce_rate_limit(
-            session,
-            spec_for(RateLimitScope.SIGNUP),
-            direct_client_identifier(request),
-        )
+        enforce_direct_rate_limit(request, spec_for(RateLimitScope.SIGNUP))
     except RateLimitExceeded as error:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

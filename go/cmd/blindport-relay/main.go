@@ -279,7 +279,7 @@ func (r *relay) serveControl(ctx context.Context, rawLn net.Listener) {
 	if r.tlsConfig != nil {
 		ln = tls.NewListener(rawLn, r.tlsConfig)
 	}
-	r.log.Info("control plane listening", "addr", rawLn.Addr().String(), "mtls", r.tlsConfig != nil)
+	r.log.Info("control plane listening", "mtls", r.tlsConfig != nil)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -340,7 +340,7 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 	hello, err := protocol.ReadFrameWithLimit(conn, protocol.MaxHelloFrameSize)
 	if err != nil {
 		r.metrics.control[controlBadHello].Add(1)
-		r.log.Warn("read hello", "err", err)
+		r.log.Warn("invalid control hello")
 		_ = conn.Close()
 		return
 	}
@@ -362,7 +362,7 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		} else {
 			r.metrics.control[controlAuthError].Add(1)
 		}
-		r.log.Warn("resolve", "err", err)
+		r.log.Warn("control authorization failed")
 		r.writeErr(conn, "invalid token")
 		return
 	}
@@ -378,7 +378,7 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		identity, err := requireCertificateIdentity(tlsConn.ConnectionState(), res)
 		if err != nil {
 			r.metrics.control[controlIdentityDenied].Add(1)
-			r.log.Warn("peer certificate identity rejected", "err", err)
+			r.log.Warn("peer certificate identity rejected")
 			r.writeErr(conn, "peer certificate identity does not match token")
 			return
 		}
@@ -406,16 +406,12 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 	r.registerTunnel(key, hello.Claim.Kind, t)
 	defer r.unregisterTunnel(key, hello.Claim.Kind, t)
 	r.metrics.control[controlAccepted].Add(1)
-	logArgs := []any{"claim", key}
-	if peerIdentity != nil {
-		logArgs = append(logArgs, peerIdentity.logKey(), peerIdentity.logValue())
-	}
-	r.log.Info("client connected", logArgs...)
+	r.log.Info("client connected", "claim_kind", hello.Claim.Kind)
 	sessionCtx, cancel := context.WithCancel(ctx)
 	reauthDone := make(chan struct{})
-	go r.watchAuthorization(sessionCtx, hello.Token, hello.Claim, peerIdentity, key, t, reauthDone)
+	go r.watchAuthorization(sessionCtx, hello.Token, hello.Claim, peerIdentity, t, reauthDone)
 	if err := t.Run(); err != nil {
-		r.log.Info("client disconnected", "claim", key, "err", err)
+		r.log.Info("client disconnected", "claim_kind", hello.Claim.Kind)
 	}
 	cancel()
 	<-reauthDone
@@ -607,20 +603,6 @@ func (i clientIdentity) kindName() string {
 	return "user"
 }
 
-func (i clientIdentity) logKey() string {
-	if i.kind == clientIdentityAccount {
-		return "account_id"
-	}
-	return "user_id"
-}
-
-func (i clientIdentity) logValue() any {
-	if i.kind == clientIdentityAccount {
-		return formatUUID(i.accountID)
-	}
-	return i.userID
-}
-
 func parseCanonicalUUID(value string) ([16]byte, error) {
 	var parsed [16]byte
 	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
@@ -652,27 +634,6 @@ func parseCanonicalUUID(value string) ([16]byte, error) {
 	return parsed, nil
 }
 
-func formatUUID(value [16]byte) string {
-	const hex = "0123456789abcdef"
-	formatted := make([]byte, 36)
-	byteIndex := 0
-	nibbleIndex := 0
-	for index := range formatted {
-		if index == 8 || index == 13 || index == 18 || index == 23 {
-			formatted[index] = '-'
-			continue
-		}
-		if nibbleIndex%2 == 0 {
-			formatted[index] = hex[value[byteIndex]>>4]
-		} else {
-			formatted[index] = hex[value[byteIndex]&0x0f]
-			byteIndex++
-		}
-		nibbleIndex++
-	}
-	return string(formatted)
-}
-
 func validateReauthorizationConfig(interval, maxStaleness time.Duration) error {
 	if interval <= 0 {
 		return fmt.Errorf("reauthorization interval must be positive")
@@ -696,7 +657,7 @@ func reauthorizationRequiresClose(res *relayauth.Resolution, err error, claim *p
 	return peerIdentity != nil && !peerIdentity.matchesResolution(res)
 }
 
-func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, key string, t *tunnel.Conn, done chan<- struct{}) {
+func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, t *tunnel.Conn, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(r.reauthInterval)
 	defer ticker.Stop()
@@ -713,20 +674,20 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 			now := time.Now()
 			if reauthorizationRequiresClose(res, err, claim, peerIdentity, lastAuthorized, now, r.reauthMaxStale) {
 				if err != nil {
-					r.log.Warn("tunnel authorization became stale", "claim", key, "err", err)
+					r.log.Warn("tunnel authorization became stale", "claim_kind", claim.Kind)
 				} else {
-					r.log.Info("tunnel no longer authorized", "claim", key)
+					r.log.Info("tunnel no longer authorized", "claim_kind", claim.Kind)
 				}
 				_ = t.Close()
 				return
 			}
 			if err != nil {
-				r.log.Warn("tunnel reauthorization failed; retaining session", "claim", key, "err", err)
+				r.log.Warn("tunnel reauthorization failed; retaining session", "claim_kind", claim.Kind)
 				continue
 			}
 			lastAuthorized = now
 			if res == nil {
-				r.log.Info("tunnel no longer authorized", "claim", key)
+				r.log.Info("tunnel no longer authorized", "claim_kind", claim.Kind)
 				_ = t.Close()
 				return
 			}
@@ -735,8 +696,7 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 }
 
 func (r *relay) serveDedicatedIP(ctx context.Context, ln net.Listener, ip, port string) {
-	addr := net.JoinHostPort(ip, port)
-	r.log.Info("ip listening", "addr", addr)
+	r.log.Info("dedicated IP listener ready")
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -755,7 +715,7 @@ func (r *relay) serveDedicatedIP(ctx context.Context, ln net.Listener, ip, port 
 func (r *relay) servePort(ctx context.Context, ln net.Listener, ip string, port uint16) {
 	addr := net.JoinHostPort(ip, strconv.Itoa(int(port)))
 	key := "port:" + string(protocol.TransportTCP) + ":" + addr
-	r.log.Info("port listening", "addr", addr)
+	r.log.Info("shared TCP port listener ready")
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -772,7 +732,7 @@ func (r *relay) servePort(ctx context.Context, ln net.Listener, ip string, port 
 }
 
 func (r *relay) serveSNIPool(ctx context.Context, ln net.Listener) {
-	r.log.Info("sni pool listening", "addr", ln.Addr().String())
+	r.log.Info("SNI pool listener ready")
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -786,9 +746,9 @@ func (r *relay) serveSNIPool(ctx context.Context, ln net.Listener) {
 	}
 }
 
-func (r *relay) listenerFailed(listener string, err error) {
+func (r *relay) listenerFailed(listener string, _ error) {
 	r.metrics.health.listenersUp.Store(false)
-	r.log.Error("relay listener failed", "listener", listener, "err", err)
+	r.log.Error("relay listener failed", "listener", listener)
 	if r.shutdown != nil {
 		r.shutdown()
 	}
@@ -1047,7 +1007,7 @@ func (r *relay) handleSNIConn(conn net.Conn) {
 	releasePeek()
 	if err != nil {
 		r.metrics.sni[sniInvalid].Add(1)
-		r.log.Warn("sni peek", "err", err)
+		r.log.Warn("invalid SNI ClientHello")
 		_ = conn.Close()
 		return
 	}
@@ -1068,14 +1028,14 @@ func (r *relay) forwardTo(conn net.Conn, key, port string) bool {
 	defer conn.Close()
 	t := r.getTunnel(key)
 	if t == nil {
-		r.log.Info("no tunnel for claim", "claim", key)
+		r.log.Info("no active tunnel for ingress")
 		return false
 	}
 	src := conn.RemoteAddr().String()
 	dst := key + ":" + port
 	stream, err := t.OpenStream("tcp", src, dst)
 	if err != nil {
-		r.log.Warn("open stream", "err", err)
+		r.log.Warn("open ingress stream failed")
 		return false
 	}
 	index := claimKindIndexFromKey(key)

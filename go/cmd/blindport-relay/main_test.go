@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +65,75 @@ func TestCertificateIdentity(t *testing.T) {
 	}
 }
 
+func TestMalformedControlLogOmitsPeerAddresses(t *testing.T) {
+	var output bytes.Buffer
+	r := &relay{
+		log:     slog.New(slog.NewJSONHandler(&output, nil)),
+		metrics: &relayMetrics{health: newRelayHealth(false, time.Minute, time.Minute)},
+	}
+	r.handleControlConn(context.Background(), addressErrorConn{})
+
+	logged := output.String()
+	if !strings.Contains(logged, "invalid control hello") {
+		t.Fatalf("missing bounded failure event: %s", logged)
+	}
+	for _, address := range []string{"198.51.100.20", "203.0.113.40"} {
+		if strings.Contains(logged, address) {
+			t.Fatalf("control log exposed peer address %q: %s", address, logged)
+		}
+	}
+}
+
+func TestListenerFailureLogOmitsAddresses(t *testing.T) {
+	var output bytes.Buffer
+	health := newRelayHealth(false, time.Minute, time.Minute)
+	r := &relay{
+		log:     slog.New(slog.NewJSONHandler(&output, nil)),
+		metrics: &relayMetrics{health: health},
+	}
+	r.listenerFailed("sni", &net.OpError{
+		Op:     "accept",
+		Net:    "tcp",
+		Source: &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 443},
+		Addr:   &net.TCPAddr{IP: net.ParseIP("203.0.113.40"), Port: 49152},
+		Err:    errors.New("synthetic listener failure"),
+	})
+
+	logged := output.String()
+	if !strings.Contains(logged, "relay listener failed") {
+		t.Fatalf("missing bounded listener event: %s", logged)
+	}
+	for _, address := range []string{"198.51.100.20", "203.0.113.40"} {
+		if strings.Contains(logged, address) {
+			t.Fatalf("listener log exposed address %q: %s", address, logged)
+		}
+	}
+}
+
+type addressErrorConn struct{}
+
+func (addressErrorConn) Read([]byte) (int, error) {
+	return 0, &net.OpError{
+		Op:     "read",
+		Net:    "tcp",
+		Source: &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 5443},
+		Addr:   &net.TCPAddr{IP: net.ParseIP("203.0.113.40"), Port: 49152},
+		Err:    errors.New("synthetic read failure"),
+	}
+}
+
+func (addressErrorConn) Write(payload []byte) (int, error) { return len(payload), nil }
+func (addressErrorConn) Close() error                      { return nil }
+func (addressErrorConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("198.51.100.20"), Port: 5443}
+}
+func (addressErrorConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("203.0.113.40"), Port: 49152}
+}
+func (addressErrorConn) SetDeadline(time.Time) error      { return nil }
+func (addressErrorConn) SetReadDeadline(time.Time) error  { return nil }
+func (addressErrorConn) SetWriteDeadline(time.Time) error { return nil }
+
 func TestRequireCertificateIdentity(t *testing.T) {
 	const account = "018f47b8-2c36-7d4e-9a51-123456789abc"
 	tests := []struct {
@@ -89,17 +160,6 @@ func TestRequireCertificateIdentity(t *testing.T) {
 				t.Fatalf("requireCertificateIdentity() = (%+v, %v), wantErr %t", identity, err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestAccountIdentityLogDoesNotExposeLegacyUserID(t *testing.T) {
-	accountID, err := parseCanonicalUUID("018f47b8-2c36-7d4e-9a51-123456789abc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := clientIdentity{kind: clientIdentityAccount, accountID: accountID, userID: 42}
-	if identity.logKey() != "account_id" || identity.logValue() != "018f47b8-2c36-7d4e-9a51-123456789abc" {
-		t.Fatalf("account log identity = %q/%v", identity.logKey(), identity.logValue())
 	}
 }
 

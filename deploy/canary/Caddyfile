@@ -1,5 +1,8 @@
 {
 	admin off
+	log default {
+		exclude http.log.error
+	}
 	http_port 8080
 	https_port 8443
 	default_bind 127.0.0.1
@@ -25,10 +28,6 @@
 
 {$API_DOMAIN} {
 	header Onion-Location "http://{$ONION_HOST}{uri}"
-	log {
-		output stdout
-		format json
-	}
 	request_body {
 		max_size 1MB
 	}
@@ -60,10 +59,6 @@
 }
 
 http://{$ONION_HOST} {
-	log {
-		output stdout
-		format json
-	}
 	request_body {
 		max_size 1MB
 	}

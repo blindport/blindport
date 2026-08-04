@@ -1,5 +1,8 @@
 {
 	admin off
+	log default {
+		exclude http.log.error
+	}
 	http_port 8080
 	https_port 8443
 	email {$ACME_EMAIL}
@@ -14,10 +17,6 @@
 }
 
 {$API_DOMAIN} {
-	log {
-		output stdout
-		format json
-	}
 	request_body {
 		max_size 1MB
 	}

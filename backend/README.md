@@ -60,9 +60,10 @@ SMTP servers necessarily receive each recipient and generated reminder in plaint
 
 Direct-client limits use FastAPI's trusted `Request.client` value and never parse forwarded headers.
 The production ASGI server and any serving proxy must therefore be configured with an explicit
-trusted-proxy policy. Identifiers are stored only as domain-separated HMAC-SHA256 values. Bucket
-storage is capped by `RATE_LIMIT_MAX_BUCKETS`; new identifiers fail closed until bounded stale
-cleanup frees capacity.
+trusted-proxy policy. Source-derived identifiers are HMACed in process-local memory and expire at
+the end of the fixed window using an ephemeral per-process key; they are never inserted into
+PostgreSQL. Durable rate-limit rows use account-derived identifiers only. Both stores are capped by
+`RATE_LIMIT_MAX_BUCKETS`.
 
 Production relay listener inventories must contain only globally routable unicast addresses.
 Relay control/WireGuard endpoints, relay pool domains, and managed suffixes must use public DNS

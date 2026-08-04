@@ -6,6 +6,7 @@ root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 compose_check() {
     directory="$1"
     docker compose \
+        --profile tools \
         --env-file "$root/$directory/.env.example" \
         -f "$root/$directory/compose.yaml" \
         config --quiet
@@ -52,6 +53,54 @@ for name, service in services.items():
 '
 }
 
+logging_policy_check() {
+    directory="$1"
+    docker compose \
+        --profile tools \
+        --env-file "$root/$directory/.env.example" \
+        -f "$root/$directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+for name, service in services.items():
+    logging = service.get("logging", {})
+    assert logging.get("driver") == "journald", (name, logging)
+    assert logging.get("options", {}).get("tag", "").startswith("blindport-")
+'
+}
+
+address_log_policy_check() {
+    python3 - \
+        "$root/deploy/journald-blindport.conf" \
+        "$root/docker/backend.Dockerfile" \
+        "$root/docker/docker-compose.yaml" \
+        "$root/deploy/canary/Caddyfile" \
+        "$root/deploy/canary/Caddyfile.internal" \
+        "$root/deploy/split/control/Caddyfile" \
+        "$root/deploy/canary/haproxy.cfg" <<'PY'
+from pathlib import Path
+import sys
+
+journal, dockerfile, development_compose, *proxy_configs = (
+    Path(path).read_text(encoding="utf-8") for path in sys.argv[1:]
+)
+assert "MaxRetentionSec=30day" in journal
+assert "MaxFileSec=1day" in journal
+assert "--no-access-log" in dockerfile
+assert "--no-access-log" in development_compose
+for config in proxy_configs[:3]:
+    assert "\n\tlog {" not in config
+    assert "exclude http.log.error" in config
+haproxy = proxy_configs[3]
+assert "log stdout" not in haproxy
+assert "option tcplog" not in haproxy
+assert "option httplog" not in haproxy
+PY
+}
+
 caddy_check() {
     directory="$1"
     config="${2:-Caddyfile}"
@@ -60,6 +109,26 @@ caddy_check() {
         -v "$root/$directory/$config:/etc/caddy/Caddyfile:ro" \
         caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
         caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+}
+
+caddy_log_policy_check() {
+    directory="$1"
+    config="${2:-Caddyfile}"
+    docker run --rm \
+        --env-file "$root/$directory/.env.example" \
+        -v "$root/$directory/$config:/etc/caddy/Caddyfile:ro" \
+        caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
+        caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
+        | python3 -c '
+import json
+import sys
+
+config = json.load(sys.stdin)
+logs = config.get("logging", {}).get("logs", {})
+assert "http.log.error" in logs.get("default", {}).get("exclude", [])
+servers = config["apps"]["http"]["servers"].values()
+assert all(server.get("logs") is None for server in servers)
+'
 }
 
 haproxy_check() {
@@ -255,9 +324,16 @@ backend_healthcheck_policy_check deploy/canary
 backend_healthcheck_policy_check deploy/split/control
 smtp_secret_scope_check deploy/canary
 smtp_secret_scope_check deploy/split/control
+logging_policy_check deploy/canary
+logging_policy_check deploy/split/control
+logging_policy_check deploy/split/relay
+address_log_policy_check
 caddy_check deploy/canary
 caddy_check deploy/canary Caddyfile.internal
 caddy_check deploy/split/control
+caddy_log_policy_check deploy/canary
+caddy_log_policy_check deploy/canary Caddyfile.internal
+caddy_log_policy_check deploy/split/control
 haproxy_check deploy/canary
 canary_http_routing_check
 caddy_runtime_policy_check

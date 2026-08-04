@@ -5,6 +5,10 @@ one dedicated host. The split stack separates control and relay
 failure domains, but neither stack provides database, proxy, relay, or API high
 availability.
 
+The hosted beta is best effort and has no uptime or high-availability guarantee.
+High availability is planned after beta, but future topology is not part of the
+current service commitment.
+
 Start with the [self-hosting guide](../docs/self-hosting.md). Report deployment
 problems through the [public issue tracker](https://github.com/blindport/blindport/issues),
 but report vulnerabilities through the process in [SECURITY.md](../SECURITY.md).
@@ -22,6 +26,27 @@ and names, and create a separate `secrets/` directory. The `.env.example` image
 tags are convenient discovery aliases only; replace them with digest-pinned
 release references or verified local image tags before going live. Do not modify
 or use the checked-in placeholder files.
+
+Production containers send stdout and stderr to journald. Install the repository's
+30-day maximum retention policy before starting any service, then rotate and remove
+older records left by previous deployments. Run these commands from the repository
+root:
+
+```sh
+sudo install -d -m 0755 /etc/systemd/journald.conf.d
+sudo install -m 0644 deploy/journald-blindport.conf \
+  /etc/systemd/journald.conf.d/99-blindport-retention.conf
+sudo systemctl restart systemd-journald
+sudo journalctl --rotate
+sudo journalctl --vacuum-time=30d
+```
+
+This host policy applies to Blindport container output and other journal records.
+Keep proxy and Uvicorn access logging disabled. Configure firewall, kernel, Tor,
+database, backup, monitoring, and external log collectors so request or visitor
+source addresses are not retained and all operational logs expire within 30 days.
+The checked-in policy cannot control independent hosting, DNS, payment, email, or
+customer systems; review those providers separately.
 Set all monthly and yearly price variables to positive satoshi amounts; the checked-in
 defaults are 7,500/75,000 for IP, 1,500/15,000 for Port, and 3,000/30,000 for Relay.
 Keep `BILLING_YEARLY_ENABLED=false` until migration `0009` is applied and all old
@@ -113,6 +138,14 @@ UID/GID 1000. Back up all state sets and owner-only secret files together, encry
 backup offsite, and test restoration. Losing the CA breaks enrolled client identity
 renewal; losing the invoice HMAC key can break pending invoice correlation. Changing
 `TOKEN_HASH_KEY` invalidates every stored account and admin token.
+
+Blindport application records do not persist request or visitor source addresses.
+Direct-client signup and login rate limits use an ephemeral per-process HMAC key,
+and their buckets expire with the fixed window. Account-derived rate limits remain
+durable in PostgreSQL. Migration `0015` deletes direct-client buckets written by
+older releases and recalculates the remaining bucket count. This makes direct-client
+limits best effort across multiple backend processes; per-account product and payment
+limits remain authoritative.
 
 ## Canary
 

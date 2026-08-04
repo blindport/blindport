@@ -75,7 +75,7 @@ from ..services.rate_limits import (
     RateLimitExceeded,
     RateLimitScope,
     account_identifier,
-    direct_client_identifier,
+    enforce_direct_rate_limit,
     enforce_rate_limit,
     spec_for,
 )
@@ -120,11 +120,14 @@ def signup(
 ) -> SignupResponse:
     """Create a new anonymous account. Returns the bearer token exactly once."""
     response.headers["Cache-Control"] = "no-store"
-    _enforce_public_rate_limit(
-        session,
-        RateLimitScope.SIGNUP,
-        direct_client_identifier(request),
-    )
+    try:
+        enforce_direct_rate_limit(request, spec_for(RateLimitScope.SIGNUP))
+    except RateLimitExceeded as error:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "request rate limit exceeded",
+            headers={"Retry-After": str(error.retry_after)},
+        ) from error
     display, normalized = tokens.generate_token()
     hashed = tokens.hash_token(normalized)
     user = User(display_token=None, hashed_token=hashed)

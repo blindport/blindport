@@ -18,6 +18,7 @@ from .config import settings
 from .core.models import PaymentMethod
 from .db import prepare_database
 from .services.payment_reconciliation import reconciler_health, run_payment_reconciler
+from .services.rate_limits import DirectRateLimiter
 from .services.reminder_reconciliation import get_smtp_adapter
 
 
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.BRAND_NAME, version=__version__, lifespan=lifespan)
+    app.state.direct_rate_limiter = DirectRateLimiter(settings.RATE_LIMIT_MAX_BUCKETS)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):

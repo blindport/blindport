@@ -42,7 +42,7 @@ var (
 )
 
 func (r *relay) serveHTTPChallenges(ctx context.Context, ln net.Listener) {
-	r.log.Info("HTTP redirect and HTTP-01 ingress listening", "addr", ln.Addr().String())
+	r.log.Info("HTTP redirect and HTTP-01 ingress listener ready")
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

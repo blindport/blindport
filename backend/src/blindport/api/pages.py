@@ -33,8 +33,7 @@ from ..services.catalog import get_catalog
 from ..services.rate_limits import (
     RateLimitExceeded,
     RateLimitScope,
-    direct_client_identifier,
-    enforce_rate_limit,
+    enforce_direct_rate_limit,
     spec_for,
 )
 
@@ -149,7 +148,7 @@ def _enforce_login_rate_limit(
     scope: RateLimitScope,
 ) -> None:
     try:
-        enforce_rate_limit(session, spec_for(scope), direct_client_identifier(request))
+        enforce_direct_rate_limit(request, spec_for(scope))
     except RateLimitExceeded as error:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

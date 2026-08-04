@@ -7,10 +7,9 @@ x-service-defaults: &service-defaults
   security_opt:
     - no-new-privileges:true
   logging:
-    driver: json-file
+    driver: journald
     options:
-      max-size: 10m
-      max-file: "5"
+      tag: "blindport-relay-{{.Name}}"
 
 services:
   relay:

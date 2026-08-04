@@ -159,7 +159,7 @@ func (m *wireGuardManager) cycle(ctx context.Context) {
 	if err == nil {
 		desired := desiredStateFromResponse(state)
 		if applyErr := m.reconciler.Apply(desired); applyErr != nil {
-			m.log.Warn("apply WireGuard desired state", "err", applyErr)
+			m.log.Warn("apply WireGuard desired state failed")
 			m.health.wgState.Store(wgUnavailable)
 			m.failClosedIfStale(now, "desired-state apply failures")
 			return
@@ -171,7 +171,7 @@ func (m *wireGuardManager) cycle(ctx context.Context) {
 		m.metrics.wireguard.activePrefixes.Store(int64(len(desired.ActivePrefixes())))
 		return
 	}
-	m.log.Warn("fetch WireGuard desired state", "err", err)
+	m.log.Warn("fetch WireGuard desired state failed")
 	m.failClosedIfStale(now, "stale backend state")
 }
 
@@ -187,7 +187,7 @@ func (m *wireGuardManager) failClosed(reason string) {
 		return
 	}
 	if failErr := m.reconciler.FailClosed(); failErr != nil {
-		m.log.Error("fail closed WireGuard plane", "err", failErr)
+		m.log.Error("fail closed WireGuard plane failed")
 		m.health.wgState.Store(wgUnavailable)
 		return
 	}

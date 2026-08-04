@@ -14,7 +14,7 @@ from alembic.migration import MigrationContext
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from sqlalchemy import MetaData, Table, delete, inspect, text
+from sqlalchemy import MetaData, Table, delete, func, inspect, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -297,7 +297,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0014")
+    assert database_revisions(engine) == ("0008", "0015")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -350,7 +350,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0014", "0014")
+    assert database_revisions(engine) == ("0015", "0015")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -562,6 +562,80 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         session.commit()
 
 
+def test_postgres_0015_scrubs_direct_rate_limit_rows_and_recounts() -> None:
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    downgrade_database(engine, "0014")
+    buckets = Table("ratelimitbucket", MetaData(), autoload_with=engine)
+    maintenance = Table("ratelimitmaintenance", MetaData(), autoload_with=engine)
+    marker = uuid4().hex
+    now = datetime.now(UTC)
+
+    with engine.begin() as connection:
+        connection.execute(
+            buckets.delete().where(buckets.c.scope.in_(("signup", "admin-login", "browser-login")))
+        )
+        for index, scope in enumerate(("signup", "admin-login", "browser-login", "payment-create")):
+            connection.execute(
+                buckets.insert().values(
+                    scope=scope,
+                    identifier_hash=f"{marker}{index:032x}",
+                    window_start=now,
+                    request_count=1,
+                    expires_at=now,
+                )
+            )
+        actual_count = connection.execute(select(func.count()).select_from(buckets)).scalar_one()
+        updated = connection.execute(
+            maintenance.update()
+            .where(maintenance.c.name == "rate-limit-buckets")
+            .values(bucket_count=actual_count)
+        )
+        if updated.rowcount == 0:
+            connection.execute(
+                maintenance.insert().values(
+                    name="rate-limit-buckets",
+                    next_cleanup_at=now,
+                    bucket_count=actual_count,
+                )
+            )
+
+    try:
+        upgrade_database(engine)
+        with engine.connect() as connection:
+            direct_count = connection.execute(
+                select(func.count())
+                .select_from(buckets)
+                .where(buckets.c.scope.in_(("signup", "admin-login", "browser-login")))
+            ).scalar_one()
+            durable_marker_count = connection.execute(
+                select(func.count())
+                .select_from(buckets)
+                .where(buckets.c.identifier_hash == f"{marker}{3:032x}")
+            ).scalar_one()
+            bucket_count = connection.execute(
+                select(maintenance.c.bucket_count).where(maintenance.c.name == "rate-limit-buckets")
+            ).scalar_one()
+            actual_count = connection.execute(
+                select(func.count()).select_from(buckets)
+            ).scalar_one()
+        assert direct_count == 0
+        assert durable_marker_count == 1
+        assert bucket_count == actual_count
+    finally:
+        with engine.begin() as connection:
+            connection.execute(buckets.delete().where(buckets.c.identifier_hash.like(f"{marker}%")))
+            actual_count = connection.execute(
+                select(func.count()).select_from(buckets)
+            ).scalar_one()
+            connection.execute(
+                maintenance.update()
+                .where(maintenance.c.name == "rate-limit-buckets")
+                .values(bucket_count=actual_count)
+            )
+
+
 def _replace_postgres_reminders_with_deployed_0012_shape(
     engine, subscription_id: int, period_end: datetime
 ) -> None:
@@ -719,13 +793,13 @@ def test_postgres_rate_limit_cardinality_cap_is_atomic(
         session.commit()
 
     barrier = threading.Barrier(20)
-    spec = RateLimitSpec(RateLimitScope.SIGNUP, requests=10, window_seconds=60)
+    spec = RateLimitSpec(RateLimitScope.PAYMENT_CREATE, requests=10, window_seconds=60)
 
     def consume(index: int) -> bool:
         barrier.wait(timeout=10)
         with Session(engine) as session:
             try:
-                enforce_rate_limit(session, spec, f"client:cardinality:{index}")
+                enforce_rate_limit(session, spec, f"account:cardinality:{index}")
             except RateLimitExceeded:
                 return False
         return True
@@ -931,7 +1005,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0014", "0014")
+        assert database_revisions(engine) == ("0015", "0015")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()
