@@ -42,9 +42,10 @@ sudo journalctl --vacuum-time=30d
 ```
 
 This host policy applies to Blindport container output and other journal records.
-Keep proxy and Uvicorn access logging disabled. Configure firewall, kernel, Tor,
-database, backup, monitoring, and external log collectors so request or visitor
-source addresses are not retained and all operational logs expire within 30 days.
+It also disables journal forwarding to syslog so a second host-local copy cannot
+bypass the limit. Keep proxy and Uvicorn access logging disabled. Configure firewall,
+kernel, Tor, database, backup, monitoring, and external log collectors so request or
+visitor source addresses are not retained and all operational logs expire within 30 days.
 The checked-in policy cannot control independent hosting, DNS, payment, email, or
 customer systems; review those providers separately.
 Set all monthly and yearly price variables to positive satoshi amounts; the checked-in

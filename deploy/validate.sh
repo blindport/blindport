@@ -89,6 +89,7 @@ journal, dockerfile, development_compose, *proxy_configs = (
 )
 assert "MaxRetentionSec=30day" in journal
 assert "MaxFileSec=1day" in journal
+assert "ForwardToSyslog=no" in journal
 assert "--no-access-log" in dockerfile
 assert "--no-access-log" in development_compose
 for config in proxy_configs[:3]:
