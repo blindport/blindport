@@ -192,10 +192,10 @@ def test_landing_explanation_has_no_horizontal_overflow(
         ):
             page.goto(browser_server.base_url, wait_until="networkidle")
             assert page.get_by_role(
-                "heading", name="Four ways to put a home service online"
+                "heading", name="Different tools optimize for different jobs"
             ).is_visible()
             assert (
-                page.get_by_role("heading", name="Blindport", exact=True).count() >= 2
+                page.get_by_role("heading", name="Blindport", exact=True).count() == 1
             )
             assert ONION_HOST in page.locator(".site-footer").inner_text()
             page.get_by_role("link", name="Choose Relay").click()
@@ -228,7 +228,7 @@ def test_service_terms_are_readable_without_horizontal_overflow(
             assert page.get_by_role(
                 "heading", name="Privacy and threat model"
             ).is_visible()
-            assert page.locator("main > article > section").count() == 5
+            assert page.locator("main > article > section").count() == 7
             footer = page.locator(".site-footer")
             footer_link = footer.get_by_role("link", name="Terms", exact=True)
             assert footer_link.get_attribute("href") == "/terms"

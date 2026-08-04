@@ -3,124 +3,132 @@
 {% block content %}
 <section class="intro content-width" aria-labelledby="intro-title">
   <div class="intro-copy">
-    <p class="eyebrow">Public ingress for self-hosters</p>
+    <p class="eyebrow">Best-effort public ingress beta</p>
     <h1 id="intro-title">{{ brand_name }}</h1>
-    <p class="lead">Publish services from your own hardware, even behind CGNAT, without sending visitors to your residential IP or maintaining a VPS relay.</p>
-    <p><code>blindportd</code> connects outward to Blindport, which provides a public IP, IP-and-port tuple, or TLS hostname. Your origin decrypts TLS; other payloads retain only the encryption your service provides. Blindport still sees connection metadata.</p>
+    <p class="lead">A leased public endpoint for self-hosted services you intend to keep online.</p>
+    <p>Publish from your own hardware, even behind CGNAT, without inbound port forwarding in framed mode or sending ordinary visitors to your residential IP. Your service and data stay at the origin; Blindport Relay leaves visitor TLS and its private key there too.</p>
     <div class="intro-actions">
       <a class="button-link" href="#products">Choose a public endpoint</a>
-      <a class="text-link" href="#pathways-title">Compare network paths</a>
+      <a class="text-link" href="#tls-title">See the TLS boundary</a>
     </div>
   </div>
   <dl class="intro-facts" aria-label="Service summary">
-    <div><dt>Works around</dt><dd>CGNAT, changing IPs, inbound router setup</dd></div>
-    <div><dt>Stays on your hardware</dt><dd>Service, data, TLS keys</dd></div>
-    <div><dt>Public endpoint</dt><dd>Dedicated IP, single port, or TLS hostname</dd></div>
+    <div><dt>Leased identity</dt><dd>TLS hostname, exact socket, or dedicated IPv4</dd></div>
+    <div><dt>Account</dt><dd>One bearer token; no email, name, or profile required</dd></div>
+    <div><dt>Service term</dt><dd>Fixed {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}; direct Lightning payment</dd></div>
   </dl>
-</section>
-
-<section class="pathways-band" aria-labelledby="pathways-title">
-  <div class="content-width">
-    <header class="section-heading pathways-heading">
-      <p class="eyebrow">Where the public connection goes</p>
-      <h2 id="pathways-title">Four ways to put a home service online</h2>
-      <p>Self-hosting controls where the workload runs. The ingress path determines whether visitors can reach it, whether they learn the residential IP, and where TLS is decrypted.</p>
-    </header>
-    <figure class="pathways-figure" aria-describedby="pathways-caption">
-      <div class="pathway-list">
-        <article class="pathway pathway-obstructed">
-          <header>
-            <h3>Direct from home</h3>
-            <span class="pathway-state">Can be blocked</span>
-          </header>
-          <div class="network-path" role="img" aria-label="Visitor connects through the home router or carrier NAT to the home service">
-            <span class="network-node">Visitor</span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node network-node-obstacle">Router or CGNAT<small>Port forward, dynamic IP</small></span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node">Your service<small>TLS ends here</small></span>
-          </div>
-          <p>Nothing moves off your hardware, but CGNAT may block inbound traffic and the network path reveals the residential IP.</p>
-        </article>
-        <article class="pathway">
-          <header>
-            <h3>VPS alone</h3>
-            <span class="pathway-state">Workload moves</span>
-          </header>
-          <div class="network-path" role="img" aria-label="Visitor connects to an application and its data hosted on a VPS">
-            <span class="network-node">Visitor</span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node network-node-provider">VPS provider<small>Public IP, app, data, TLS</small></span><span class="network-link network-link-muted" aria-hidden="true"></span>
-            <span class="network-node network-node-muted">Home hardware<small>Not serving traffic</small></span>
-          </div>
-          <p>Reachability is straightforward, but the application and data move to provider hardware unless you operate the VPS only as a relay.</p>
-        </article>
-        <article class="pathway">
-          <header>
-            <h3>Cloudflare Tunnel</h3>
-            <span class="pathway-state">Managed web edge</span>
-          </header>
-          <div class="network-path" role="img" aria-label="Visitor TLS ends at Cloudflare, then a tunnel connects Cloudflare to the home service">
-            <span class="network-node">Visitor</span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node network-node-provider">Cloudflare edge<small>Visitor TLS ends here</small></span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node">Your service<small>App and data stay here</small></span>
-          </div>
-          <p>No inbound home port is needed. In the normal configuration, Cloudflare manages the web edge and can see plaintext before forwarding to the origin.</p>
-        </article>
-        <article class="pathway pathway-blindport">
-          <header>
-            <h3>Blindport</h3>
-            <span class="pathway-state">Workload stays home</span>
-          </header>
-          <div class="network-path" role="img" aria-label="Visitor TLS passes through Blindport unchanged and ends at the home service over an outbound tunnel">
-            <span class="network-node">Visitor</span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node network-node-ingress">Blindport ingress<small>Forwards encrypted bytes</small></span><span class="network-link" aria-hidden="true"></span>
-            <span class="network-node network-node-origin">Your service<small>App, data, TLS stay here</small></span>
-          </div>
-          <p><code>blindportd</code> connects out, so framed mode needs no home port forward. Blindport sees metadata and SNI hostnames, but the origin terminates TLS.</p>
-        </article>
-      </div>
-      <figcaption id="pathways-caption">Simplified HTTPS paths. DNS providers, certificate authorities, network operators, and endpoint software retain their normal visibility.</figcaption>
-    </figure>
-  </div>
 </section>
 
 <section id="products" class="content-width comparison" aria-labelledby="compare-title">
   <header class="section-heading">
-    <p class="eyebrow">Choose by workload</p>
-    <h2 id="compare-title">Rent only the public endpoint you need</h2>
-    <p>Every option keeps the origin service on your hardware. The difference is what visitors connect to.</p>
+    <p class="eyebrow">Live pricing and availability</p>
+    <h2 id="compare-title">Lease only the endpoint you need</h2>
+    <p>The assignment stays attached to the subscription for its paid term, even when <code>blindportd</code> reconnects. Choose by the public network identity your service needs.</p>
   </header>
   <div class="comparison-grid">
+    {% set relay = catalog_by_product.relay %}
+    {% set port = catalog_by_product.port %}
+    {% set ip = catalog_by_product.ip %}
     <article>
       <h3>Blindport Relay</h3>
-      <p><strong>For a website or TLS service</strong></p>
+      <p class="product-purpose">One TLS hostname</p>
+      <p class="price-line">{{ relay.monthly_price_sats }} <span>sats / 30 days</span></p>
       <ul class="check-list">
-        <li>One managed or customer-owned hostname</li>
-        <li>Routes TLS by SNI without terminating it</li>
-        <li>Uses shared port 443 ingress</li>
+        <li>Managed name or customer-owned subdomain</li>
+        <li>Shared port 443, routed by visible TLS SNI</li>
+        <li>Your existing origin proxy owns TLS and the private key</li>
       </ul>
-      <a class="text-link product-jump" href="#order" data-order-product="relay">Choose Relay</a>
+      <p class="product-state{% if not relay.available %} is-unavailable{% endif %}">{% if relay.available %}Available{% elif relay.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
+      {% if relay.available %}<a class="text-link product-jump" href="#order" data-order-product="relay">Choose Relay</a>{% endif %}
     </article>
     <article>
       <h3>Blindport Port</h3>
-      <p><strong>For one game server or daemon</strong></p>
+      <p class="product-purpose">One TCP or UDP socket</p>
+      <p class="price-line">{{ port.monthly_price_sats }} <span>sats / 30 days</span></p>
       <ul class="check-list">
-        <li>One shared public IP and port</li>
-        <li>TCP or UDP, selected when ordering</li>
-        <li>Maps to one local service</li>
+        <li>Exact shared public IP, port, and transport</li>
+        <li>Maps to one local service through an outbound tunnel</li>
+        <li>Framed UDP preserves packets but runs over ordered TCP</li>
       </ul>
-      <a class="text-link product-jump" href="#order" data-order-product="port">Choose Port</a>
+      <p class="product-state{% if not port.available %} is-unavailable{% endif %}">{% if port.available %}Available{% elif port.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
+      {% if port.available %}<a class="text-link product-jump" href="#order" data-order-product="port">Choose Port</a>{% endif %}
     </article>
     <article>
       <h3>Blindport IP</h3>
-      <p><strong>For several ports or a dedicated address</strong></p>
+      <p class="product-purpose">One dedicated public IPv4</p>
+      <p class="price-line">{{ ip.monthly_price_sats }} <span>sats / 30 days</span></p>
       <ul class="check-list">
-        <li>One dedicated public IPv4 address</li>
-        <li>Framed TCP by default, without host network privileges</li>
-        <li>WireGuard for a full routed /32, native UDP, ICMP, or arbitrary ports</li>
+        <li>Framed mode forwards configured TCP listeners</li>
+        <li>WireGuard routes the complete /32 to a Linux host</li>
+        <li>Only routed mode preserves native UDP, ICMP, and client IPs</li>
       </ul>
-      <a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>
+      <p class="product-state{% if not ip.available %} is-unavailable{% endif %}">{% if ip.available %}Available{% elif ip.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
+      {% if ip.available %}<a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>{% endif %}
     </article>
   </div>
-  <p class="fit-check"><strong>Before ordering:</strong> choose framed Relay or Port for a domain or individual service. Choose WireGuard IP only for a full public IPv4 interface; it requires Linux WireGuard and network administration capability. Direct payment uses a Lightning wallet.</p>
+  <p class="fit-check"><strong>Beta boundary:</strong> hosted service is best effort, with no current uptime or high-availability guarantee. There is no fixed traffic allowance today; fair use applies. The published client requires Linux, and direct payment requires a Lightning wallet.</p>
+</section>
+
+<section class="workflow-band" aria-labelledby="workflow-title">
+  <div class="content-width workflow-layout">
+    <header class="section-heading">
+      <p class="eyebrow">From order to ingress</p>
+      <h2 id="workflow-title">Three steps, no inbound router changes</h2>
+      <p>One daemon can keep every framed mapping in an account connected. The paid endpoint remains assigned while the tunnel reconnects.</p>
+    </header>
+    <ol class="workflow-steps">
+      <li><span>1</span><div><strong>Choose</strong><p>Pick a hostname, exact socket, or dedicated IPv4.</p></div></li>
+      <li><span>2</span><div><strong>Pay</strong><p>Settle one Lightning invoice for the fixed service term.</p></div></li>
+      <li><span>3</span><div><strong>Connect</strong><p>Run <code>blindportd</code> beside the service; it dials outward.</p></div></li>
+    </ol>
+  </div>
+</section>
+
+<section class="tls-band" aria-labelledby="tls-title">
+  <div class="content-width tls-layout">
+    <div class="tls-copy">
+      <p class="eyebrow">Blindport Relay trust boundary</p>
+      <h2 id="tls-title">Your certificate stays at the origin</h2>
+      <p>Blindport reads the visible ClientHello SNI needed to select a tunnel, then forwards the original TLS bytes. Your existing reverse proxy or application completes the handshake and keeps the private key.</p>
+      <p>For Let's Encrypt, an optional public port 80 path accepts only bounded, validated HTTP-01 requests and sends them to a separate plaintext challenge listener at the origin. Other valid GET requests redirect to HTTPS. DNS-01 remains available through your DNS provider.</p>
+      <p><a href="/guide#tls">Read the TLS guide</a> or follow the <a href="https://github.com/blindport/blindport/tree/main/examples/traefik">Traefik and Let's Encrypt example</a>.</p>
+    </div>
+    <figure class="tls-figure" aria-describedby="tls-caption">
+      <div class="tls-path" role="img" aria-label="Visitor TLS passes through Blindport and terminates at the origin reverse proxy">
+        <span class="tls-node">Visitor<small>Starts TLS</small></span>
+        <span class="tls-link" aria-hidden="true"></span>
+        <span class="tls-node tls-node-relay">Blindport<small>Reads SNI, forwards ciphertext</small></span>
+        <span class="tls-link" aria-hidden="true"></span>
+        <span class="tls-node tls-node-origin">Your origin<small>TLS, certificate, private key</small></span>
+      </div>
+      <figcaption id="tls-caption">Blindport still observes SNI, connection timing, volume, and active network addresses. Encrypted ClientHello cannot be routed by the current Relay service.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section class="operating-models content-width" aria-labelledby="models-title">
+  <header class="section-heading">
+    <p class="eyebrow">Choose by operating model</p>
+    <h2 id="models-title">Different tools optimize for different jobs</h2>
+    <p>Blindport is not the default answer for every tunnel. Choose based on endpoint lifetime, certificate ownership, provider features, and who should operate the relay.</p>
+  </header>
+  <div class="table-wrap">
+    <table class="responsive-table model-table">
+      <caption class="visually-hidden">Public ingress operating models and their tradeoffs</caption>
+      <thead><tr><th scope="col">Approach</th><th scope="col">Best fit</th><th scope="col">TLS and identity</th><th scope="col">Tradeoff</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Quick preview tunnel</th><td data-label="Best fit">Demos, webhook tests, and short-lived sharing</td><td data-label="TLS and identity">Usually an automatic certificate on a provider hostname</td><td data-label="Tradeoff">Fast and often free; URL lifetime, limits, and durability may not fit an ongoing service</td></tr>
+        <tr><th scope="row">Managed application gateway</th><td data-label="Best fit">Global edge, HTTP policy, authentication, observability, and compliance</td><td data-label="TLS and identity">Often edge-terminated; raw TLS passthrough depends on product and plan</td><td data-label="Tradeoff">More platform capability, account data, configuration, and usage billing</td></tr>
+        <tr><th scope="row">Community or self-hosted relay</th><td data-label="Best fit">Experimentation, relay control, and choosing independent operators</td><td data-label="TLS and identity">Depends on the relay protocol and certificate model</td><td data-label="Tradeoff">You evaluate operator trust, persistence, abuse controls, upgrades, and availability</td></tr>
+        <tr><th scope="row">Blindport hosted beta</th><td data-label="Best fit">An ongoing self-hosted service needing a leased hostname, socket, or IPv4</td><td data-label="TLS and identity">Token-only account; Relay certificate and key stay at your origin</td><td data-label="Tradeoff">Best effort during beta; Linux client, Lightning payment, and fewer edge features</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="self-host-note">
+    <h3>Running the ingress yourself?</h3>
+    <p>Blindport is also a fully MIT-licensed, self-hostable stack, not only a hosted service. It can be more capable than a simple tunnel relay when you need durable allocation state, an exact TCP or UDP socket, or a routed public IPv4 /32. Self-hosting means you operate availability, abuse controls, DNS, certificates, payments, and network inventory.</p>
+    <a class="text-link" href="https://github.com/blindport/blindport/blob/main/docs/self-hosting.md">Review the self-hosting guide</a>
+  </div>
 </section>
 
 <section id="order" class="order-band" aria-labelledby="order-title">
@@ -265,7 +273,8 @@
   <article>
     <h2>Privacy boundaries</h2>
     <p>Blindport does not expose the origin IP through its network path and does not require a name or identity profile. Applications, historical DNS, headers, or third-party integrations can still reveal an origin.</p>
-    <p>Blindport observes account activity, payment events, source addresses, destination ports or SNI hostnames, timing, volume, and tunnel state. Plaintext TCP or UDP is not made private by forwarding it.</p>
+    <p>Blindport processes source addresses transiently for routing and active abuse controls, but does not persist visitor or request source IPs in application records. Hosted access logging is disabled, and operational logs omit those source addresses and are deleted within 30 days.</p>
+    <p>Blindport retains allocated endpoint addresses, domains, account activity times, payment records, and tunnel state needed to provide the service. It can observe destination ports or SNI, timing, and volume while traffic is active. HTTP-01 handling also parses the bounded Host, path, query, and headers. Plaintext TCP or UDP is not made private by forwarding it.</p>
     <p><strong>Blindport is not an anonymity network.</strong> You can route <code>blindportd</code> outbound connections through a Tor SOCKS5 proxy, or run the client on a VPS, according to your threat model. Those choices change the visible client network path, but they do not make the service anonymous.</p>
   </article>
   <article>

@@ -200,7 +200,12 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert '<a href="mailto:security@blindport.com">security@blindport.com</a>' in guide
     assert "18ED E472 6C14 1484 4923 D6FF 14EA BFF7 39C1 6205" in guide
 
-    assert landing.count('class="network-path" role="img" aria-label=') == 4
+    assert landing.count('class="tls-path" role="img" aria-label=') == 1
+    landing_inspector = _inspect(landing)
+    assert landing_inspector.tables == 1
+    assert landing_inspector.captions == 1
+    assert landing_inspector.unscoped_headers == 0
+    assert landing_inspector.table_cells_without_labels == 0
 
     admin = _inspect(templates[4])
     assert admin.tables == 4
@@ -220,21 +225,24 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     guide = _asset("templates/guide.html")
 
     for term in (
-        "changing IPs",
         "CGNAT",
-        "inbound router setup",
         "residential IP",
-        "application and data move to provider hardware",
-        "Cloudflare Tunnel",
-        "Cloudflare manages the web edge",
-        "Four ways to put a home service online",
-        "VPS alone",
-        "Blindport ingress",
-        "App, data, TLS stay here",
+        "A leased public endpoint",
+        "Live pricing and availability",
+        "Three steps, no inbound router changes",
+        "Your certificate stays at the origin",
+        "validated HTTP-01 requests",
+        "Different tools optimize for different jobs",
+        "Quick preview tunnel",
+        "Managed application gateway",
+        "Community or self-hosted relay",
+        "fully MIT-licensed, self-hostable stack",
+        "routed public IPv4 /32",
+        "best effort",
         "not an anonymity network",
         "Tor SOCKS5",
         "One dedicated public IPv4",
-        "One shared-IP tuple",
+        "One TCP or UDP socket",
         "Managed subdomain",
         "Bring your own subdomain",
         "exact DNS-only CNAME record",
@@ -295,7 +303,7 @@ def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
     assert ":focus-visible" in css
     assert "scroll-padding-top: 80px" in css
     assert "scroll-margin-top: 80px" in css
-    assert ".network-path" in css
+    assert ".tls-path" in css
     assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in css
     assert 'content: ""' in css
     assert ".account-access" in css
@@ -337,6 +345,10 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
     assert "User #" not in dashboard.text
     assert "User</th>" not in admin.text
     assert "There is currently no fixed traffic limit" in terms.text
+    assert "Best-effort beta" in terms.text
+    assert "does not persist visitor or request source IP addresses" in terms.text
+    assert "deleted within 30 days" in terms.text
+    assert "Fixed 30 or 365 days" in landing.text
     assert "reasonable traffic, bandwidth, connection, or rate limits" in terms.text
     assert "application behavior, DNS history, headers" in terms.text
     assert "not eligible for a refund" in terms.text
