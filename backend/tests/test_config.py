@@ -26,6 +26,7 @@ from blindport.config import (
 def _production_settings(**overrides) -> Settings:
     values = {
         "ENVIRONMENT": "production",
+        "PUBLIC_SITE_URL": "https://blindport.com",
         "DATABASE_URL": "postgresql+psycopg://blindport:database-secret@db/blindport",
         "DATABASE_MIGRATE_ON_STARTUP": False,
         "PAYMENT_LIGHTNING_ADAPTER": "lnd",
@@ -112,6 +113,31 @@ def test_v3_onion_hostname_validation() -> None:
     assert validate_v3_onion_hostname(hostname.upper()) == hostname
     settings = Settings(_env_file=None, ONION_HOST=hostname)
     assert hostname == settings.ONION_HOST
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "blindport.com",
+        " https://blindport.com",
+        "https://user@blindport.com",
+        "https://blindport.com/path",
+        "https://blindport.com?source=test",
+    ],
+)
+def test_public_site_url_requires_an_http_origin(value: str) -> None:
+    with pytest.raises(ValidationError, match="PUBLIC_SITE_URL"):
+        Settings(_env_file=None, PUBLIC_SITE_URL=value)
+
+
+def test_public_site_url_is_canonicalized_and_requires_https_in_production() -> None:
+    assert (
+        Settings(_env_file=None, PUBLIC_SITE_URL="https://blindport.com/").PUBLIC_SITE_URL
+        == "https://blindport.com"
+    )
+    with pytest.raises(ValidationError, match="PUBLIC_SITE_URL must use HTTPS"):
+        _production_settings(PUBLIC_SITE_URL="http://blindport.com")
 
 
 @pytest.mark.parametrize(

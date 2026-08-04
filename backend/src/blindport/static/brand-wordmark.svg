@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-labelledby="title description">
+  <title id="title">Blindport</title>
+  <desc id="description">Blindport geometric B mark and wordmark.</desc>
+  <g transform="translate(24 24) scale(.53125)">
+    <rect width="512" height="512" rx="64" fill="#17201d"/>
+    <path transform="translate(-6 -32)" fill="#fff" fill-rule="evenodd" d="M128 96h140c71 0 116 39 116 101 0 35-16 62-47 79 39 17 59 49 59 91 0 69-49 113-126 113H128V96Zm76 64v88h58c39 0 58-14 58-44s-19-44-58-44h-58Zm0 148v108h63c43 0 65-18 65-54s-22-54-65-54h-63Z"/>
+  </g>
+  <text x="340" y="218" fill="#17201d" font-family="Inter, Arial, Liberation Sans, sans-serif" font-size="174" font-weight="750" letter-spacing="0">Blindport</text>
+</svg>

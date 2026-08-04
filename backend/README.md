@@ -13,6 +13,7 @@ limits are controlled explicitly:
 
 ```env
 SECRET_KEY=<dedicated-application-secret>
+PUBLIC_SITE_URL=https://api.example.com
 TOKEN_HASH_KEY=<dedicated-token-hashing-secret>
 RELAY_SECRET=<dedicated-relay-authentication-secret>
 ADMIN_TOKEN=<dedicated-admin-bearer-token>

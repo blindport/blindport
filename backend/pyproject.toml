@@ -63,7 +63,11 @@ blindport = [
     "migrations/script.py.mako",
     "templates/*.html",
     "static/*.css",
+    "static/*.ico",
     "static/*.js",
+    "static/*.png",
+    "static/*.svg",
+    "static/*.webmanifest",
     "public/*.asc",
 ]
 

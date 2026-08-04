@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlmodel import Session, select
 
-from ..config import settings
+from ..config import DEFAULT_BRAND_NAME, DEFAULT_BRAND_TAGLINE, settings
 from ..core import tokens
 from ..core.auth import (
     create_admin_browser_session,
@@ -73,9 +73,42 @@ def _is_onion_request(request: Request) -> bool:
 
 
 def _ctx(request: Request, **extra) -> dict:
+    public_origin = (
+        f"http://{settings.ONION_HOST}" if _is_onion_request(request) else settings.PUBLIC_SITE_URL
+    )
+    share_titles = {
+        "/guide": f"Guide | {settings.BRAND_NAME}",
+        "/terms": f"Service terms | {settings.BRAND_NAME}",
+    }
+    share_descriptions = {
+        "/guide": (
+            f"Install and operate {settings.BRAND_NAME} for public access to self-hosted services."
+        ),
+        "/terms": f"Service terms for using {settings.BRAND_NAME} public ingress.",
+    }
+    official_branding = (
+        settings.BRAND_NAME == DEFAULT_BRAND_NAME
+        and settings.BRAND_TAGLINE == DEFAULT_BRAND_TAGLINE
+    )
+    social_image_name = "brand-social.png" if official_branding else "brand-avatar.png"
     base = {
         "brand_name": settings.BRAND_NAME,
         "brand_tagline": settings.BRAND_TAGLINE,
+        "official_branding": official_branding,
+        "page_description": share_descriptions.get(request.url.path, settings.BRAND_TAGLINE),
+        "share_metadata": request.url.path in {"/", "/guide", "/terms"},
+        "share_title": share_titles.get(request.url.path, settings.BRAND_NAME),
+        "share_description": share_descriptions.get(request.url.path, settings.BRAND_TAGLINE),
+        "page_url": f"{public_origin}{request.url.path}",
+        "social_image_url": f"{public_origin}/static/{social_image_name}",
+        "social_image_width": 1200 if official_branding else 512,
+        "social_image_height": 630 if official_branding else 512,
+        "social_image_alt": (
+            "Blindport. Public reach for self-hosted services. TLS stays on your box."
+            if official_branding
+            else "Geometric B mark."
+        ),
+        "twitter_card": "summary_large_image" if official_branding else "summary",
         "ip_price": settings.IP_MONTHLY_SATS,
         "ip_yearly_price": settings.IP_YEARLY_SATS,
         "port_price": settings.PORT_MONTHLY_SATS,

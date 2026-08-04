@@ -12,6 +12,7 @@ manifests intentionally leave it disabled. A representative baseline is:
 
 ```text
 ENVIRONMENT=production
+PUBLIC_SITE_URL=https://api.example.com
 DATABASE_URL=postgresql+psycopg://blindport:<database-password>@postgres.example.net/blindport
 DATABASE_MIGRATE_ON_STARTUP=false
 PAYMENT_ENABLED_METHODS=lightning

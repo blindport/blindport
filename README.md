@@ -17,6 +17,11 @@ UDP, and the Linux host can grant `CAP_NET_ADMIN`.
 [Releases](https://github.com/blindport/blindport/releases) |
 [Security](SECURITY.md)
 
+Brand exports for project profiles and integrations are available in
+[`backend/src/blindport/static/`](backend/src/blindport/static/): use
+`brand-avatar.png` for square avatars, `brand-wordmark.svg` for horizontal
+placements, and `brand-social.png` for 1200 by 630 link previews.
+
 > Blindport is pre-1.0 software. Review the threat model, deployment manifests,
 > and operational requirements before exposing production services.
 

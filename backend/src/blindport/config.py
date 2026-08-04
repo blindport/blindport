@@ -9,6 +9,7 @@ from email.headerregistry import Address
 from enum import StrEnum
 from ipaddress import ip_address
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -51,6 +52,8 @@ MIN_PRODUCTION_SECRET_LENGTH = 32
 MIN_PRODUCTION_TOKEN_BYTES = 16
 DEFAULT_SECRET_KEY = "change-me-in-production"
 DEFAULT_ADMIN_TOKEN = "BLINDPORT-ADMIN-TOKEN-CHANGE-ME"
+DEFAULT_BRAND_NAME = "Blindport"
+DEFAULT_BRAND_TAGLINE = "Public reach for self-hosted services. TLS stays on your box."
 _DEVELOPMENT_HOSTNAME_SUFFIXES = (".test", ".localhost", ".local", ".invalid", ".example")
 _DEVELOPMENT_HOSTNAMES = {
     "relay",
@@ -248,8 +251,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # Branding
-    BRAND_NAME: str = "Blindport"
-    BRAND_TAGLINE: str = "Public reach for self-hosted services. TLS stays on your box."
+    BRAND_NAME: str = DEFAULT_BRAND_NAME
+    BRAND_TAGLINE: str = DEFAULT_BRAND_TAGLINE
+    PUBLIC_SITE_URL: str = "http://localhost:8000"
     ONION_HOST: str = ""
     BLINDPORTD_VERSION: str = "dev"
 
@@ -493,6 +497,30 @@ class Settings(BaseSettings):
     @classmethod
     def validate_onion_host(cls, value: str) -> str:
         return validate_v3_onion_hostname(value)
+
+    @field_validator("PUBLIC_SITE_URL")
+    @classmethod
+    def validate_public_site_url(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("PUBLIC_SITE_URL must be an absolute HTTP or HTTPS origin")
+        parsed = urlsplit(value)
+        try:
+            _ = parsed.port
+            invalid_port = False
+        except ValueError:
+            invalid_port = True
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or invalid_port
+        ):
+            raise ValueError("PUBLIC_SITE_URL must be an absolute HTTP or HTTPS origin")
+        return value.rstrip("/")
 
     @field_validator("WIREGUARD_RELAY_PUBLIC_KEY")
     @classmethod
@@ -746,6 +774,8 @@ class Settings(BaseSettings):
 
     def _validate_production(self) -> None:
         failures: list[str] = []
+        if not self.PUBLIC_SITE_URL.startswith("https://"):
+            failures.append("PUBLIC_SITE_URL must use HTTPS in production")
         try:
             database_driver = make_url(self.DATABASE_URL).drivername
         except Exception:

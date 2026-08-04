@@ -197,6 +197,11 @@ def test_landing_explanation_has_no_horizontal_overflow(
             assert (
                 page.get_by_role("heading", name="Blindport", exact=True).count() == 1
             )
+            brand_mark = page.locator(".brand-mark")
+            assert brand_mark.is_visible()
+            assert brand_mark.evaluate(
+                "image => image.complete && image.naturalWidth === 512"
+            )
             assert ONION_HOST in page.locator(".site-footer").inner_text()
             page.get_by_role("link", name="Choose Relay").click()
             assert page.locator(

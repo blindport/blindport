@@ -111,14 +111,10 @@ pre {
 }
 .brand:hover { color: var(--ink); }
 .brand-mark {
-  display: grid;
+  display: block;
   width: 32px;
   height: 32px;
-  place-items: center;
-  border-radius: 4px;
-  background: var(--ink);
-  color: white;
-  font-size: 0.9rem;
+  flex: 0 0 auto;
 }
 nav { display: flex; align-items: center; gap: 0.25rem; }
 nav a {

@@ -84,7 +84,8 @@ x-backend-environment: &backend-environment
   RELAY_CONTROL_URLS: ${RELAY_CONTROL_HOST}:5443
   RELAY_MANAGED_SUFFIXES: ${RELAY_MANAGED_SUFFIXES}
   BRAND_NAME: ${BRAND_NAME:-Blindport}
-  BRAND_TAGLINE: ${BRAND_TAGLINE:-Private relay access paid in Bitcoin.}
+  BRAND_TAGLINE: ${BRAND_TAGLINE:-Public reach for self-hosted services. TLS stays on your box.}
+  PUBLIC_SITE_URL: https://${API_DOMAIN}
 
 x-backend-secrets: &backend-secrets
   - source: database-url

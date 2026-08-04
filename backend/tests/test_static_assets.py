@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -57,6 +58,17 @@ def _inspect(document: str) -> DocumentInspector:
     inspector = DocumentInspector()
     inspector.feed(document)
     return inspector
+
+
+def _png_dimensions(content: bytes) -> tuple[int, int]:
+    assert content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert content[12:16] == b"IHDR"
+    return int.from_bytes(content[16:20]), int.from_bytes(content[20:24])
+
+
+def _png_color_type(content: bytes) -> int:
+    assert content[12:16] == b"IHDR"
+    return content[25]
 
 
 def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None:
@@ -152,6 +164,13 @@ def test_templates_have_accessible_external_only_structure() -> None:
     ) in base
     assert 'target="_blank"' not in base
     assert 'id="main-content" tabindex="-1"' in base
+    assert '<img class="brand-mark" src="/static/brand-mark.svg"' in base
+    assert '<link rel="icon" href="/static/favicon.ico"' in base
+    assert '<link rel="icon" href="/static/brand-mark.svg"' in base
+    assert '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png"' in base
+    assert '<link rel="manifest" href="/static/site.webmanifest">' in base
+    assert '<meta property="og:image" content="{{ social_image_url }}">' in base
+    assert '<meta name="twitter:card" content="{{ twitter_card }}">' in base
 
     landing = templates[1]
     for element_id in (
@@ -314,6 +333,118 @@ def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
     assert "--radius: 6px" in css
 
 
+def test_brand_assets_have_expected_formats_and_dimensions(app_client) -> None:
+    client, _ = app_client
+    package = Path(blindport.__file__).parent
+
+    expected_pngs = {
+        "apple-touch-icon.png": ((180, 180), 2),
+        "brand-avatar.png": ((512, 512), 6),
+        "brand-icon-192.png": ((192, 192), 2),
+        "brand-icon-512.png": ((512, 512), 2),
+        "brand-social.png": ((1200, 630), 2),
+    }
+    for name, (dimensions, color_type) in expected_pngs.items():
+        content = (package / "static" / name).read_bytes()
+        assert _png_dimensions(content) == dimensions
+        assert _png_color_type(content) == color_type
+        response = client.get(f"/static/{name}")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+
+    for name in (
+        "brand-app-icon.svg",
+        "brand-mark.svg",
+        "brand-social.svg",
+        "brand-wordmark.svg",
+    ):
+        response = client.get(f"/static/{name}")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert response.text.startswith("<svg")
+
+    app_icon_source = (package / "static" / "brand-app-icon.svg").read_text(encoding="utf-8")
+    assert '<g transform="translate(71.68 71.68) scale(.72)">' in app_icon_source
+    assert 'transform="translate(-6 -32)"' in app_icon_source
+    assert "#21a981" not in app_icon_source
+    mark_source = (package / "static" / "brand-mark.svg").read_text(encoding="utf-8")
+    assert 'transform="translate(-6 -32)"' in mark_source
+    assert "#21a981" not in mark_source
+
+    favicon = client.get("/static/favicon.ico")
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"] == "image/vnd.microsoft.icon"
+    assert favicon.content.startswith(b"\x00\x00\x01\x00")
+
+    manifest = client.get("/static/site.webmanifest")
+    assert manifest.status_code == 200
+    assert manifest.headers["content-type"] == "application/manifest+json"
+    assert json.loads(manifest.text)["icons"] == [
+        {
+            "src": "/static/brand-icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable",
+        },
+        {
+            "src": "/static/brand-icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable",
+        },
+    ]
+
+
+def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monkeypatch) -> None:
+    from blindport.api import pages
+
+    client, _ = app_client
+    monkeypatch.setattr(pages.settings, "PUBLIC_SITE_URL", "https://blindport.test")
+
+    response = client.get("/?source=private", headers={"Host": "attacker.test"})
+
+    assert response.status_code == 200
+    assert (
+        '<meta name="description" content="Public reach for self-hosted services.' in response.text
+    )
+    assert '<meta property="og:title" content="Blindport">' in response.text
+    assert '<meta property="og:type" content="website">' in response.text
+    assert '<meta property="og:url" content="https://blindport.test/">' in response.text
+    assert (
+        '<meta property="og:image" content="https://blindport.test/static/brand-social.png">'
+    ) in response.text
+    assert "attacker.test" not in response.text
+    assert "source=private" not in response.text
+    assert '<meta property="og:image:width" content="1200">' in response.text
+    assert '<meta property="og:image:height" content="630">' in response.text
+    assert '<meta name="twitter:card" content="summary_large_image">' in response.text
+
+    guide = client.get("/guide")
+    assert '<meta property="og:title" content="Guide | Blindport">' in guide.text
+    assert (
+        '<meta name="description" '
+        'content="Install and operate Blindport for public access to self-hosted services.">'
+    ) in guide.text
+
+    login = client.get("/dashboard")
+    assert '<meta name="robots" content="noindex, nofollow">' in login.text
+    assert 'property="og:image"' not in login.text
+
+    monkeypatch.setattr(pages.settings, "BRAND_NAME", "Bridge")
+    monkeypatch.setattr(pages.settings, "BRAND_TAGLINE", "Public ingress for private origins.")
+    customized = client.get("/")
+    assert '<meta property="og:title" content="Bridge">' in customized.text
+    assert (
+        '<meta property="og:image" content="https://blindport.test/static/brand-avatar.png">'
+    ) in customized.text
+    assert '<meta name="twitter:card" content="summary">' in customized.text
+    assert '<meta property="og:image:alt" content="Geometric B mark.">' in customized.text
+    assert '<link rel="manifest" href="/static/site.webmanifest">' not in customized.text
+    assert "Public ingress for private origins." in customized.text
+    assert "Public reach for self-hosted services.</span>" not in customized.text
+    assert "Blindport. Public reach" not in customized.text
+
+
 def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) -> None:
     client, _ = app_client
 
@@ -381,6 +512,7 @@ def test_onion_requests_use_host_appropriate_cookie_and_hsts_policy(
     client, _ = app_client
     onion = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam2dqd.onion"
     monkeypatch.setattr(pages.settings, "ONION_HOST", onion)
+    monkeypatch.setattr(pages.settings, "PUBLIC_SITE_URL", "https://blindport.test")
     monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
 
     onion_landing = client.get("/", headers={"Host": onion})
@@ -393,8 +525,13 @@ def test_onion_requests_use_host_appropriate_cookie_and_hsts_policy(
     )
 
     assert 'data-cookie-secure="false"' in onion_landing.text
+    assert f'<meta property="og:url" content="http://{onion}/">' in onion_landing.text
+    assert (
+        f'<meta property="og:image" content="http://{onion}/static/brand-social.png">'
+    ) in onion_landing.text
     assert "Strict-Transport-Security" not in onion_landing.headers
     assert 'data-cookie-secure="true"' in clearnet_landing.text
+    assert '<meta property="og:url" content="https://blindport.test/">' in clearnet_landing.text
     assert "Strict-Transport-Security" in clearnet_landing.headers
     assert "Secure" not in onion_login.headers["Set-Cookie"]
     assert "Path=/admin" in onion_login.headers["Set-Cookie"]

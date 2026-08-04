@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A reusable Blindport logo system with profile, favicon, app icon, and social
+  preview exports, plus Open Graph and large-card metadata for shared links.
+
 ## [0.2.3] - 2026-08-04
 
 ### Added
