@@ -26,8 +26,7 @@ FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec4
 RUN apk add --no-cache ca-certificates \
  && addgroup -g 10001 -S blindport \
  && adduser -u 10001 -S -D -H -G blindport blindport \
- && mkdir -p /var/lib/blindport \
- && chown blindport:blindport /var/lib/blindport
+ && install -d -o blindport -g blindport -m 0700 /var/lib/blindport
 COPY --from=build /out/blindportd /usr/local/bin/blindportd
 USER 10001:10001
 ENV BLINDPORT_STATE_DIR=/var/lib/blindport

@@ -92,7 +92,7 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     <section id="docker">
       <h2>Docker discovery</h2>
       <p>One long-running agent continuously discovers running containers, registers declared orders, refreshes active provisioning, and starts or stops mappings without a restart.</p>
-      <p>GitHub Actions builds the agent image published through GHCR. If GitHub Actions and GHCR are inside your trust boundary, use the digest-pinned reference in the matching release's <code>blindport-images.env</code> asset for production. Otherwise, build the <code>blindportd</code> target from the verified source checkout with <code>docker build -f docker/go.Dockerfile --target blindportd -t blindportd:local .</code> and use that local tag. Set <code>DOCKER_GID</code> to the numeric group owner from <code>stat -c '%g' /var/run/docker.sock</code>, and make the mounted token owner-only for UID/GID 10001.</p>
+      <p>GitHub Actions builds the agent image published through GHCR. If GitHub Actions and GHCR are inside your trust boundary, use the digest-pinned reference in the matching release's <code>blindport-images.env</code> asset for production. Otherwise, build the <code>blindportd</code> target from the verified source checkout with <code>docker build -f docker/go.Dockerfile --target blindportd -t blindportd:local .</code> and use that local tag. Set <code>DOCKER_GID</code> to the numeric group owner from <code>stat -c '%g' /var/run/docker.sock</code>. Create <code>/etc/blindport</code> and <code>/var/lib/blindport</code> with owner UID/GID 10001 and mode <code>0700</code>, then install the mounted token with the same owner and mode <code>0600</code>.</p>
       <pre><code>services:
   reverse-proxy:
     labels:
@@ -115,14 +115,11 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/blindport/token:/run/secrets/blindport_token:ro
-      - blindport-state:/var/lib/blindport
+      - /var/lib/blindport:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp:size=16m,mode=1777"]
-
-volumes:
-  blindport-state:</code></pre>
+    tmpfs: ["/tmp:size=16m,mode=1777"]</code></pre>
       <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
       <p>The mapping name is a stable order key. Relay also requires a domain; Port accepts TCP or UDP; IP uses framed delivery. Existing <code>.subscription</code> labels remain supported. With NWC, an eligible new declaration starts one initial payment; without NWC it appears in the dashboard for manual payment. Removing a label stops forwarding but does not cancel service.</p>
       <p>Run the agent and targets on a shared Docker network so labeled upstream names resolve. The agent polls every 10 seconds by default; set <code>BLINDPORT_DOCKER_POLL_INTERVAL</code> between <code>1s</code> and <code>5m</code>.</p>

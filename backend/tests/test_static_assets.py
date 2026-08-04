@@ -279,7 +279,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     base = _asset("templates/base.html")
     assert "https://github.com/blindport/blindport" in base
     assert "https://github.com/blindport/blindport/issues" in base
-    assert "volumes:\n  blindport-state:" in guide
+    assert "- /var/lib/blindport:/var/lib/blindport" in guide
+    assert "volumes:\n  blindport-state:" not in guide
 
 
 def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:

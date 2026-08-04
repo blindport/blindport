@@ -104,6 +104,7 @@ matching release's `blindport-images.env` asset in production:
 docker pull ghcr.io/blindport/blindportd:latest
 export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 sudo install -d -o 10001 -g 10001 -m 0700 /etc/blindport
+sudo install -d -o 10001 -g 10001 -m 0700 /var/lib/blindport
 sudo install -o 10001 -g 10001 -m 0600 /path/to/blindport-token /etc/blindport/token
 ```
 
@@ -145,16 +146,13 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/blindport/token:/run/secrets/blindport_token:ro
-      - blindport-state:/var/lib/blindport
+      - /var/lib/blindport:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     tmpfs:
       - /tmp:size=16m,mode=1777
-
-volumes:
-  blindport-state:
 ```
 
 Mapping names contain lowercase ASCII letters, digits, underscores, or hyphens,
@@ -196,7 +194,8 @@ NWC budget.
 
 The published image runs as UID/GID `10001`. Set `DOCKER_GID` to the numeric
 group owner of the host socket so Compose grants only the required supplementary
-group. The mounted token must be owned by `10001:10001` with mode `0600`.
+group. The mounted token must be owned by `10001:10001` with mode `0600`, and
+the persistent state directory must be owned by `10001:10001` with mode `0700`.
 
 The token file must be a regular, owner-only file owned by the daemon's
 effective UID. Linux opens it with `O_NOFOLLOW`; symlinks, oversized values,
