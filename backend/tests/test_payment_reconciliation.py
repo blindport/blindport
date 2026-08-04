@@ -84,7 +84,7 @@ def test_reconciler_periodically_releases_expired_unpaid_domain_claim(app_client
         assert released.domain is None
 
 
-def test_reconciler_activates_paid_stablecoin_swap_without_payment_get(
+def test_reconciler_activates_issued_stablecoin_swap_after_checkout_is_disabled(
     app_client, monkeypatch
 ) -> None:
     client, factory = app_client
@@ -93,6 +93,7 @@ def test_reconciler_activates_paid_stablecoin_swap_without_payment_get(
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     token = client.post("/api/v1/signup").json()["token"]
     subscription, payment = _create_payment(client, token, method="stablecoin_swap")
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", False)
     factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
 
     from blindport.core.models import Payment, PaymentStatus, SubscriptionStatus

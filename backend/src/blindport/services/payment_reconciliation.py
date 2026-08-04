@@ -201,29 +201,29 @@ def reconcile_pending_payments_once(batch_size: int | None = None) -> Reconcilia
     with Session(engine) as session:
         reap_expired_domain_claims(session)
 
-    enabled_methods = tuple(
+    reconcilable_methods = tuple(
         method
         for method in (
             PaymentMethod.LIGHTNING,
             PaymentMethod.NWC,
             PaymentMethod.STABLECOIN_SWAP,
         )
-        if settings.is_payment_method_enabled(method)
+        if method == PaymentMethod.STABLECOIN_SWAP or settings.is_payment_method_enabled(method)
     )
-    if not enabled_methods and not settings.REMINDER_EMAIL_ENABLED:
+    if not reconcilable_methods and not settings.REMINDER_EMAIL_ENABLED:
         return ReconciliationSummary()
 
     now = datetime.now(UTC)
     nwc_lookup_before = now - timedelta(seconds=settings.NWC_LOOKUP_INTERVAL_SECONDS)
     payment_ids: list[int] = []
-    if enabled_methods:
+    if reconcilable_methods:
         with Session(engine) as session:
             payment_ids = list(
                 session.exec(
                     select(Payment.id)
                     .where(
                         Payment.status == PaymentStatus.PENDING,
-                        Payment.method.in_(enabled_methods),  # type: ignore[union-attr]
+                        Payment.method.in_(reconcilable_methods),  # type: ignore[union-attr]
                         or_(
                             Payment.method != PaymentMethod.NWC,
                             and_(
@@ -258,7 +258,10 @@ def reconcile_pending_payments_once(batch_size: int | None = None) -> Reconcilia
                 if payment is None:
                     counts["skipped"] += 1
                     continue
-                if not settings.is_payment_method_enabled(payment.method):
+                if (
+                    payment.method != PaymentMethod.STABLECOIN_SWAP
+                    and not settings.is_payment_method_enabled(payment.method)
+                ):
                     counts["skipped"] += 1
                     continue
                 reconciled = check_and_settle_payment(session, payment)

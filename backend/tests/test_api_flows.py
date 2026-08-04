@@ -439,6 +439,63 @@ def test_subscription_rejects_second_live_payment(app_client) -> None:
     assert existing_expiry.utcoffset() == timedelta(0)
 
 
+def test_open_payment_listing_recovers_invoice_after_refresh(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    sub = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": sub["id"], "method": "lightning"},
+        headers=_auth(token),
+    ).json()
+
+    response = client.get("/api/v1/payments", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [payment["id"]]
+    assert response.json()[0]["invoice"] == payment["invoice"]
+    other = client.post("/api/v1/signup").json()["token"]
+    assert client.get("/api/v1/payments", headers=_auth(other)).json() == []
+
+
+def test_pending_subscription_can_be_cancelled_only_without_open_payment(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    cancellable = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+
+    cancelled = client.delete(f"/api/v1/subscriptions/{cancellable['id']}", headers=_auth(token))
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["assigned_ip"] is None
+    rejected_payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": cancellable["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert rejected_payment.status_code == 400
+    assert rejected_payment.json()["detail"] == (
+        "cancelled subscription cannot be paid; create a new subscription"
+    )
+    with_payment = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    client.post(
+        "/api/v1/payments",
+        json={"subscription_id": with_payment["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    conflict = client.delete(f"/api/v1/subscriptions/{with_payment['id']}", headers=_auth(token))
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == (
+        "a payment is still pending; complete it or wait for it to expire"
+    )
+
+
 def test_expired_unpaid_reservation_is_released_and_reused(app_client) -> None:
     client, _ = app_client
     first_token = client.post("/api/v1/signup").json()["token"]

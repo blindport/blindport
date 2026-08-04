@@ -42,6 +42,10 @@ class AccountLimitError(RuntimeError):
     """A durable per-account subscription or payment limit was reached."""
 
 
+class SubscriptionCancellationConflict(RuntimeError):
+    """A pending subscription cannot be cancelled without risking payment loss."""
+
+
 def billing_period_days(term: BillingTerm) -> int:
     """Return the fixed service period for a supported billing term."""
     return MONTHLY_PERIOD_DAYS if term == BillingTerm.MONTHLY else YEARLY_PERIOD_DAYS
@@ -586,6 +590,113 @@ def create_subscription(
     if commit:
         session.refresh(sub)
     return sub
+
+
+def cancel_pending_subscription(session: Session, sub: Subscription) -> Subscription:
+    """Cancel one unpaid pending subscription after reconciling every open payment."""
+    if sub.id is None:
+        raise ValueError("subscription has no id")
+
+    # Payment creation serializes on the account row. Use the same lock so a
+    # cancellation and a new invoice cannot both proceed from a stale pending row.
+    session.exec(
+        select(User)
+        .where(User.id == sub.user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    current = session.exec(
+        select(Subscription)
+        .where(Subscription.id == sub.id)
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if current is None:
+        raise ValueError("subscription not found")
+    if current.status != SubscriptionStatus.PENDING:
+        raise ValueError("only pending subscriptions can be cancelled")
+
+    open_payments = session.exec(
+        select(Payment).where(
+            Payment.subscription_id == current.id,
+            Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+        )
+    ).all()
+    for payment in open_payments:
+        if payment.status == PaymentStatus.PROCESSING:
+            raise SubscriptionCancellationConflict(
+                "payment processing is in progress; wait before cancelling"
+            )
+        from .payments import check_and_settle_payment
+
+        reconciled = check_and_settle_payment(session, payment)
+        if reconciled.status in (PaymentStatus.PENDING, PaymentStatus.PROCESSING):
+            raise SubscriptionCancellationConflict(
+                "a payment is still pending; complete it or wait for it to expire"
+            )
+
+    session.expire_all()
+    # Reacquire the account lock because payment reconciliation may have committed.
+    session.exec(
+        select(User)
+        .where(User.id == current.user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    current = session.exec(
+        select(Subscription)
+        .where(Subscription.id == current.id)
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if current is None:
+        raise ValueError("subscription not found")
+    if current.status != SubscriptionStatus.PENDING:
+        raise SubscriptionCancellationConflict(
+            "payment settled while cancellation was requested; subscription was not cancelled"
+        )
+    open_payment_exists = (
+        select(Payment.id)
+        .where(
+            Payment.subscription_id == current.id,
+            Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+        )
+        .exists()
+    )
+    result = session.execute(
+        update(Subscription)
+        .where(
+            Subscription.id == current.id,
+            Subscription.status == SubscriptionStatus.PENDING,
+            ~open_payment_exists,
+        )
+        .values(
+            status=SubscriptionStatus.CANCELLED,
+            assigned_ip=None,
+            assigned_port=None,
+            reservation_expires_at=None,
+            reservation_payment_id=None,
+            resource_quarantined_until=None,
+            domain=None,
+            relay_pool_domain=None,
+            domain_is_managed=False,
+            domain_verification_token=None,
+            domain_verified_at=None,
+            domain_claim_expires_at=None,
+            domain_renewal_grace_expires_at=None,
+            auto_renew=False,
+            updated_at=_utcnow(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        raise SubscriptionCancellationConflict(
+            "a payment is still pending; complete it or wait for it to expire"
+        )
+    session.commit()
+    cancelled = session.get(Subscription, sub.id, populate_existing=True)
+    if cancelled is None:  # pragma: no cover - foreign keys prevent normal deletion
+        raise RuntimeError("subscription disappeared")
+    return cancelled
 
 
 def release_reservation(session: Session, sub: Subscription, payment_id: int) -> bool:

@@ -118,7 +118,7 @@ def test_disabled_nwc_setup_creation_poll_and_auto_renew_skip_adapters(
         assert response.json()["detail"] == "payment method nwc is disabled"
 
 
-def test_stablecoin_kill_switch_blocks_creation_and_polling_before_lnd(
+def test_stablecoin_kill_switch_blocks_creation_but_reconciles_issued_invoice(
     app_client, monkeypatch
 ) -> None:
     client, factory = app_client
@@ -137,10 +137,7 @@ def test_stablecoin_kill_switch_blocks_creation_and_polling_before_lnd(
     ).json()
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", False)
 
-    def unexpected_adapter(*args, **kwargs):
-        raise AssertionError("disabled stablecoin checkout must not reach LND")
-
-    monkeypatch.setattr(factory.get_lightning_adapter(), "is_invoice_paid", unexpected_adapter)
+    factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
     create = client.post(
         "/api/v1/payments",
         json={
@@ -151,9 +148,10 @@ def test_stablecoin_kill_switch_blocks_creation_and_polling_before_lnd(
     )
     poll = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token))
 
-    for response in (create, poll):
-        assert response.status_code == 400
-        assert response.json()["detail"] == "payment method stablecoin_swap is disabled"
+    assert create.status_code == 400
+    assert create.json()["detail"] == "payment method stablecoin_swap is disabled"
+    assert poll.status_code == 200
+    assert poll.json()["status"] == "paid"
 
 
 def test_disabled_stablecoin_reservation_does_not_block_lightning_creation(
@@ -193,12 +191,13 @@ def test_disabled_stablecoin_reservation_does_not_block_lightning_creation(
     adapter = factory.get_lightning_adapter()
     original_is_invoice_paid = adapter.is_invoice_paid
 
-    def stablecoin_must_not_reach_lnd(payment_hash: str) -> bool:
-        if payment_hash == stablecoin_payment["payment_hash"]:
-            raise AssertionError("disabled stablecoin checkout must not reach LND")
+    observed_hashes: list[str] = []
+
+    def observe_stablecoin_invoice(payment_hash: str) -> bool:
+        observed_hashes.append(payment_hash)
         return original_is_invoice_paid(payment_hash)
 
-    monkeypatch.setattr(adapter, "is_invoice_paid", stablecoin_must_not_reach_lnd)
+    monkeypatch.setattr(adapter, "is_invoice_paid", observe_stablecoin_invoice)
     lightning = client.post(
         "/api/v1/payments",
         json={
@@ -221,3 +220,4 @@ def test_disabled_stablecoin_reservation_does_not_block_lightning_creation(
         assert stored_payment.status == PaymentStatus.PENDING
         assert stored_subscription is not None
         assert stored_subscription.reservation_payment_id == stored_payment.id
+    assert stablecoin_payment["payment_hash"] in observed_hashes

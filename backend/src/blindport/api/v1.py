@@ -499,6 +499,31 @@ def list_subscriptions(
     return [_sub_to_response(s) for s in rows]
 
 
+@router.delete("/subscriptions/{public_id}", response_model=SubscriptionResponse)
+def cancel_subscription(
+    public_id: UUID,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> SubscriptionResponse:
+    sub = session.exec(
+        select(Subscription).where(
+            Subscription.public_id == public_id,
+            Subscription.user_id == user.id,
+        )
+    ).first()
+    if sub is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subscription not found")
+    try:
+        cancelled = subs_svc.cancel_pending_subscription(session, sub)
+    except subs_svc.SubscriptionCancellationConflict as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    except payments_svc.PaymentProviderError as error:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _sub_to_response(cancelled)
+
+
 def _domain_verifier_dependency() -> Callable[[], DomainVerifier]:
     return get_domain_verifier
 
@@ -747,6 +772,36 @@ def get_payment(
     except payments_svc.PaymentProviderError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
     return _payment_to_response(p, sub)
+
+
+@router.get("/payments", response_model=list[PaymentResponse])
+def list_open_payments(
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> list[PaymentResponse]:
+    rows = session.exec(
+        select(Payment)
+        .join(Subscription)
+        .where(
+            Subscription.user_id == user.id,
+            Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+        )
+        .order_by(Payment.id.desc())  # type: ignore[union-attr]
+    ).all()
+    responses: list[PaymentResponse] = []
+    for payment in rows:
+        try:
+            payment = payments_svc.check_and_settle_payment(session, payment)
+        except payments_svc.DisabledPaymentMethodError:
+            continue
+        except payments_svc.PaymentProviderError as error:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+        if payment.status not in (PaymentStatus.PENDING, PaymentStatus.PROCESSING):
+            continue
+        subscription = session.get(Subscription, payment.subscription_id)
+        if subscription is not None and subscription.user_id == user.id:
+            responses.append(_payment_to_response(payment, subscription))
+    return responses
 
 
 @router.post("/payments/cashu-submit", response_model=PaymentResponse)

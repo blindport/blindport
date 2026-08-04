@@ -58,6 +58,8 @@ from blindport.services.rate_limits import (
 from blindport.services.reminder_reconciliation import _claim_due_delivery
 from blindport.services.subscriptions import (
     AccountLimitError,
+    SubscriptionCancellationConflict,
+    cancel_pending_subscription,
     create_subscription,
     reap_elapsed_resource_holds,
     reserve_subscription_resource,
@@ -1211,6 +1213,95 @@ def test_postgres_concurrent_open_payments_allow_one_insert() -> None:
                 )
             ).all()
             assert len(open_payments) == 1
+    finally:
+        with Session(engine) as session:
+            session.execute(delete(Payment).where(Payment.subscription_id == subscription_id))
+            session.execute(delete(Subscription).where(Subscription.id == subscription_id))
+            session.execute(delete(User).where(User.id == user_id))
+            session.commit()
+
+
+def test_postgres_cancel_and_payment_creation_have_one_winner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    marker = f"postgres-cancel-payment-race-{uuid4()}"
+
+    from blindport.adapters.mock import MockLightningAdapter
+    from blindport.services import payments as payments_service
+
+    monkeypatch.setattr(payments_service.settings, "RELAY_PUBLIC_IPS", "198.51.100.247")
+    monkeypatch.setattr(
+        payments_service,
+        "get_lightning_adapter",
+        lambda: MockLightningAdapter(),
+    )
+    with Session(engine) as session:
+        user = User(hashed_token=marker)
+        session.add(user)
+        session.flush()
+        subscription = Subscription(
+            user_id=user.id,
+            product=ProductType.IP,
+            monthly_price_sats=1,
+            yearly_price_sats=10,
+        )
+        session.add(subscription)
+        session.commit()
+        user_id = user.id
+        subscription_id = subscription.id
+
+    assert user_id is not None
+    assert subscription_id is not None
+    barrier = threading.Barrier(2)
+
+    def create() -> str:
+        with Session(engine) as session:
+            stored = session.get(Subscription, subscription_id)
+            assert stored is not None
+            barrier.wait(timeout=10)
+            try:
+                create_payment(session, stored, PaymentMethod.LIGHTNING)
+            except ValueError as error:
+                assert "cancelled subscription cannot be paid" in str(error)
+                return "creation rejected"
+            return "payment created"
+
+    def cancel() -> str:
+        with Session(engine) as session:
+            stored = session.get(Subscription, subscription_id)
+            assert stored is not None
+            barrier.wait(timeout=10)
+            try:
+                cancel_pending_subscription(session, stored)
+            except SubscriptionCancellationConflict:
+                return "cancellation rejected"
+            return "subscription cancelled"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            creation = executor.submit(create)
+            cancellation = executor.submit(cancel)
+            result = (creation.result(timeout=20), cancellation.result(timeout=20))
+
+        assert result in {
+            ("creation rejected", "subscription cancelled"),
+            ("payment created", "cancellation rejected"),
+        }
+        with Session(engine) as session:
+            stored = session.get(Subscription, subscription_id)
+            assert stored is not None
+            payments = session.exec(
+                select(Payment).where(Payment.subscription_id == subscription_id)
+            ).all()
+            if stored.status == SubscriptionStatus.CANCELLED:
+                assert payments == []
+            else:
+                assert stored.status == SubscriptionStatus.PENDING
+                assert len(payments) == 1
+                assert payments[0].status == PaymentStatus.PENDING
     finally:
         with Session(engine) as session:
             session.execute(delete(Payment).where(Payment.subscription_id == subscription_id))

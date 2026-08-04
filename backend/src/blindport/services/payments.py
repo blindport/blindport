@@ -737,6 +737,8 @@ def create_payment(
     subs.reap_elapsed_resource_holds(session)
     session.refresh(subscription)
     subs.require_domain_payment_ready(subscription)
+    if subscription.status == SubscriptionStatus.CANCELLED:
+        raise ValueError("cancelled subscription cannot be paid; create a new subscription")
 
     base_amount_sats = (
         subscription.monthly_price_sats
@@ -892,7 +894,10 @@ def _finalize_payment(
 
 def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
     """Poll provider state before applying local expiry to a pending payment."""
-    require_payment_method_enabled(payment.method)
+    # Disabling stablecoin checkout stops new invoice creation, but an invoice
+    # already handed to a customer must still settle or expire normally.
+    if payment.method != PaymentMethod.STABLECOIN_SWAP:
+        require_payment_method_enabled(payment.method)
     if payment.status in _TERMINAL_STATUSES or payment.status == PaymentStatus.PROCESSING:
         return payment
 
