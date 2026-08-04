@@ -126,7 +126,9 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert 'payUri.rel = "noopener noreferrer external"' in dashboard
     assert "verify-domain" in dashboard
     assert "Check DNS" in _asset("templates/dashboard.html")
-    assert "CNAME verification required" in _asset("templates/dashboard.html")
+    assert "Point this exact hostname to Blindport" in _asset("templates/dashboard.html")
+    assert 'jsonFetch("/api/v1/payments"' in dashboard
+    assert 'method: "DELETE"' in dashboard
     assert "domain_verification_token" in _asset("templates/dashboard.html")
     assert "accounts.save(token, accountId)" in dashboard
     assert "accounts.clearActive()" in dashboard
@@ -205,16 +207,18 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'role="status" aria-live="polite"' in dashboard
     assert 'data-monthly-price="{{ s.monthly_price_sats }}"' in dashboard
     assert 'data-yearly-price="{{ s.yearly_price_sats }}"' in dashboard
-    assert "one exact CNAME record" in dashboard
+    assert "Enter the exact hostname to publish" in dashboard
     assert 'id="accountToken" type="password" readonly' in dashboard
     assert 'id="copyInvoiceBtn"' in dashboard
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
     assert 'id="stablecoinNotice"' in dashboard
     assert 'class="stablecoinPayBtn button-secondary"' in dashboard
-    assert 'id="framedSetupCommand"' in dashboard
+    assert "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in dashboard
+    assert "BLINDPORT_INSTALL_DIR=" in dashboard
+    assert 'id="framedRunCommand"' in dashboard
     assert 'id="framedConfigInstallCommand"' in dashboard
     assert 'id="generatedClientConfig"' in dashboard
-    assert "Choose Relay for a domain" in dashboard
+    assert "Most web services need a public hostname" in dashboard
     assert "Routed WireGuard /32" in dashboard
     assert '<script src="/static/account-storage.js"></script>' in dashboard
     assert 'agree to the <a href="/terms">service terms</a>' in dashboard
@@ -298,15 +302,16 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "other IPv4 protocols",
         "ghcr.io/blindport/blindportd",
         "https://github.com/blindport/blindport/issues",
-        "-kind=relay",
         "-upstream=127.0.0.1:8080",
-        "only after creating the static mapping file",
+        "BLINDPORT_DOWNLOAD_BASE_URL=",
+        "first-run input is the token prompt",
+        'BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"',
+        "blindport-state:/var/lib/blindport",
         "GitHub Actions builds versioned static Linux binaries",
         "only detects transfer corruption",
         "does not authenticate the CI-built binary",
         "build the checked-out source locally",
         "GPG signature authenticates the source history, not GitHub-built artifacts",
-        "docker build -f docker/go.Dockerfile --target blindportd -t blindportd:local .",
     ):
         assert term in guide
     run_section = guide.split('<section id="run">', 1)[1].split("</section>", 1)[0]
@@ -316,8 +321,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     base = _asset("templates/base.html")
     assert "https://github.com/blindport/blindport" in base
     assert "https://github.com/blindport/blindport/issues" in base
-    assert "- /var/lib/blindport:/var/lib/blindport" in guide
-    assert "volumes:\n  blindport-state:" not in guide
+    assert "- blindport-state:/var/lib/blindport" in guide
+    assert "volumes:\n  blindport-state:" in guide
 
 
 def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
@@ -335,12 +340,13 @@ def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
     assert ".tls-path" in css
     assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in css
     assert 'content: ""' in css
-    assert ".account-access" in css
+    assert ".dashboard-grid" in css
+    assert ".dashboard-sidebar" in css
     assert "overflow-x: clip" in css
     assert "a { color: var(--accent-dark); overflow-wrap: anywhere; }" in css
     assert "linear-gradient" not in css
     assert "radial-gradient" not in css
-    assert "--radius: 6px" in css
+    assert "--radius: 4px" in css
 
 
 def test_brand_assets_have_expected_formats_and_dimensions(app_client) -> None:
@@ -551,7 +557,6 @@ def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monke
     assert "One bitcoin is 100 million satoshis (sats)." in landing.text
     assert "about $4.80 USD" in landing.text
     assert 'data-btc-usd="64000"' in dashboard.text
-    assert "100 million sats equal 1 BTC" in dashboard.text
     assert "about $4.80 USD" in dashboard.text
 
 

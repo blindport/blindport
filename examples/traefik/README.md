@@ -31,32 +31,36 @@ On the Docker host, copy this directory and create its local environment file:
 
 ```sh
 cp .env.example .env
+chmod 600 .env
 ```
 
-Edit `.env` and set these two values:
+Edit `.env` and set these values:
 
 - `DOMAIN`: the exact active Relay hostname.
 - `BLINDPORT_SUBSCRIPTION_ID`: the active Relay subscription UUID.
+- `BLINDPORT_TOKEN`: the account token shown during signup.
+- `DOCKER_GID`: the output of `stat -c '%g' /var/run/docker.sock`.
 
-Use the dashboard's setup command to install the token at
-`$HOME/.config/blindport/token` and create
-`$HOME/.local/state/blindport`. The Compose file uses those same paths by
-default. Compose expands `$HOME` before creating the containers. The token must
-have mode `0600`, and the state directory must have mode `0700`.
+The token is an environment variable only in the Docker workflow. Compose stores
+the enrolled client identity in the private `blindport-state` volume, so host UID
+and file mode differences do not affect startup. Back up that volume as a secret.
+If an older deployment already enrolled from a host bind mount, copy its
+`credential.json` into the named volume as UID/GID 10001 with mode `0600` before
+switching. Starting with an empty volume creates a different identity and requires
+an operator reset.
 
-For rootless Docker, add its socket path to `.env` (replace `1000` with the
-output of `id -u`):
+For rootless Docker, add its socket path to `.env` and set `DOCKER_GID` from that
+socket (replace `1000` with the output of `id -u`):
 
 ```dotenv
 DOCKER_SOCKET_PATH=/run/user/1000/docker.sock
+DOCKER_GID=1000
 ```
 
-For rootful Docker, the default `/var/run/docker.sock` is correct. Add the host
-user and socket group that own the mounted files:
+For rootful Docker, the default `/var/run/docker.sock` is correct:
 
 ```sh
-printf 'BLINDPORTD_USER=%s:%s\nDOCKER_GID=%s\n' \
-  "$(id -u)" "$(id -g)" "$(stat -c '%g' /var/run/docker.sock)" >> .env
+printf 'DOCKER_GID=%s\n' "$(stat -c '%g' /var/run/docker.sock)" >> .env
 ```
 
 `ACME_EMAIL` is optional. Leave it unset to register with Let's Encrypt without
@@ -96,8 +100,8 @@ curl --fail --show-error --silent "https://${DOMAIN}/"
 
 Traefik stores its ACME account and certificates in the `letsencrypt` volume.
 `blindportd` stores its stable client identity under
-`$HOME/.local/state/blindport`. Back up both as secrets and do not run a second
-agent with the same account token.
+the `blindport-state` volume. Back up both volumes as secrets and do not run a
+second agent with the same account token.
 Let's Encrypt renewal is automatic while the Relay subscription and stack stay
 active. Monitor certificate expiry independently because Let's Encrypt no
 longer sends expiry notification emails.
@@ -120,3 +124,17 @@ Both Traefik and `blindportd` read the Docker socket. Even a read-only mount
 provides control of the selected Docker daemon. This example favors a short,
 working setup; harden the containers and use a socket proxy as needed for a
 long-lived deployment.
+
+## Use an existing Traefik
+
+Do not start the `traefik` service from this example when the host already runs
+Traefik. Add the `tech.blindport.mapping.*` labels to the service handled by your
+existing proxy, connect `blindportd` to that proxy's Docker network, and start
+only the agent:
+
+```sh
+docker compose up -d blindportd
+```
+
+Set each mapping upstream to the existing proxy's service name and TLS port.
+This avoids two Traefik Docker providers discovering the same labels.

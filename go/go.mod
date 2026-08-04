@@ -9,6 +9,7 @@ require (
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/net v0.33.0
 	golang.org/x/sys v0.33.0
+	golang.org/x/term v0.32.0
 	golang.zx2c4.com/wireguard/wgctrl v0.0.0-20241231184526-a9ab2273dd10
 )
 

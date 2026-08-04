@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and structured recovery when another payment method is already pending.
 - A reusable Blindport logo system with profile, favicon, app icon, and social
   preview exports, plus Open Graph and large-card metadata for shared links.
+- A checksum-verifying Linux installer and an interactive first-run token prompt.
+
+### Changed
+
+- The dashboard now prioritizes the next endpoint action, resumes open invoices,
+  cancels safe unpaid orders, and hides advanced account and agent details.
+- Docker agent examples use an environment token and named identity volume.
+- TCP tunnels apply bounded backpressure instead of closing a stream when a slow
+  public receiver fills the per-stream queue.
 
 ## [0.2.3] - 2026-08-04
 

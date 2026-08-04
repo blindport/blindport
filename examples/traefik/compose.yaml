@@ -44,7 +44,6 @@ services:
 
   blindportd:
     image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
-    user: "${BLINDPORTD_USER:-0:0}"
     init: true
     restart: unless-stopped
     depends_on:
@@ -56,17 +55,17 @@ services:
     environment:
       BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
       BLINDPORT_DOCKER_POLL_INTERVAL: 1s
-      BLINDPORT_TOKEN_FILE: /run/secrets/blindport_token
+      BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN in .env}"
       BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
-      - ${BLINDPORT_TOKEN_PATH:-${HOME}/.config/blindport/token}:/run/secrets/blindport_token:ro
-      - ${BLINDPORT_STATE_PATH:-${HOME}/.local/state/blindport}:/var/lib/blindport
+      - blindport-state:/var/lib/blindport
     networks:
       - ingress
 
 volumes:
   letsencrypt:
+  blindport-state:
 
 networks:
   ingress:

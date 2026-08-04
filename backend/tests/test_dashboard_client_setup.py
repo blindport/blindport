@@ -90,16 +90,18 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     dashboard = _dashboard(client, token)
     generated = _element_text(dashboard, "generatedClientConfig")
     command = _element_text(dashboard, "framedConfigInstallCommand")
-    token_command = _element_text(dashboard, "framedSetupCommand")
+    run_command = _element_text(dashboard, "framedRunCommand")
     config = json.loads(generated)
 
     assert "Framed tunnel" in dashboard
-    assert "Install generated configuration" in dashboard
+    assert "Generated multi-endpoint config" in dashboard
     assert f"<dt>Subscription ID</dt><dd><code>{public_id}</code></dd>" in dashboard
-    assert "One <code>blindportd</code> process runs all active framed subscriptions" in dashboard
-    assert (
-        f"<code>{public_id}</code>\n          (Relay, <code>setup.relay.test</code>)" in dashboard
-    )
+    assert "first run asks for your account token" in dashboard
+    assert "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in run_command
+    assert "BLINDPORT_INSTALL_DIR=" in run_command
+    assert '"$HOME/.local/bin/blindportd"' in run_command
+    assert "-upstream=127.0.0.1:443" in run_command
+    assert "-token-file" not in run_command
     assert config == {
         "version": 1,
         "mappings": [
@@ -150,25 +152,6 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert victim.read_text(encoding="utf-8") == "preserve me"
     assert stat.S_IMODE(installed.stat().st_mode) == 0o600
     assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE((home / ".local" / "state" / "blindport").stat().st_mode) == 0o700
-
-    token_victim = tmp_path / "token-must-not-be-overwritten"
-    token_victim.write_text("preserve token target", encoding="utf-8")
-    (config_dir / "token").symlink_to(token_victim)
-    token_result = subprocess.run(
-        ["bash", "-eu", "-o", "pipefail", "-c", token_command],
-        env={**os.environ, "HOME": str(home)},
-        input="TEST-TOKEN\n",
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert token_result.returncode == 0, token_result.stderr
-    installed_token = config_dir / "token"
-    assert not installed_token.is_symlink()
-    assert installed_token.read_text(encoding="utf-8") == "TEST-TOKEN\n"
-    assert token_victim.read_text(encoding="utf-8") == "preserve token target"
-    assert stat.S_IMODE(installed_token.stat().st_mode) == 0o600
 
 
 def test_generated_nonrelay_mappings_use_local_port_80(app_client) -> None:
@@ -198,8 +181,8 @@ def test_setup_visibility_tracks_non_cancelled_delivery_modes(app_client) -> Non
     token = signup["token"]
 
     empty = _dashboard(client, token)
-    assert "framedSetupCommand" not in empty
-    assert "wireGuardSetupCommand" not in empty
+    assert "framedRunCommand" not in empty
+    assert "wireGuardRunCommand" not in empty
 
     relay_id = _create_subscription(
         client,
@@ -210,22 +193,21 @@ def test_setup_visibility_tracks_non_cancelled_delivery_modes(app_client) -> Non
     wireguard_id = _create_subscription(client, token, "ip", delivery="framed")
     _set_delivery(wireguard_id, DeliveryMode.WIREGUARD)
     pending = _dashboard(client, token)
-    assert "framedSetupCommand" in pending
-    assert "generatedClientConfig" not in pending
     assert "framedRunCommand" not in pending
-    assert "wireGuardSetupCommand" in pending
+    assert "generatedClientConfig" not in pending
+    assert "wireGuardRunCommand" not in pending
 
     _set_status(relay_id, SubscriptionStatus.EXPIRED)
     _set_status(wireguard_id, SubscriptionStatus.CANCELLED)
     expired_framed = _dashboard(client, token)
-    assert "framedSetupCommand" in expired_framed
+    assert "framedRunCommand" not in expired_framed
     assert "generatedClientConfig" not in expired_framed
-    assert "wireGuardSetupCommand" not in expired_framed
+    assert "wireGuardRunCommand" not in expired_framed
 
     _set_status(relay_id, SubscriptionStatus.CANCELLED)
     cancelled = _dashboard(client, token)
-    assert "framedSetupCommand" not in cancelled
-    assert "wireGuardSetupCommand" not in cancelled
+    assert "framedRunCommand" not in cancelled
+    assert "wireGuardRunCommand" not in cancelled
 
 
 def test_mixed_active_modes_show_both_setup_workflows(app_client) -> None:
@@ -246,13 +228,10 @@ def test_mixed_active_modes_show_both_setup_workflows(app_client) -> None:
     dashboard = _dashboard(client, token)
     assert "framedConfigInstallCommand" in dashboard
     assert "framedRunCommand" in dashboard
-    assert "wireGuardSetupCommand" in dashboard
     assert "wireGuardRunCommand" in dashboard
     for element_id in (
         "framedConfigInstallCommand",
-        "framedSetupCommand",
         "framedRunCommand",
-        "wireGuardSetupCommand",
         "wireGuardRunCommand",
     ):
         syntax = subprocess.run(

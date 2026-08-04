@@ -282,6 +282,8 @@ def test_saved_accounts_migrate_switch_and_forget(
             page.locator("#savedAccountForm").get_by_role(
                 "button", name="Sign in"
             ).click()
+            page.locator("#dashboardRoot").wait_for(state="visible")
+            page.get_by_text("Account token", exact=True).click()
             page.locator("#accountToken").wait_for(state="visible")
             assert (
                 page.locator("#dashboardRoot").get_attribute("data-account-id")
@@ -292,6 +294,8 @@ def test_saved_accounts_migrate_switch_and_forget(
             page.locator("#loginForm").wait_for(state="visible")
             page.locator("#tokenInput").fill(second["token"])
             page.locator("#loginForm").get_by_role("button", name="Sign in").click()
+            page.locator("#dashboardRoot").wait_for(state="visible")
+            page.get_by_text("Account token", exact=True).click()
             page.locator("#accountToken").wait_for(state="visible")
             assert (
                 page.locator("#dashboardRoot").get_attribute("data-account-id")
@@ -308,6 +312,8 @@ def test_saved_accounts_migrate_switch_and_forget(
             page.locator("#savedAccountForm").get_by_role(
                 "button", name="Sign in"
             ).click()
+            page.locator("#dashboardRoot").wait_for(state="visible")
+            page.get_by_text("Account token", exact=True).click()
             page.locator("#accountToken").wait_for(state="visible")
             assert (
                 page.locator("#dashboardRoot").get_attribute("data-account-id")
@@ -422,17 +428,15 @@ def test_dashboard_payment_qr_and_copy_controls(
     try:
         with _capture_failure(page, browser_server.artifacts / "payment-failure.png"):
             page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+            page.get_by_text("Account token", exact=True).click()
             page.locator("#revealTokenBtn").click()
             assert page.locator("#accountToken").input_value() == account["token"]
             page.locator("#copyAccountTokenBtn").click()
             assert page.evaluate("navigator.clipboard.readText()") == account["token"]
 
-            setup_command = page.locator("#framedSetupCommand").text_content()
-            page.get_by_role("button", name="Copy token command").click()
-            assert page.evaluate("navigator.clipboard.readText()") == setup_command
-            assert page.get_by_text("Delivery").first.is_visible()
-            assert page.get_by_text("Framed tunnel").first.is_visible()
-            assert page.locator("#wireGuardSetupCommand").count() == 0
+            assert page.get_by_role("heading", name="Awaiting payment").is_visible()
+            assert page.locator("#framedRunCommand").count() == 0
+            assert page.locator("#wireGuardRunCommand").count() == 0
 
             with page.expect_response(
                 lambda payment: (
@@ -464,23 +468,9 @@ def test_dashboard_payment_qr_and_copy_controls(
             assert page.locator("#copyInvoiceBtn").text_content() == "Copied"
 
             page.reload(wait_until="networkidle")
-            with (
-                page.expect_popup(),
-                page.expect_response(
-                    lambda response: response.url.endswith("/api/v1/payments")
-                    and response.request.method == "POST"
-                ) as conflict_response_info,
-            ):
-                page.locator(
-                    f'.stablecoinPayBtn[data-sub-id="{subscription["id"]}"]'
-                ).click()
-            conflict_response = conflict_response_info.value
-            assert conflict_response.status == 409
-            assert conflict_response.json()["existing_payment"]["id"] == payment["id"]
-            assert (
-                page.locator("#payStatus")
-                .text_content()
-                .startswith("a lightning payment is already pending")
+            page.locator("#qrBox svg").wait_for(state="visible")
+            assert page.locator("#payStatus").text_content() == (
+                "Payment still pending. Continue with this invoice."
             )
             assert page.locator("#payBolt11").text_content() == invoice
             assert page.locator("#qrBox svg").is_visible()
@@ -624,21 +614,27 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
             page, browser_server.artifacts / "relay-setup-failure.png"
         ):
             page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
-            assert page.get_by_text("Framed tunnel").first.is_visible()
-            assert page.locator("#wireGuardSetupCommand").count() == 0
+            assert page.get_by_role("heading", name="Connect your service").is_visible()
+            assert page.locator("#wireGuardRunCommand").count() == 0
             card = page.locator(f'[data-sub-id="{subscription["id"]}"]')
+            card.get_by_text("Endpoint details", exact=True).click()
             assert card.get_by_text("Subscription ID").is_visible()
             assert card.get_by_text(subscription["id"], exact=True).is_visible()
-            assert page.get_by_text(
-                "One blindportd process runs all active framed subscriptions"
-            ).is_visible()
+            quick_command = page.locator("#framedRunCommand").text_content()
+            assert (
+                "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in quick_command
+            )
+            assert "BLINDPORT_INSTALL_DIR=" in quick_command
+            assert '"$HOME/.local/bin/blindportd"' in quick_command
+            assert "-upstream=127.0.0.1:443" in quick_command
+            page.get_by_role("button", name="Copy command", exact=True).click()
+            assert page.evaluate("navigator.clipboard.readText()") == quick_command
+            page.get_by_text("Generated multi-endpoint config", exact=True).click()
             command = page.locator("#framedConfigInstallCommand").text_content()
             assert subscription["id"] in command
             assert '"upstream": "127.0.0.1:443"' in command
             assert 'cat > "$HOME/.config/blindport/config.json"' in command
-            page.get_by_role(
-                "button", name="Copy configuration install command"
-            ).click()
+            page.get_by_role("button", name="Copy config command").click()
             assert page.evaluate("navigator.clipboard.readText()") == command
             _assert_layout(page)
     finally:

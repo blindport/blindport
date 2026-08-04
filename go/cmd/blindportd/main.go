@@ -47,8 +47,9 @@ type provisioning struct {
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	tokenFlag := flag.String("token", "", "Blindport bearer token (or BLINDPORT_TOKEN env)")
-	tokenFile := flag.String("token-file", envDefault("BLINDPORT_TOKEN_FILE", "/etc/blindport/token"), "file containing the token")
-	backendURL := flag.String("backend", envDefault("BLINDPORT_BACKEND_URL", "http://localhost:8000"), "backend base URL")
+	defaultTokenPath := defaultTokenFile()
+	tokenFile := flag.String("token-file", defaultTokenPath, "file containing the token")
+	backendURL := flag.String("backend", envDefault("BLINDPORT_BACKEND_URL", "https://blindport.com"), "backend base URL")
 	relayOverride := flag.String("relay", os.Getenv("BLINDPORT_RELAY_CONTROL"), "override relay control address (host:port)")
 	upstream := flag.String("upstream", os.Getenv("BLINDPORT_UPSTREAM"), "local upstream host:port (defaults to 127.0.0.1:443 for Relay, 127.0.0.1:80 otherwise)")
 	httpChallengeUpstream := flag.String("http-challenge-upstream", os.Getenv("BLINDPORT_HTTP_CHALLENGE_UPSTREAM"), "optional Blindport Relay HTTP-01 upstream host:port; normal traffic remains on -upstream")
@@ -86,12 +87,18 @@ func main() {
 		os.Exit(2)
 	}
 	token, err := loadToken(*tokenFlag, *tokenFile)
+	if err == nil && token == "" && *tokenFile == defaultTokenPath && defaultTokenPath != legacyTokenFile {
+		token, err = loadToken("", legacyTokenFile)
+	}
+	if err == nil && token == "" {
+		token, err = promptAndStoreToken(*tokenFile, os.Stdin, os.Stderr)
+	}
 	if err != nil {
 		logger.Error("load token", "err", err)
 		os.Exit(2)
 	}
 	if token == "" {
-		logger.Error("no token: provide -token, BLINDPORT_TOKEN, or -token-file")
+		logger.Error("no token: run blindportd interactively once or provide -token, BLINDPORT_TOKEN, or -token-file")
 		os.Exit(2)
 	}
 
@@ -263,9 +270,15 @@ func main() {
 
 func loadToken(flagValue, path string) (string, error) {
 	if flagValue != "" {
+		if err := validateToken(flagValue); err != nil {
+			return "", fmt.Errorf("token argument: %w", err)
+		}
 		return flagValue, nil
 	}
 	if token := os.Getenv("BLINDPORT_TOKEN"); token != "" {
+		if err := validateToken(token); err != nil {
+			return "", fmt.Errorf("BLINDPORT_TOKEN: %w", err)
+		}
 		return token, nil
 	}
 	if path == "" {
@@ -300,10 +313,8 @@ func loadToken(flagValue, path string) (string, error) {
 		return "", errors.New("token file exceeds 8192 bytes")
 	}
 	token := strings.TrimSpace(string(data))
-	if strings.IndexFunc(token, func(r rune) bool {
-		return r == 0 || r == '\n' || r == '\r' || r == '\t' || r == ' '
-	}) >= 0 {
-		return "", errors.New("token file must contain exactly one token without whitespace")
+	if err := validateToken(token); err != nil {
+		return "", fmt.Errorf("token file: %w", err)
 	}
 	return token, nil
 }

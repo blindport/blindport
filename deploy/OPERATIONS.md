@@ -123,7 +123,9 @@ checked-in default remains false. The default `STABLECOIN_SWAP_MARKUP_BPS=1000`
 adds 10 percent to the LND invoice and
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS=1200` leaves time for the external swap
 within the 1,800-second reservation. Disable the feature flag first during a
-rollback. Do not deploy application code from before migration `0016` or
+rollback. The flag blocks new checkout creation and removes the UI control;
+reconciliation still settles or expires invoices issued before disablement so
+customer payments and resource holds are not stranded. Do not deploy application code from before migration `0016` or
 downgrade the migration while stablecoin payment rows remain; older code cannot
 deserialize the new payment method.
 
@@ -222,8 +224,10 @@ relay control to the additional loopback mTLS listener; no public firewall port 
 required. The onion Web route intentionally returns 404 for admin and internal APIs.
 
 The canary mounts `DOWNLOADS_DIR` read-only at `/srv/downloads`. Publish versioned
-agent binaries and matching `.sha256` files there; never replace an existing versioned
-artifact in place.
+agent binaries and matching `.sha256` files there; never replace an existing
+versioned artifact in place. Also publish `install.sh`, the current
+`blindportd-linux-{amd64,arm64,armv7}` aliases, and their checksums. Stage and
+verify all current-release aliases before renaming them into place together.
 
 HAProxy sends PROXY v2 only on the API path, and Caddy accepts it only from loopback,
 so Caddy and the backend receive the API client address in `X-Forwarded-For`. The

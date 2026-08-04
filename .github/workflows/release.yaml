@@ -360,12 +360,21 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
+          set -euo pipefail
+          for platform in linux-amd64 linux-arm64 linux-armv7; do
+            versioned="dist/blindportd-$RELEASE_VERSION-$platform"
+            alias="dist/blindportd-$platform"
+            cp "$versioned" "$alias"
+            (cd dist && sha256sum "$(basename "$alias")" > "$(basename "$alias").sha256")
+          done
+          cp scripts/install.sh dist/install.sh
+          (cd dist && sha256sum install.sh > install.sh.sha256)
           sort image-references/*.env > dist/blindport-images.env
           printf '## %s\n\n' "$RELEASE_VERSION" > release-notes.md
           cat >> release-notes.md <<'EOF'
           Container images are published to GHCR. The attached `blindport-images.env` contains digest-pinned references for this release.
 
-          Agent binaries are available for Linux amd64, arm64, and armv7. The matching `.sha256` files detect download corruption.
+          Install the agent with `curl -fsSL https://blindport.com/downloads/install.sh | sh`. Agent binaries are available for Linux amd64, arm64, and armv7. The matching `.sha256` files detect download corruption.
 
           These convenience artifacts are built by GitHub Actions. If GitHub Actions is outside your trust boundary, verify the GPG-signed tag and build the source locally instead.
           EOF

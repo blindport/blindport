@@ -25,7 +25,12 @@
 
     <section id="install">
       <h2>Install</h2>
-      <p>GitHub Actions builds versioned static Linux binaries for amd64, arm64, and armv7 and publishes them through <a href="https://github.com/blindport/blindport/releases">GitHub Releases</a>. If GitHub Actions is inside your trust boundary, download the binary and matching <code>.sha256</code> file for the same release:</p>
+      <p>On Linux amd64, arm64, or armv7, install the current agent with one command:</p>
+      <pre><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | \
+  BLINDPORT_DOWNLOAD_BASE_URL={{ request.url.scheme }}://{{ request.url.netloc }}/downloads sh</code></pre>
+      <p>The installer detects the architecture, downloads the binary and checksum over HTTPS (or the selected authenticated onion service), verifies SHA-256, and installs to <code>/usr/local/bin</code> with sudo when available. Without sudo it uses <code>~/.local/bin</code>.</p>
+      <details><summary>Manual download and trust details</summary>
+      <p>GitHub Actions builds versioned static Linux binaries and publishes them through <a href="https://github.com/blindport/blindport/releases">GitHub Releases</a>. The hosted copies are:</p>
       {% if blindportd_version != "dev" %}
       <ul>
         <li><a href="/downloads/blindportd-{{ blindportd_version }}-linux-amd64">Linux amd64</a> (<a href="/downloads/blindportd-{{ blindportd_version }}-linux-amd64.sha256">checksum</a>)</li>
@@ -45,27 +50,20 @@ CGO_ENABLED=0 go build -trimpath \
 cd ..
 sudo install -m 0755 blindportd /usr/local/bin/blindportd</code></pre>
       <p>The GPG signature authenticates the source history, not GitHub-built artifacts. Primary release-signing key fingerprint: <code>18ED E472 6C14 1484 4923 D6FF 14EA BFF7 39C1 6205</code>.</p>
+      </details>
     </section>
 
     <section id="credentials">
       <h2>Token and state</h2>
-      <p>The account token is a bearer credential. Put exactly one token in an owner-only regular file; avoid command-line and environment values in production because they can be exposed through process inspection.</p>
-      <pre><code>install -d -m 0700 "$HOME/.config/blindport" "$HOME/.local/state/blindport"
-bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
-  printf "%s\n" "$token" | install -m 0600 /dev/stdin "$HOME/.config/blindport/token"'</code></pre>
+      <p>Run <code>blindportd</code> interactively once. It asks for the account token without echo and stores it at <code>~/.config/blindport/token</code> with owner-only permissions. Docker uses <code>BLINDPORT_TOKEN</code> instead.</p>
       <p>The state directory stores the client Ed25519 identity and, in routed mode, a WireGuard key. It must be absolute, owned by the daemon user, and inaccessible to group and other users. Back it up as a secret. Production permits one enrolled client identity per account; losing <code>credential.json</code> requires an operator reset before enrollment can be repeated.</p>
     </section>
 
     <section id="run">
       <h2>Run framed mode</h2>
-      <p>For one active Relay subscription forwarding to a service on local port 8080, start the agent without a configuration file:</p>
-      <pre><code>blindportd \
-  -backend={{ request.url.scheme }}://{{ request.url.netloc }} \
-  -token-file="$HOME/.config/blindport/token" \
-  -state-dir="$HOME/.local/state/blindport" \
-  -kind=relay \
-  -upstream=127.0.0.1:8080</code></pre>
-      <p>Single-mapping mode selects the first active allocation for the requested kind. Use <code>-kind=ip</code> for Blindport IP or <code>-kind=port -transport=tcp|udp</code> for Blindport Port. Add the <code>-config</code> flag only after creating the static mapping file described below.</p>
+      <p>With one active endpoint, point the agent at the local service:</p>
+      <pre><code>blindportd -backend={{ request.url.scheme }}://{{ request.url.netloc }} -upstream=127.0.0.1:8080</code></pre>
+      <p>The hosted binary defaults to <code>https://blindport.com</code>, so hosted users can omit <code>-backend</code>. The only required first-run input is the token prompt. With several active endpoints, use the generated dashboard config.</p>
       <p>The backend returns only active subscriptions. Restart the daemon after adding, removing, or changing a subscription.</p>
     </section>
 
@@ -92,7 +90,7 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     <section id="docker">
       <h2>Docker discovery</h2>
       <p>One long-running agent continuously discovers running containers, registers declared orders, refreshes active provisioning, and starts or stops mappings without a restart.</p>
-      <p>GitHub Actions builds the agent image published through GHCR. If GitHub Actions and GHCR are inside your trust boundary, use the digest-pinned reference in the matching release's <code>blindport-images.env</code> asset for production. Otherwise, build the <code>blindportd</code> target from the verified source checkout with <code>docker build -f docker/go.Dockerfile --target blindportd -t blindportd:local .</code> and use that local tag. Set <code>DOCKER_GID</code> to the numeric group owner from <code>stat -c '%g' /var/run/docker.sock</code>. Create <code>/etc/blindport</code> and <code>/var/lib/blindport</code> with owner UID/GID 10001 and mode <code>0700</code>, then install the mounted token with the same owner and mode <code>0600</code>.</p>
+      <p>Pass the token as an environment variable and persist the enrolled identity in a named volume. Set <code>DOCKER_GID</code> to the numeric group owner from <code>stat -c '%g' /var/run/docker.sock</code>.</p>
       <pre><code>services:
   reverse-proxy:
     labels:
@@ -110,16 +108,18 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     group_add: ["${DOCKER_GID}"]
     environment:
       BLINDPORT_BACKEND_URL: "{{ request.url.scheme }}://{{ request.url.netloc }}"
-      BLINDPORT_TOKEN_FILE: /run/secrets/blindport_token
+      BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"
       BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /etc/blindport/token:/run/secrets/blindport_token:ro
-      - /var/lib/blindport:/var/lib/blindport
+      - blindport-state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
-    tmpfs: ["/tmp:size=16m,mode=1777"]</code></pre>
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+volumes:
+  blindport-state:</code></pre>
       <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
       <p>The mapping name is a stable order key. Relay also requires a domain; Port accepts TCP or UDP; IP uses framed delivery. Existing <code>.subscription</code> labels remain supported. With NWC, an eligible new declaration starts one initial payment; without NWC it appears in the dashboard for manual payment. Removing a label stops forwarding but does not cancel service.</p>
       <p>Run the agent and targets on a shared Docker network so labeled upstream names resolve. The agent polls every 10 seconds by default; set <code>BLINDPORT_DOCKER_POLL_INTERVAL</code> between <code>1s</code> and <code>5m</code>.</p>
@@ -140,16 +140,8 @@ bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
     <section id="wireguard">
       <h2>Routed WireGuard mode</h2>
       <p>Prefer framed Relay or Port for a domain or individual TCP/UDP service because it does not require host network privileges. Choose WireGuard only when a Blindport IP workload needs the complete routed public /32, native UDP or ICMP semantics, arbitrary ports, or other IPv4 protocols. It is separate from framed mappings and Docker discovery.</p>
-      <p>Create root-owned credential and state paths because the agent requires network administration capability:</p>
-      <pre><code>sudo install -d -m 0700 /etc/blindport /var/lib/blindport
-bash -c 'read -rsp "Blindport token: " token &amp;&amp; printf "\n" &amp;&amp; \
-  printf "%s\n" "$token" | sudo install -m 0600 /dev/stdin /etc/blindport/token'
-
-sudo blindportd \
-  -wireguard \
-  -backend={{ request.url.scheme }}://{{ request.url.netloc }} \
-  -token-file=/etc/blindport/token \
-  -state-dir=/var/lib/blindport</code></pre>
+      <p>Run the agent with network administration privileges. Its first root run prompts for the token and creates private root-owned token and identity paths:</p>
+      <pre><code>sudo blindportd -wireguard -backend={{ request.url.scheme }}://{{ request.url.netloc }}</code></pre>
       <p>The host needs Linux kernel WireGuard and <code>CAP_NET_ADMIN</code> or equivalent privileges. The agent creates <code>bpwg0</code>, assigns the leased public /32, and installs source policy routing without replacing the host's main default route. TCP, UDP, ICMP, and other IPv4 packets route directly without framed stream or datagram encapsulation. Your application must listen on the assigned address or a wildcard socket; routed mode does not dial an upstream.</p>
     </section>
 
@@ -170,7 +162,7 @@ sudo blindportd \
     <section id="troubleshooting">
       <h2>Troubleshooting</h2>
       <dl class="troubleshooting-list">
-        <div><dt><code>no token</code> or token file rejected</dt><dd>Confirm the file contains one token, is regular, owner-only, owned by the daemon user, and is not a symlink.</dd></div>
+        <div><dt><code>no token</code></dt><dd>Run the native agent once in a terminal to enter it, or set <code>BLINDPORT_TOKEN</code> for Docker. Explicit token files remain supported.</dd></div>
         <div><dt>Subscription is missing</dt><dd>Confirm payment is settled and the subscription is active. Docker mode will discover it on the next poll; static and legacy modes still require a restart.</dd></div>
         <div><dt>Domain payment is unavailable</dt><dd>For a customer domain, publish the one exact CNAME name and target from the dashboard and run the DNS check before creating an invoice.</dd></div>
         <div><dt>TLS certificate fails</dt><dd>Confirm SNI matches the ordered hostname and the origin serves its complete certificate chain. Blindport does not issue the public service certificate.</dd></div>

@@ -3,7 +3,8 @@
 Releases are built only from signed, annotated SemVer tags. The release workflow
 runs the complete CI suite, publishes multi-architecture images to GHCR, promotes
 stable aliases, and creates a GitHub Release with checksummed agent binaries and
-digest-pinned image references.
+digest-pinned image references. It also publishes unversioned binary aliases and
+`install.sh` for the stable one-command installer URL.
 
 The workflow is a convenience builder, not an independent trust root. Users may
 trust the GitHub-built artifacts or verify the GPG-signed source tag and build

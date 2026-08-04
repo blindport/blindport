@@ -223,14 +223,13 @@ traefik_example_check() {
         config --format json \
         | python3 -c '
 import json
-import os
 import sys
 
 services = json.load(sys.stdin)["services"]
 assert set(services) == {"blindportd", "site", "traefik"}
 assert all(not service.get("ports") for service in services.values())
 assert all(set(service["networks"]) == {"ingress"} for service in services.values())
-assert services["blindportd"]["user"] == "0:0"
+assert "user" not in services["blindportd"]
 assert services["blindportd"]["depends_on"]["site"]["condition"] == "service_started"
 assert services["traefik"]["depends_on"]["blindportd"]["condition"] == "service_started"
 assert services["traefik"]["entrypoint"] == [
@@ -271,16 +270,11 @@ state = next(
     for volume in services["blindportd"]["volumes"]
     if volume["target"] == "/var/lib/blindport"
 )
-assert state["type"] == "bind"
-assert state["source"] == os.path.expanduser("~/.local/state/blindport")
+assert state["type"] == "volume"
+assert state["source"] == "blindport-state"
 assert not state.get("read_only", False)
-
-token = next(
-    volume
-    for volume in services["blindportd"]["volumes"]
-    if volume["target"] == "/run/secrets/blindport_token"
-)
-assert token["source"] == os.path.expanduser("~/.config/blindport/token")
+assert services["blindportd"]["environment"]["BLINDPORT_TOKEN"] == "replace-with-your-account-token"
+assert "BLINDPORT_TOKEN_FILE" not in services["blindportd"]["environment"]
 '
 
     DOCKER_SOCKET_PATH=/run/user/1234/docker.sock docker compose \
@@ -301,7 +295,7 @@ for name in ("blindportd", "traefik"):
     assert socket["source"] == "/run/user/1234/docker.sock"
 '
 
-    BLINDPORTD_USER=1234:1234 DOCKER_GID=999 ACME_EMAIL=owner@example.com \
+    DOCKER_GID=999 ACME_EMAIL=owner@example.com \
         docker compose \
         --env-file "$root/examples/traefik/.env.example" \
         -f "$root/examples/traefik/compose.yaml" \
@@ -311,7 +305,6 @@ import json
 import sys
 
 services = json.load(sys.stdin)["services"]
-assert services["blindportd"]["user"] == "1234:1234"
 assert services["blindportd"]["group_add"] == ["999"]
 assert services["traefik"]["environment"]["TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL"] == "owner@example.com"
 '

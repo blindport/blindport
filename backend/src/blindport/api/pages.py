@@ -258,6 +258,9 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
     subs_svc.reap_expired_domain_claims(session)
     subs = session.exec(select(Subscription).where(Subscription.user_id == user.id)).all()
     subs_svc.expire_elapsed_subscriptions(session, subs)
+    visible_subscriptions = [
+        subscription for subscription in subs if subscription.status != SubscriptionStatus.CANCELLED
+    ]
     framed_subscriptions = [
         subscription
         for subscription in subs
@@ -296,10 +299,25 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         _ctx(
             request,
             user=user,
-            subscriptions=subs,
+            subscriptions=visible_subscriptions,
+            pending_subscriptions=[
+                subscription
+                for subscription in visible_subscriptions
+                if subscription.status == SubscriptionStatus.PENDING
+            ],
+            active_subscriptions=[
+                subscription
+                for subscription in visible_subscriptions
+                if subscription.status == SubscriptionStatus.ACTIVE
+            ],
             framed_subscriptions=framed_subscriptions,
             client_subscriptions=client_subscriptions,
             wireguard_subscriptions=wireguard_subscriptions,
+            active_wireguard_subscriptions=[
+                subscription
+                for subscription in wireguard_subscriptions
+                if subscription.status == SubscriptionStatus.ACTIVE
+            ],
             client_config_json=(
                 json.dumps({"version": 1, "mappings": client_mappings}, indent=2)
                 if client_mappings

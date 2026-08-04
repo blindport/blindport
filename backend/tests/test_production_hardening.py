@@ -299,9 +299,9 @@ def test_dashboard_renders_catalog_controls_and_external_scripts(app_client) -> 
     response = client.get("/dashboard")
 
     assert response.status_code == 200, response.text
-    assert "Blindport IP" in response.text
-    assert "Blindport Port" in response.text
-    assert "Blindport Relay" in response.text
+    assert "Dedicated public IP" in response.text
+    assert "One public port" in response.text
+    assert "Public hostname" in response.text
     assert client.cookies.get("blindport_token") == token
     assert ">TCP</option>" in response.text
     assert "2 available" not in response.text

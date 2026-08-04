@@ -133,7 +133,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Validate deployment configuration
-        run: ./deploy/validate.sh
+        run: sh -n scripts/install.sh && ./deploy/validate.sh
 
   browser:
     runs-on: ubuntu-latest

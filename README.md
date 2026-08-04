@@ -115,6 +115,16 @@ See [Self-hosting Blindport](docs/self-hosting.md) for control-plane and relay
 deployment. Agent configuration is documented in [docs/agent.md](docs/agent.md).
 Maintainer release steps are documented in [docs/releasing.md](docs/releasing.md).
 
+For one active hosted endpoint, install and run the Linux agent:
+
+```sh
+curl -fsSL https://blindport.com/downloads/install.sh | sh
+blindportd -upstream=127.0.0.1:8080
+```
+
+The first run prompts for the account token. Docker deployments use
+`BLINDPORT_TOKEN` and a named volume for client identity.
+
 To publish a complete HTTPS site without host port forwarding, follow the
 [Blindport, Traefik, and Let's Encrypt example](examples/traefik/README.md).
 

@@ -208,7 +208,7 @@ function updatePaymentTermControl(card) {
     const verb = card.dataset.subStatus === "active" || card.dataset.subStatus === "expired"
       ? "Renew"
       : "Pay";
-    button.textContent = `${verb} ${price} sats for ${days} days`;
+    button.textContent = `${verb} ${price} sats`;
     button.dataset.originalText = button.textContent;
   }
 }
@@ -351,7 +351,8 @@ async function pollPayment(payment, status) {
       return true;
     }
     if (current.status === "expired" || current.status === "failed") {
-      status.textContent = `Payment ${current.status}. Create a new payment to try again.`;
+      status.textContent = `Payment ${current.status}. Refreshing the endpoint.`;
+      window.setTimeout(() => window.location.reload(), 800);
       return false;
     }
   }
@@ -361,21 +362,22 @@ async function pollPayment(payment, status) {
 
 async function startNwcFlow(subId, term, trigger) {
   const originalText = trigger.textContent;
+  const cardStatus = trigger.closest(".subscription-card")?.querySelector(".cardStatus");
+  const status = cardStatus || document.getElementById("nwcStatus") || trigger;
   trigger.disabled = true;
   trigger.textContent = "Sending payment...";
+  status.textContent = "Sending payment from the connected wallet.";
   try {
     const payment = await jsonFetch("/api/v1/payments", {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({ subscription_id: subId, method: "nwc", billing_term: term }),
     });
-    const status = document.getElementById("nwcStatus");
-    if (status) status.textContent = `Wallet payment ${payment.nwc_state || payment.status}.`;
-    const paid = await pollPayment(payment, status || trigger);
+    status.textContent = `Wallet payment ${payment.nwc_state || payment.status}.`;
+    const paid = await pollPayment(payment, status);
     if (paid) return;
   } catch (error) {
-    const status = document.getElementById("nwcStatus");
-    if (status) status.textContent = `Wallet payment error: ${error.message}`;
+    status.textContent = `Wallet payment error: ${error.message}`;
   }
   trigger.disabled = false;
   trigger.textContent = originalText;
@@ -425,6 +427,54 @@ document.querySelectorAll(".nwcPayBtn").forEach((button) => {
   });
 });
 
+document.querySelectorAll(".cancelSubBtn").forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (!window.confirm("Cancel this unpaid order?")) return;
+    const card = button.closest(".subscription-card");
+    const status = card.querySelector(".cardStatus");
+    button.disabled = true;
+    status.textContent = "Checking payment state...";
+    try {
+      await jsonFetch(`/api/v1/subscriptions/${button.dataset.subId}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      status.textContent = "Order cancelled. Refreshing endpoints.";
+      window.setTimeout(() => window.location.reload(), 400);
+    } catch (error) {
+      status.textContent = `Could not cancel: ${error.message}`;
+      button.disabled = false;
+    }
+  });
+});
+
+async function resumeOpenPayment() {
+  let payments;
+  try {
+    payments = await jsonFetch("/api/v1/payments", { headers: authHeaders() });
+  } catch (error) {
+    return;
+  }
+  const payment = payments.find((item) =>
+    ["lightning", "stablecoin_swap"].includes(item.method) && item.status === "pending"
+  );
+  if (!payment) return;
+  const card = document.querySelector(
+    `.subscription-card[data-sub-id="${CSS.escape(payment.subscription_id)}"]`,
+  );
+  const status = document.getElementById("payStatus");
+  if (card) setCardPaymentButtonsDisabled(card, true);
+  try {
+    renderManualPayment(payment, status);
+    status.textContent = "Payment still pending. Continue with this invoice.";
+    const paid = await pollPayment(payment, status);
+    if (!paid && card) setCardPaymentButtonsDisabled(card, false);
+  } catch (error) {
+    status.textContent = `Could not restore payment: ${error.message}`;
+    if (card) setCardPaymentButtonsDisabled(card, false);
+  }
+}
+
 document.querySelectorAll(".autoRenewToggle").forEach((toggle) => {
   toggle.addEventListener("change", async () => {
     toggle.disabled = true;
@@ -438,7 +488,7 @@ document.querySelectorAll(".autoRenewToggle").forEach((toggle) => {
         result.auto_renew ? "On" : "Off";
     } catch (error) {
       toggle.checked = !toggle.checked;
-      const status = document.getElementById("nwcStatus");
+      const status = toggle.closest(".subscription-card").querySelector(".cardStatus");
       if (status) status.textContent = `Automatic renewal error: ${error.message}`;
     }
     toggle.disabled = false;
@@ -567,3 +617,4 @@ document.querySelectorAll(".copyCommandBtn").forEach((button) => {
 
 updateDashboardManagedPreview();
 updateSubscriptionFields();
+void resumeOpenPayment();
