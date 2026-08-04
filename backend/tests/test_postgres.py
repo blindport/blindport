@@ -297,7 +297,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0015")
+    assert database_revisions(engine) == ("0008", "0016")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -350,7 +350,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0015", "0015")
+    assert database_revisions(engine) == ("0016", "0016")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -385,10 +385,22 @@ def test_postgres_migration_and_database_lifecycle() -> None:
     assert (billing_sub.billing_term, billing_sub.yearly_price_sats) == ("monthly", 12340)
     assert UUID(str(billing_sub.public_id)).version == 4
     assert (billing_payment.billing_term, billing_payment.period_days) == ("monthly", 30)
+    assert billing_payment.markup_sats == 0
     with engine.connect() as connection:
+        payment_methods = (
+            connection.execute(
+                text(
+                    "SELECT enumlabel FROM pg_enum JOIN pg_type ON pg_type.oid = enumtypid "
+                    "WHERE typname = 'paymentmethod' ORDER BY enumsortorder"
+                )
+            )
+            .scalars()
+            .all()
+        )
         reminder_audit = connection.execute(
             text("SELECT state, error_code FROM reminderdelivery")
         ).one()
+    assert payment_methods == ["LIGHTNING", "CASHU", "NWC", "STABLECOIN_SWAP"]
     assert reminder_audit == ("cancelled", "legacy_delivery_cancelled")
 
     post_migration_marker = f"postgres-legacy-insert-{uuid4()}"
@@ -1005,7 +1017,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0015", "0015")
+        assert database_revisions(engine) == ("0016", "0016")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

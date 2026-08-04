@@ -16,6 +16,7 @@ from ..core.models import (
     BillingTerm,
     DeliveryMode,
     Payment,
+    PaymentMethod,
     PaymentStatus,
     ProductType,
     Subscription,
@@ -81,6 +82,15 @@ def _is_managed_domain(domain: str) -> bool:
     return any(domain.endswith(f".{suffix}") for suffix in suffixes)
 
 
+def _domain_claim_ttl(domain_is_managed: bool) -> timedelta:
+    seconds = (
+        settings.RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS
+        if domain_is_managed
+        else settings.RELAY_DOMAIN_CLAIM_TTL_SECONDS
+    )
+    return timedelta(seconds=seconds)
+
+
 def domain_payment_eligibility_deadline(sub: Subscription) -> datetime | None:
     """Return the last instant at which a Blindport Relay payment may be started."""
     if sub.product != ProductType.RELAY:
@@ -103,7 +113,11 @@ def _reconcile_domain_payment(session: Session, payment: Payment) -> Payment:
 
     if payment.status == PaymentStatus.PROCESSING:
         return payment
-    if payment.method.value in {"lightning", "nwc"}:
+    if payment.method in {
+        PaymentMethod.LIGHTNING,
+        PaymentMethod.NWC,
+        PaymentMethod.STABLECOIN_SWAP,
+    }:
         return check_and_settle_payment(session, payment)
     return expire_pending_payment(session, payment)
 
@@ -133,7 +147,6 @@ def reap_expired_domain_claims(session: Session) -> int:
         )
     ).all()
     initialized = False
-    claim_ttl = timedelta(seconds=settings.RELAY_DOMAIN_CLAIM_TTL_SECONDS)
     for sub in pending_without_deadlines:
         anchor = _aware(sub.created_at) or _aware(sub.updated_at) or now
         result = session.execute(
@@ -144,7 +157,10 @@ def reap_expired_domain_claims(session: Session) -> int:
                 Subscription.domain.is_not(None),  # type: ignore[union-attr]
                 Subscription.domain_claim_expires_at.is_(None),  # type: ignore[union-attr]
             )
-            .values(domain_claim_expires_at=anchor + claim_ttl, updated_at=now)
+            .values(
+                domain_claim_expires_at=anchor + _domain_claim_ttl(sub.domain_is_managed),
+                updated_at=now,
+            )
             .execution_options(synchronize_session=False)
         )
         initialized = result.rowcount == 1 or initialized
@@ -487,6 +503,22 @@ def create_subscription(
             "account has reached the non-cancelled subscription limit "
             f"({settings.ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS})"
         )
+    if product == ProductType.RELAY:
+        pending_relay_claims = len(
+            session.exec(
+                select(Subscription.id).where(
+                    Subscription.user_id == user.id,
+                    Subscription.product == ProductType.RELAY,
+                    Subscription.status == SubscriptionStatus.PENDING,
+                    Subscription.domain.is_not(None),  # type: ignore[union-attr]
+                )
+            ).all()
+        )
+        if pending_relay_claims >= settings.ACCOUNT_MAX_PENDING_RELAY_CLAIMS:
+            raise AccountLimitError(
+                "account has reached the unpaid Relay claim limit "
+                f"({settings.ACCOUNT_MAX_PENDING_RELAY_CLAIMS})"
+            )
     if domain_is_managed and session.get_bind().dialect.name == "postgresql":
         # Serialize claims against the operator-configured global cap.
         session.execute(text("SELECT pg_advisory_xact_lock(1886547825)"))
@@ -503,7 +535,7 @@ def create_subscription(
         if existing is not None:
             raise ValueError("domain already has a subscription")
         now = _utcnow()
-        domain_claim_expires_at = now + timedelta(seconds=settings.RELAY_DOMAIN_CLAIM_TTL_SECONDS)
+        domain_claim_expires_at = now + _domain_claim_ttl(domain_is_managed)
         if domain_is_managed:
             domain_verified_at = now
         else:
@@ -669,9 +701,19 @@ def reap_elapsed_resource_holds(session: Session) -> None:
 
         # Provider-backed payments must be checked before local expiration so a
         # boundary settlement is credited instead of releasing its assignment.
-        from .payments import check_and_settle_payment
+        from .payments import DisabledPaymentMethodError, check_and_settle_payment
 
-        check_and_settle_payment(session, payment)
+        try:
+            check_and_settle_payment(session, payment)
+        except DisabledPaymentMethodError:
+            session.rollback()
+            logger.warning(
+                "retaining expired {} reservation for subscription {} while payment method "
+                "{} is disabled",
+                sub.product.value,
+                sub.public_id,
+                payment.method.value,
+            )
 
 
 def reserve_subscription_resource(

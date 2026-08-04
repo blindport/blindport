@@ -2,6 +2,7 @@ const dashboardRoot = document.getElementById("dashboardRoot");
 const token = dashboardRoot.dataset.token;
 const accountId = dashboardRoot.dataset.accountId;
 const accounts = window.BlindportAccounts;
+const btcUsdPrice = Number.parseFloat(dashboardRoot.dataset.btcUsd);
 
 accounts.save(token, accountId);
 
@@ -57,6 +58,14 @@ function billingDays(term) {
   return term === "yearly" ? 365 : 30;
 }
 
+function approximateUsd(amountSats) {
+  if (!Number.isFinite(btcUsdPrice) || btcUsdPrice <= 0) return "";
+  const value = Number(amountSats) * btcUsdPrice / 100000000;
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 0.01) return "<$0.01";
+  return `$${value.toFixed(2)}`;
+}
+
 function dashboardDomain() {
   const mode = chooseEnabledRadio("dashboardDomainMode");
   if (!mode) return "";
@@ -91,9 +100,14 @@ function updateSubscriptionFields() {
   const option = productSelect.selectedOptions[0];
   const term = selectedNewBillingTerm();
   const priceKey = term === "yearly" ? "yearlyPrice" : "monthlyPrice";
-  document.getElementById("selectedPrice").textContent = option
-    ? `${option.dataset[priceKey]} sats / ${billingDays(term)} days`
-    : "";
+  if (option) {
+    const sats = option.dataset[priceKey];
+    const usd = approximateUsd(sats);
+    document.getElementById("selectedPrice").textContent =
+      `${sats} sats / ${billingDays(term)} days${usd ? ` · about ${usd} USD` : ""}`;
+  } else {
+    document.getElementById("selectedPrice").textContent = "";
+  }
   const activeSelect = product === "ip" ? delivery : product === "port" ? transport : null;
   const invalidDomain = product === "relay" && !dashboardDomain();
   document.getElementById("createSubBtn").disabled =
@@ -124,16 +138,23 @@ document.getElementById("domain").addEventListener("input", updateSubscriptionFi
 async function jsonFetch(url, options) {
   const response = await fetch(url, options);
   const text = await response.text();
-  if (!response.ok) {
+  let parsed = null;
+  if (text) {
     try {
-      const parsed = JSON.parse(text);
-      throw new Error(typeof parsed.detail === "string" ? parsed.detail : text);
+      parsed = JSON.parse(text);
     } catch (error) {
-      if (error instanceof SyntaxError) throw new Error(text || response.statusText);
-      throw error;
+      if (response.ok) throw error;
     }
   }
-  return text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const error = new Error(
+      typeof parsed?.detail === "string" ? parsed.detail : text || response.statusText,
+    );
+    error.status = response.status;
+    error.payload = parsed;
+    throw error;
+  }
+  return parsed;
 }
 
 document.getElementById("newSubForm").addEventListener("submit", async (event) => {
@@ -175,7 +196,13 @@ function updatePaymentTermControl(card) {
   const price = term === "yearly" ? card.dataset.yearlyPrice : card.dataset.monthlyPrice;
   const days = billingDays(term);
   const summary = card.querySelector(".payment-term-summary");
-  if (summary) summary.textContent = `${price} sats for ${days} service days`;
+  const usd = approximateUsd(price);
+  if (summary) {
+    summary.textContent =
+      `${price} sats for ${days} service days${usd ? ` · about ${usd} USD` : ""}`;
+  }
+  const cardUsd = card.querySelector(".cardUsd");
+  if (cardUsd) cardUsd.textContent = usd ? ` · about ${usd} USD` : "";
   const button = card.querySelector(".payBtn");
   if (button && !button.disabled) {
     const verb = card.dataset.subStatus === "active" || card.dataset.subStatus === "expired"
@@ -186,39 +213,112 @@ function updatePaymentTermControl(card) {
   }
 }
 
-async function startLightningFlow(subId, term, trigger) {
+function preparePaymentPanel(method) {
   const panel = document.getElementById("payPanel");
-  const status = document.getElementById("payStatus");
-  trigger.disabled = true;
-  trigger.textContent = "Creating invoice...";
+  panel.dataset.paymentMethod = method;
   panel.hidden = false;
   panel.focus();
-  status.textContent = "Creating a Lightning invoice.";
-  document.getElementById("qrBox").innerHTML = "";
+  const stablecoin = method === "stablecoin_swap";
+  document.getElementById("payEyebrow").textContent = stablecoin
+    ? "Stablecoin checkout"
+    : "Lightning invoice";
+  const qrBox = document.getElementById("qrBox");
+  qrBox.hidden = stablecoin;
+  qrBox.innerHTML = "";
+  document.getElementById("payInvoiceDetails").hidden = stablecoin;
+  document.getElementById("stablecoinNotice").hidden = !stablecoin;
+  document.getElementById("payBreakdown").hidden = true;
   document.getElementById("payBolt11").textContent = "";
   document.getElementById("payAmount").textContent = "";
-  document.getElementById("payUri").removeAttribute("href");
+  document.getElementById("payUsd").textContent = "";
+  const payUri = document.getElementById("payUri");
+  payUri.textContent = stablecoin ? "Continue in Boltz" : "Open in wallet";
+  payUri.removeAttribute("href");
+  payUri.removeAttribute("target");
+  payUri.removeAttribute("rel");
+  return panel;
+}
+
+function setCardPaymentButtonsDisabled(card, disabled) {
+  card.querySelectorAll(".payBtn, .stablecoinPayBtn, .nwcPayBtn").forEach((button) => {
+    button.disabled = disabled;
+    if (!disabled && button.dataset.originalText) {
+      button.textContent = button.dataset.originalText;
+    }
+  });
+}
+
+function renderManualPayment(payment, status, externalWindow = null) {
+  const stablecoin = payment.method === "stablecoin_swap";
+  preparePaymentPanel(payment.method);
+  document.getElementById("payBolt11").textContent = payment.invoice;
+  document.getElementById("payAmount").textContent = payment.amount_sats;
+  const usd = approximateUsd(payment.amount_sats);
+  document.getElementById("payUsd").textContent = usd ? `(about ${usd} USD)` : "";
+  const payUri = document.getElementById("payUri");
+  if (stablecoin) {
+    if (!payment.stablecoin_checkout_url) {
+      throw new Error("Stablecoin checkout is unavailable for this payment");
+    }
+    const breakdown = document.getElementById("payBreakdown");
+    breakdown.textContent =
+      `${payment.base_amount_sats} sats service price + ${payment.markup_sats} sats stablecoin surcharge`;
+    breakdown.hidden = false;
+    payUri.href = payment.stablecoin_checkout_url;
+    payUri.target = "_blank";
+    payUri.rel = "noopener noreferrer external";
+    if (externalWindow) externalWindow.location.replace(payment.stablecoin_checkout_url);
+    status.textContent =
+      `Waiting for payment through Boltz (${payment.stablecoin_asset}, ${payment.period_days} service days).`;
+    return;
+  }
+  document.getElementById("qrBox").innerHTML = payment.qr_svg;
+  payUri.href = payment.lightning_uri;
+  status.textContent =
+    `Waiting for Lightning payment (${payment.billing_term}, ${payment.period_days} days).`;
+}
+
+async function startPaymentFlow(subId, term, trigger, method) {
+  const stablecoin = method === "stablecoin_swap";
+  const externalWindow = stablecoin ? window.open("about:blank", "_blank") : null;
+  if (externalWindow) externalWindow.opener = null;
+  const status = document.getElementById("payStatus");
+  const card = trigger.closest(".subscription-card");
+  setCardPaymentButtonsDisabled(card, true);
+  trigger.textContent = "Creating invoice...";
+  preparePaymentPanel(method);
+  status.textContent = stablecoin
+    ? "Preparing stablecoin checkout."
+    : "Creating a Lightning invoice.";
   try {
     const payment = await jsonFetch("/api/v1/payments", {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ subscription_id: subId, method: "lightning", billing_term: term }),
+      body: JSON.stringify({ subscription_id: subId, method, billing_term: term }),
     });
-    document.getElementById("qrBox").innerHTML = payment.qr_svg;
-    document.getElementById("payBolt11").textContent = payment.invoice;
-    document.getElementById("payAmount").textContent = payment.amount_sats;
-    document.getElementById("payUri").href = payment.lightning_uri;
-    status.textContent =
-      `Waiting for Lightning payment (${payment.billing_term}, ${payment.period_days} days).`;
-    const paid = await pollLightningPayment(payment, status);
+    renderManualPayment(payment, status, externalWindow);
+    const paid = await pollPayment(payment, status);
     if (!paid) {
-      trigger.disabled = false;
-      trigger.textContent = trigger.dataset.originalText;
+      setCardPaymentButtonsDisabled(card, false);
     }
   } catch (error) {
-    status.textContent = `Payment error: ${error.message}`;
-    trigger.disabled = false;
-    trigger.textContent = trigger.dataset.originalText;
+    if (externalWindow) externalWindow.close();
+    const existing = error.status === 409 ? error.payload?.existing_payment : null;
+    if (existing && ["lightning", "stablecoin_swap"].includes(existing.method)) {
+      try {
+        renderManualPayment(existing, status);
+        status.textContent =
+          `${error.message}. Continue with the existing checkout or wait for it to expire.`;
+        const paid = await pollPayment(existing, status);
+        if (!paid) setCardPaymentButtonsDisabled(card, false);
+        return;
+      } catch (renderError) {
+        status.textContent = `Payment error: ${renderError.message}`;
+      }
+    } else {
+      status.textContent = `Payment error: ${error.message}`;
+    }
+    setCardPaymentButtonsDisabled(card, false);
   }
 }
 
@@ -233,7 +333,7 @@ document.getElementById("copyInvoiceBtn").addEventListener("click", async (event
   }, 2500);
 });
 
-async function pollLightningPayment(payment, status) {
+async function pollPayment(payment, status) {
   const expiresAt = Date.parse(payment.expires_at);
   const deadline = Number.isNaN(expiresAt) ? Date.now() + 600000 : expiresAt + 5000;
   while (Date.now() < deadline) {
@@ -251,11 +351,11 @@ async function pollLightningPayment(payment, status) {
       return true;
     }
     if (current.status === "expired" || current.status === "failed") {
-      status.textContent = `Payment ${current.status}. Create a new invoice to try again.`;
+      status.textContent = `Payment ${current.status}. Create a new payment to try again.`;
       return false;
     }
   }
-  status.textContent = "Payment expired. Create a new invoice to try again.";
+  status.textContent = "Payment expired. Create a new payment to try again.";
   return false;
 }
 
@@ -271,7 +371,7 @@ async function startNwcFlow(subId, term, trigger) {
     });
     const status = document.getElementById("nwcStatus");
     if (status) status.textContent = `Wallet payment ${payment.nwc_state || payment.status}.`;
-    const paid = await pollLightningPayment(payment, status || trigger);
+    const paid = await pollPayment(payment, status || trigger);
     if (paid) return;
   } catch (error) {
     const status = document.getElementById("nwcStatus");
@@ -281,17 +381,35 @@ async function startNwcFlow(subId, term, trigger) {
   trigger.textContent = originalText;
 }
 
-document.querySelectorAll(".payBtn").forEach((button) => {
-  const card = button.closest(".subscription-card");
+document.querySelectorAll(".subscription-card").forEach((card) => {
   updatePaymentTermControl(card);
   card.querySelectorAll('input[name^="paymentTerm-"]').forEach((input) => {
     input.addEventListener("change", () => updatePaymentTermControl(card));
   });
+});
+
+document.querySelectorAll(".payBtn").forEach((button) => {
+  const card = button.closest(".subscription-card");
+  button.dataset.originalText = button.textContent;
   button.addEventListener("click", () => {
-    startLightningFlow(
+    startPaymentFlow(
       button.dataset.subId,
       selectedPaymentTerm(card),
       button,
+      "lightning",
+    );
+  });
+});
+
+document.querySelectorAll(".stablecoinPayBtn").forEach((button) => {
+  const card = button.closest(".subscription-card");
+  button.dataset.originalText = button.textContent;
+  button.addEventListener("click", () => {
+    startPaymentFlow(
+      button.dataset.subId,
+      selectedPaymentTerm(card),
+      button,
+      "stablecoin_swap",
     );
   });
 });

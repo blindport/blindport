@@ -15,7 +15,7 @@
   <dl class="intro-facts" aria-label="Service summary">
     <div><dt>Leased identity</dt><dd>TLS hostname, exact socket, or dedicated IPv4</dd></div>
     <div><dt>Account</dt><dd>One bearer token; no email, name, or profile required</dd></div>
-    <div><dt>Service term</dt><dd>Fixed {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}; direct Lightning payment</dd></div>
+    <div><dt>Service term</dt><dd>Fixed {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}; Bitcoin via {% if stablecoin_enabled %}Lightning or stablecoin checkout{% else %}direct Lightning payment{% endif %}</dd></div>
   </dl>
 </section>
 
@@ -24,6 +24,7 @@
     <p class="eyebrow">Live pricing and availability</p>
     <h2 id="compare-title">Lease only the endpoint you need</h2>
     <p>The assignment stays attached to the subscription for its paid term, even when <code>blindportd</code> reconnects. Choose by the public network identity your service needs.</p>
+    <p>Prices are denominated in Bitcoin (BTC). One bitcoin is 100 million satoshis (sats).{% if btc_usd_price %} USD amounts are approximate and do not change the Bitcoin price.{% endif %}</p>
   </header>
   <div class="comparison-grid">
     {% set relay = catalog_by_product.relay %}
@@ -32,7 +33,7 @@
     <article>
       <h3>Blindport Relay</h3>
       <p class="product-purpose">One TLS hostname</p>
-      <p class="price-line">{{ relay.monthly_price_sats }} <span>sats / 30 days</span></p>
+      <p class="price-line">{{ relay.monthly_price_sats }} <span>sats / 30 days{% set relay_usd = approximate_usd(relay.monthly_price_sats) %}{% if relay_usd %} · about {{ relay_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>Managed name or customer-owned subdomain</li>
         <li>Shared port 443, routed by visible TLS SNI</li>
@@ -44,7 +45,7 @@
     <article>
       <h3>Blindport Port</h3>
       <p class="product-purpose">One TCP or UDP socket</p>
-      <p class="price-line">{{ port.monthly_price_sats }} <span>sats / 30 days</span></p>
+      <p class="price-line">{{ port.monthly_price_sats }} <span>sats / 30 days{% set port_usd = approximate_usd(port.monthly_price_sats) %}{% if port_usd %} · about {{ port_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>Exact shared public IP, port, and transport</li>
         <li>Maps to one local service through an outbound tunnel</li>
@@ -56,7 +57,7 @@
     <article>
       <h3>Blindport IP</h3>
       <p class="product-purpose">One dedicated public IPv4</p>
-      <p class="price-line">{{ ip.monthly_price_sats }} <span>sats / 30 days</span></p>
+      <p class="price-line">{{ ip.monthly_price_sats }} <span>sats / 30 days{% set ip_usd = approximate_usd(ip.monthly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>Framed mode forwards configured TCP listeners</li>
         <li>WireGuard routes the complete /32 to a Linux host</li>
@@ -66,7 +67,7 @@
       {% if ip.available %}<a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>{% endif %}
     </article>
   </div>
-  <p class="fit-check"><strong>Beta boundary:</strong> hosted service is best effort, with no current uptime or high-availability guarantee. There is no fixed traffic allowance today; fair use applies. The published client requires Linux, and direct payment requires a Lightning wallet.</p>
+  <p class="fit-check"><strong>Beta boundary:</strong> hosted service is best effort, with no current uptime or high-availability guarantee. There is no fixed traffic allowance today; fair use applies. The published client requires Linux, and payment requires {% if stablecoin_enabled %}a Lightning or supported stablecoin wallet{% else %}a Lightning wallet{% endif %}.</p>
 </section>
 
 <section class="workflow-band" aria-labelledby="workflow-title">
@@ -78,7 +79,7 @@
     </header>
     <ol class="workflow-steps">
       <li><span>1</span><div><strong>Choose</strong><p>Pick a hostname, exact socket, or dedicated IPv4.</p></div></li>
-      <li><span>2</span><div><strong>Pay</strong><p>Settle one Lightning invoice for the fixed service term.</p></div></li>
+      <li><span>2</span><div><strong>Pay</strong><p>Settle one invoice for the fixed service term{% if stablecoin_enabled %}, directly or through stablecoin checkout{% endif %}.</p></div></li>
       <li><span>3</span><div><strong>Connect</strong><p>Run <code>blindportd</code> beside the service; it dials outward.</p></div></li>
     </ol>
   </div>
@@ -120,7 +121,7 @@
         <tr><th scope="row">Quick preview tunnel</th><td data-label="Best fit">Demos, webhook tests, and short-lived sharing</td><td data-label="TLS and identity">Usually an automatic certificate on a provider hostname</td><td data-label="Tradeoff">Fast and often free; URL lifetime, limits, and durability may not fit an ongoing service</td></tr>
         <tr><th scope="row">Managed application gateway</th><td data-label="Best fit">Global edge, HTTP policy, authentication, observability, and compliance</td><td data-label="TLS and identity">Often edge-terminated; raw TLS passthrough depends on product and plan</td><td data-label="Tradeoff">More platform capability, account data, configuration, and usage billing</td></tr>
         <tr><th scope="row">Community or self-hosted relay</th><td data-label="Best fit">Experimentation, relay control, and choosing independent operators</td><td data-label="TLS and identity">Depends on the relay protocol and certificate model</td><td data-label="Tradeoff">You evaluate operator trust, persistence, abuse controls, upgrades, and availability</td></tr>
-        <tr><th scope="row">Blindport hosted beta</th><td data-label="Best fit">An ongoing self-hosted service needing a leased hostname, socket, or IPv4</td><td data-label="TLS and identity">Token-only account; Relay certificate and key stay at your origin</td><td data-label="Tradeoff">Best effort during beta; Linux client, Lightning payment, and fewer edge features</td></tr>
+        <tr><th scope="row">Blindport hosted beta</th><td data-label="Best fit">An ongoing self-hosted service needing a leased hostname, socket, or IPv4</td><td data-label="TLS and identity">Token-only account; Relay certificate and key stay at your origin</td><td data-label="Tradeoff">Best effort during beta; Linux client, wallet payment, and fewer edge features</td></tr>
       </tbody>
     </table>
   </div>
@@ -282,7 +283,7 @@
     <ul class="plain-list">
       <li>A service reachable locally from <code>blindportd</code>.</li>
       <li>Outbound access to the backend and relay. No inbound home port forwarding is required for framed mode.</li>
-      <li>A Lightning wallet for direct payment.</li>
+      <li>{% if stablecoin_enabled %}A Lightning wallet, or a supported stablecoin wallet for external checkout.{% else %}A Lightning wallet for direct payment.{% endif %}</li>
       <li>Linux for the published <code>blindportd</code> binaries. Release assets cover amd64, arm64, and armv7, and the agent image is published at <code>ghcr.io/blindport/blindportd</code>.</li>
       <li>For WireGuard mode, Linux kernel WireGuard plus <code>CAP_NET_ADMIN</code> or equivalent root privileges.</li>
     </ul>

@@ -8,6 +8,7 @@ import json
 import math
 from base64 import urlsafe_b64encode
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, update
@@ -45,6 +46,11 @@ _TERMINAL_STATUSES = (
     PaymentStatus.EXPIRED,
     PaymentStatus.FAILED,
 )
+_LND_BACKED_METHODS = (
+    PaymentMethod.LIGHTNING,
+    PaymentMethod.NWC,
+    PaymentMethod.STABLECOIN_SWAP,
+)
 _DEFINITIVE_PAY_REJECTION_CODES = frozenset(
     {
         "expired",
@@ -73,6 +79,17 @@ class DisabledPaymentMethodError(ValueError):
 
 class PaymentProviderError(RuntimeError):
     """A provider operation failed without invalidating durable local state."""
+
+
+class OpenPaymentConflictError(ValueError):
+    """A different payment attempt already owns this subscription's reservation."""
+
+    def __init__(self, payment: Payment) -> None:
+        self.payment = payment
+        super().__init__(
+            f"a {payment.method.value} payment is already {payment.status.value} for this "
+            "subscription"
+        )
 
 
 def _utcnow() -> datetime:
@@ -181,10 +198,35 @@ def _local_expiry(deadline: datetime | None, seconds: int) -> datetime:
 
 
 def _lightning_memo(payment: Payment, subscription: Subscription) -> str:
-    suffix = (
-        " NWC auto-pay" if payment.method == PaymentMethod.NWC else f" {subscription.product.value}"
-    )
+    if payment.method == PaymentMethod.NWC:
+        suffix = " NWC auto-pay"
+    elif payment.method == PaymentMethod.STABLECOIN_SWAP:
+        suffix = " stablecoin swap"
+    else:
+        suffix = f" {subscription.product.value}"
     return f"Blindport subscription {subscription.public_id}{suffix}"
+
+
+def stablecoin_markup_sats(base_amount_sats: int) -> int:
+    """Return the configured basis-point markup, rounded up to one satoshi."""
+    if base_amount_sats <= 0:
+        raise ValueError("base payment amount must be positive")
+    numerator = base_amount_sats * settings.STABLECOIN_SWAP_MARKUP_BPS
+    return (numerator + 9_999) // 10_000
+
+
+def stablecoin_checkout_url(payment: Payment) -> str | None:
+    """Build a Boltz web URL that prefills this payment's BOLT11 destination."""
+    if payment.method != PaymentMethod.STABLECOIN_SWAP or not payment.invoice:
+        return None
+    query = urlencode(
+        {
+            "sendAsset": settings.STABLECOIN_SWAP_DEFAULT_ASSET,
+            "receiveAsset": "LN",
+            "destination": payment.invoice,
+        }
+    )
+    return f"{settings.BOLTZ_WEB_URL}/?{query}"
 
 
 def _invoice_preimage(payment: Payment) -> bytes:
@@ -208,9 +250,14 @@ def _stage_lightning_invoice(
     eligibility_deadline: datetime | None,
     invoice_expiry: int | None,
 ) -> None:
+    configured_expiry = (
+        settings.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS
+        if payment.method == PaymentMethod.STABLECOIN_SWAP
+        else settings.LND_INVOICE_EXPIRY_SECONDS
+    )
     requested_expiry = min(
-        settings.LND_INVOICE_EXPIRY_SECONDS,
-        invoice_expiry or settings.LND_INVOICE_EXPIRY_SECONDS,
+        configured_expiry,
+        invoice_expiry or configured_expiry,
     )
     payment.invoice_idempotency_key = str(uuid4())
     payment.payment_hash = hashlib.sha256(_invoice_preimage(payment)).hexdigest()
@@ -255,7 +302,7 @@ def _bind_invoice(session: Session, payment: Payment, invoice) -> Payment:
 
 def ensure_lightning_invoice(session: Session, payment: Payment) -> Payment:
     """Recover or issue the exact durable LND invoice for a pending payment."""
-    if payment.method not in (PaymentMethod.LIGHTNING, PaymentMethod.NWC):
+    if payment.method not in _LND_BACKED_METHODS:
         return payment
     if payment.id is None:
         raise ValueError("payment has no id")
@@ -480,7 +527,7 @@ def _nwc_user(session: Session, payment: Payment) -> User:
 
 def _lnd_invoice_state(payment: Payment) -> LightningInvoiceState:
     if not payment.payment_hash:
-        raise RuntimeError("NWC payment has no LND payment hash")
+        raise RuntimeError("LND-backed payment has no payment hash")
     try:
         return get_lightning_adapter().invoice_state(payment.payment_hash)
     except Exception as error:
@@ -646,12 +693,12 @@ def create_payment(
         if agent_order_id is not None and existing.agent_order_id != agent_order_id:
             raise ValueError("subscription already has an unrelated open payment")
         if existing.status == PaymentStatus.PROCESSING:
-            raise ValueError("subscription already has a payment being processed")
+            raise OpenPaymentConflictError(existing)
         existing = check_and_settle_payment(session, existing)
         if existing.status == PaymentStatus.PENDING:
             if existing.method == method and existing.billing_term == selected_term:
                 return existing
-            raise ValueError("subscription already has a pending payment")
+            raise OpenPaymentConflictError(existing)
 
     subs.require_billing_term_enabled(selected_term)
     session.exec(
@@ -691,17 +738,22 @@ def create_payment(
     session.refresh(subscription)
     subs.require_domain_payment_ready(subscription)
 
+    base_amount_sats = (
+        subscription.monthly_price_sats
+        if selected_term == BillingTerm.MONTHLY
+        else subscription.yearly_price_sats
+    )
+    markup_sats = (
+        stablecoin_markup_sats(base_amount_sats) if method == PaymentMethod.STABLECOIN_SWAP else 0
+    )
     payment = Payment(
         subscription_id=subscription.id,  # type: ignore[arg-type]
         agent_order_id=agent_order_id,
         method=method,
         billing_term=selected_term,
         period_days=subs.billing_period_days(selected_term),
-        amount_sats=(
-            subscription.monthly_price_sats
-            if selected_term == BillingTerm.MONTHLY
-            else subscription.yearly_price_sats
-        ),
+        amount_sats=base_amount_sats + markup_sats,
+        markup_sats=markup_sats,
         status=PaymentStatus.PENDING,
     )
     session.add(payment)
@@ -713,7 +765,7 @@ def create_payment(
         eligibility_deadline = _payment_eligibility_deadline(subscription)
         invoice_expiry = _bounded_invoice_expiry(eligibility_deadline)
 
-        if method == PaymentMethod.LIGHTNING:
+        if method in (PaymentMethod.LIGHTNING, PaymentMethod.STABLECOIN_SWAP):
             _stage_lightning_invoice(
                 session, payment, subscription, eligibility_deadline, invoice_expiry
             )
@@ -766,7 +818,7 @@ def create_payment(
                 and competing.billing_term == selected_term
             ):
                 return check_and_settle_payment(session, competing)
-            raise ValueError("subscription already has an open payment") from e
+            raise OpenPaymentConflictError(competing) from e
         raise
     except Exception:
         session.rollback()
@@ -809,6 +861,9 @@ def _finalize_payment(
     if payment.amount_sats <= 0:
         session.rollback()
         raise ValueError("payment billing snapshot has an invalid amount")
+    if payment.markup_sats < 0 or payment.markup_sats >= payment.amount_sats:
+        session.rollback()
+        raise ValueError("payment billing snapshot has an invalid markup")
     subscription = session.get(Subscription, payment.subscription_id, populate_existing=True)
     if subscription is None:
         session.rollback()
@@ -841,7 +896,7 @@ def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
     if payment.status in _TERMINAL_STATUSES or payment.status == PaymentStatus.PROCESSING:
         return payment
 
-    if payment.method in (PaymentMethod.LIGHTNING, PaymentMethod.NWC):
+    if payment.method in _LND_BACKED_METHODS:
         payment = ensure_lightning_invoice(session, payment)
         if payment.status != PaymentStatus.PENDING:
             return payment
@@ -849,7 +904,7 @@ def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
             return _reconcile_nwc_payment(session, payment)
 
     settled = False
-    if payment.method == PaymentMethod.LIGHTNING:
+    if payment.method in (PaymentMethod.LIGHTNING, PaymentMethod.STABLECOIN_SWAP):
         try:
             settled = bool(
                 payment.payment_hash

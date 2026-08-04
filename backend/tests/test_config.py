@@ -21,6 +21,7 @@ from blindport.config import (
     parse_udp_port_pool,
     validate_v3_onion_hostname,
 )
+from blindport.core.models import PaymentMethod
 
 
 def _production_settings(**overrides) -> Settings:
@@ -96,11 +97,68 @@ def test_client_certificate_ttl_is_bounded(days: int) -> None:
 def test_environment_and_payment_method_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.delenv("PAYMENT_ENABLED_METHODS", raising=False)
+    monkeypatch.delenv("STABLECOIN_PAYMENTS_ENABLED", raising=False)
 
     settings = Settings(_env_file=None)
 
     assert settings.ENVIRONMENT == EnvironmentMode.DEVELOPMENT
     assert {method.value for method in settings.enabled_payment_methods} == {"lightning"}
+    assert settings.STABLECOIN_PAYMENTS_ENABLED is False
+    assert settings.is_payment_method_enabled(PaymentMethod.LIGHTNING)
+
+
+def test_stablecoin_feature_requires_allowlist_and_reconciliation() -> None:
+    with pytest.raises(ValidationError, match="PAYMENT_ENABLED_METHODS"):
+        Settings(
+            _env_file=None,
+            PAYMENT_ENABLED_METHODS="lightning",
+            STABLECOIN_PAYMENTS_ENABLED=True,
+        )
+    with pytest.raises(ValidationError, match="PAYMENT_RECONCILIATION_ENABLED"):
+        Settings(
+            _env_file=None,
+            PAYMENT_ENABLED_METHODS="lightning,stablecoin_swap",
+            STABLECOIN_PAYMENTS_ENABLED=True,
+            PAYMENT_RECONCILIATION_ENABLED=False,
+        )
+
+
+def test_stablecoin_feature_has_bounded_secure_defaults() -> None:
+    settings = Settings(
+        _env_file=None,
+        PAYMENT_ENABLED_METHODS="lightning,stablecoin_swap",
+        STABLECOIN_PAYMENTS_ENABLED=True,
+        PAYMENT_RECONCILIATION_ENABLED=True,
+    )
+
+    assert settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP)
+    assert settings.STABLECOIN_SWAP_MARKUP_BPS == 1000
+    assert settings.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS == 1200
+    assert settings.STABLECOIN_SWAP_DEFAULT_ASSET == "USDC-BASE"
+    assert settings.BOLTZ_WEB_URL == "https://boltz.exchange"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("BOLTZ_WEB_URL", "https://boltz.exchange/swap"),
+        ("BOLTZ_WEB_URL", "https://user@boltz.exchange"),
+        ("STABLECOIN_SWAP_DEFAULT_ASSET", "BTC"),
+        ("STABLECOIN_SWAP_DEFAULT_ASSET", "usdc-base"),
+    ],
+)
+def test_stablecoin_checkout_settings_are_strict(field: str, value: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        Settings(_env_file=None, **{field: value})
+
+
+def test_production_stablecoin_checkout_requires_https() -> None:
+    with pytest.raises(ValidationError, match="BOLTZ_WEB_URL"):
+        _production_settings(
+            PAYMENT_ENABLED_METHODS="lightning,stablecoin_swap",
+            STABLECOIN_PAYMENTS_ENABLED=True,
+            BOLTZ_WEB_URL="http://boltz.internal",
+        )
 
 
 def test_environment_mode_is_strict() -> None:
@@ -684,10 +742,27 @@ def test_managed_suffixes_reject_canonical_duplicates() -> None:
         parse_managed_suffixes("BÜCHER.example,xn--bcher-kva.example")
 
 
-@pytest.mark.parametrize("seconds", [0, 59, 604801])
-def test_settings_bound_relay_domain_claim_ttl(seconds: int) -> None:
+@pytest.mark.parametrize(
+    "field,seconds",
+    [
+        ("RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS", 59),
+        ("RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS", 86401),
+        ("RELAY_DOMAIN_CLAIM_TTL_SECONDS", 59),
+        ("RELAY_DOMAIN_CLAIM_TTL_SECONDS", 86401),
+    ],
+)
+def test_settings_bound_relay_domain_claim_ttl(field: str, seconds: int) -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, RELAY_DOMAIN_CLAIM_TTL_SECONDS=seconds)
+        Settings(_env_file=None, **{field: seconds})
+
+
+def test_relay_claim_defaults_limit_unpaid_name_holds(monkeypatch) -> None:
+    monkeypatch.delenv("ACCOUNT_MAX_PENDING_RELAY_CLAIMS", raising=False)
+    settings = Settings(_env_file=None)
+
+    assert settings.ACCOUNT_MAX_PENDING_RELAY_CLAIMS == 2
+    assert settings.RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS == 1800
+    assert settings.RELAY_DOMAIN_CLAIM_TTL_SECONDS == 3600
 
 
 def test_relay_renewal_grace_defaults_to_seven_days() -> None:

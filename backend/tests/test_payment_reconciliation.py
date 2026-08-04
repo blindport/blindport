@@ -15,7 +15,9 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _create_payment(client, token: str, product: str = "ip") -> tuple[dict, dict]:
+def _create_payment(
+    client, token: str, product: str = "ip", method: str = "lightning"
+) -> tuple[dict, dict]:
     subscription_response = client.post(
         "/api/v1/subscriptions",
         json={"product": product},
@@ -25,7 +27,7 @@ def _create_payment(client, token: str, product: str = "ip") -> tuple[dict, dict
     subscription = subscription_response.json()
     payment_response = client.post(
         "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "lightning"},
+        json={"subscription_id": subscription["id"], "method": method},
         headers=_auth(token),
     )
     assert payment_response.status_code == 200, payment_response.text
@@ -44,6 +46,62 @@ def test_reconciler_activates_paid_lightning_without_payment_get(app_client) -> 
 
     summary = reconcile_pending_payments_once()
 
+    assert summary.paid == 1
+    with Session(engine) as session:
+        assert session.get(Payment, payment["id"]).status == PaymentStatus.PAID  # type: ignore[union-attr]
+        assert (
+            subscription_by_public_id(session, subscription["id"]).status
+            == SubscriptionStatus.ACTIVE
+        )
+
+
+def test_reconciler_periodically_releases_expired_unpaid_domain_claim(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "relay", "domain": "periodic.relay.test"},
+        headers=_auth(token),
+    ).json()
+
+    from blindport.core.models import SubscriptionStatus
+    from blindport.db import engine
+    from blindport.services.payment_reconciliation import reconcile_pending_payments_once
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.domain_claim_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+
+    reconcile_pending_payments_once()
+
+    with Session(engine) as session:
+        released = subscription_by_public_id(session, subscription["id"])
+        assert released is not None
+        assert released.status == SubscriptionStatus.CANCELLED
+        assert released.domain is None
+
+
+def test_reconciler_activates_paid_stablecoin_swap_without_payment_get(
+    app_client, monkeypatch
+) -> None:
+    client, factory = app_client
+    from blindport.services import payments
+
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription, payment = _create_payment(client, token, method="stablecoin_swap")
+    factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
+
+    from blindport.core.models import Payment, PaymentStatus, SubscriptionStatus
+    from blindport.db import engine
+    from blindport.services.payment_reconciliation import reconcile_pending_payments_once
+
+    summary = reconcile_pending_payments_once()
+
+    assert summary.scanned == 1
     assert summary.paid == 1
     with Session(engine) as session:
         assert session.get(Payment, payment["id"]).status == PaymentStatus.PAID  # type: ignore[union-attr]

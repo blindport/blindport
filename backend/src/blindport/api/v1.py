@@ -43,6 +43,7 @@ from ..core.schemas import (
     DomainVerificationResponse,
     MeResponse,
     NwcStatusResponse,
+    PaymentConflictResponse,
     PaymentResponse,
     RelayProvisioningResponse,
     ReminderEmailStatusResponse,
@@ -600,12 +601,20 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         method=p.method,
         status=p.status,
         amount_sats=p.amount_sats,
+        base_amount_sats=p.amount_sats - p.markup_sats,
+        markup_sats=p.markup_sats,
         billing_term=p.billing_term,
         period_days=p.period_days,
         invoice=p.invoice,
         payment_hash=p.payment_hash,
         lightning_uri=lightning_uri,
         qr_svg=qr_svg,
+        stablecoin_checkout_url=payments_svc.stablecoin_checkout_url(p),
+        stablecoin_asset=(
+            settings.STABLECOIN_SWAP_DEFAULT_ASSET
+            if p.method == PaymentMethod.STABLECOIN_SWAP
+            else None
+        ),
         cashu_token_required=(
             p.method == PaymentMethod.CASHU and p.status == PaymentStatus.PENDING
         ),
@@ -616,13 +625,17 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
     )
 
 
-@router.post("/payments", response_model=PaymentResponse)
+@router.post(
+    "/payments",
+    response_model=PaymentResponse,
+    responses={status.HTTP_409_CONFLICT: {"model": PaymentConflictResponse}},
+)
 def create_payment(
     body: CreatePaymentRequest,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
     verifier_factory: Callable[[], DomainVerifier] = Depends(_domain_verifier_dependency),
-) -> PaymentResponse:
+) -> PaymentResponse | JSONResponse:
     _enforce_public_rate_limit(
         session,
         RateLimitScope.PAYMENT_CREATE,
@@ -659,6 +672,15 @@ def create_payment(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, verification.detail)
     try:
         p = payments_svc.create_payment(session, sub, body.method, body.billing_term)
+    except payments_svc.OpenPaymentConflictError as e:
+        conflict = PaymentConflictResponse(
+            detail=str(e),
+            existing_payment=_payment_to_response(e.payment, sub),
+        )
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=conflict.model_dump(mode="json"),
+        )
     except subs_svc.AccountLimitError as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(e)) from e
     except NoCapacityError as e:
@@ -717,7 +739,7 @@ def get_payment(
     sub = session.get(Subscription, p.subscription_id)
     if not sub or sub.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    # Lazy settle on read for Lightning/NWC.
+    # Lazy settle on read for LND-backed payment methods.
     try:
         p = payments_svc.check_and_settle_payment(session, p)
     except payments_svc.DisabledPaymentMethodError as e:

@@ -60,6 +60,7 @@ class PaymentMethod(StrEnum):
     LIGHTNING = "lightning"
     CASHU = "cashu"
     NWC = "nwc"
+    STABLECOIN_SWAP = "stablecoin_swap"
 
 
 class PaymentStatus(StrEnum):
@@ -275,6 +276,7 @@ class Payment(SQLModel, table=True):
     )
     period_days: int = Field(default=30, sa_column_kwargs={"server_default": text("30")})
     amount_sats: int
+    markup_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
     # For Lightning: BOLT11 invoice + payment_hash. For Cashu: token reference.
     invoice: str | None = None
     payment_hash: str | None = None

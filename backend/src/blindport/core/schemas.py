@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from cryptography import x509
@@ -220,17 +220,33 @@ class PaymentResponse(BaseModel):
     method: PaymentMethod
     status: PaymentStatus
     amount_sats: int
+    base_amount_sats: int
+    markup_sats: int
     billing_term: BillingTerm
     period_days: int
     invoice: str | None = None
     payment_hash: str | None = None
     lightning_uri: str | None = None
     qr_svg: str | None = None
+    stablecoin_checkout_url: str | None = None
+    stablecoin_asset: str | None = None
     cashu_token_required: bool | None = None  # for cashu: payment requires user-submitted token
     nwc_state: str | None = None
     nwc_attempt_count: int = 0
     nwc_error_code: str | None = None
     expires_at: datetime | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def normalize_expiry_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
+class PaymentConflictResponse(BaseModel):
+    detail: str
+    existing_payment: PaymentResponse
 
 
 class SubmitCashuTokenRequest(BaseModel):

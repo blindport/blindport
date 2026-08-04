@@ -112,6 +112,33 @@ The backend image already contains the architecture-native compiled helper, so n
 Node or Bun service runs in production. Wallet-side budgets and connection expiry
 remain operator/user policy and must cover the selected renewal term plus fees.
 
+Optional stablecoin checkout requires no provider secret. Apply migration `0016`,
+then roll out the new application code to every API and reconciler replica while
+keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.
+After every old replica is drained, set
+`PAYMENT_ENABLED_METHODS=lightning,stablecoin_swap`, verify
+`BOLTZ_WEB_URL=https://boltz.exchange`, and set
+`STABLECOIN_PAYMENTS_ENABLED=true` in a separate configuration rollout. The
+checked-in default remains false. The default `STABLECOIN_SWAP_MARKUP_BPS=1000`
+adds 10 percent to the LND invoice and
+`STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS=1200` leaves time for the external swap
+within the 1,800-second reservation. Disable the feature flag first during a
+rollback. Do not deploy application code from before migration `0016` or
+downgrade the migration while stablecoin payment rows remain; older code cannot
+deserialize the new payment method.
+
+Managed names have a 30-minute unpaid hold, customer-owned names have a one-hour
+DNS and payment hold, and one account may retain at most two unpaid Relay claims.
+Keep `RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS=1800`,
+`RELAY_DOMAIN_CLAIM_TTL_SECONDS=3600`, and
+`ACCOUNT_MAX_PENDING_RELAY_CLAIMS=2` unless capacity planning justifies a change.
+The payment reconciler also reaps elapsed claims, so alert on reconciler readiness.
+
+`BTC_USD_PRICE_ENABLED=true` permits outbound HTTPS to the fixed mempool.space
+price endpoint. The display-only cache refreshes every five minutes and omits USD
+estimates after 30 minutes without a successful response. It has no credential
+and must not be used as invoice or accounting authority.
+
 Optional reminder delivery uses generic SMTP. Configure `SMTP_HOST`, `SMTP_PORT`,
 `SMTP_SECURITY=starttls|tls`, `SMTP_FROM_EMAIL`, and `SMTP_TIMEOUT_SECONDS`.
 Production requires TLS. For authenticated SMTP, set `SMTP_USERNAME`, create the

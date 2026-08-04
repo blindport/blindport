@@ -379,8 +379,13 @@ def test_resolver_unavailable_is_service_unavailable(app_client) -> None:
     assert response.status_code == 503
 
 
-def test_resolver_setup_is_lazy_for_managed_and_verified_idempotent_calls(app_client) -> None:
+def test_resolver_setup_is_lazy_for_managed_and_verified_idempotent_calls(
+    app_client, monkeypatch
+) -> None:
     client, _ = app_client
+    from blindport.services import subscriptions
+
+    monkeypatch.setattr(subscriptions.settings, "ACCOUNT_MAX_PENDING_RELAY_CLAIMS", 3)
     token = _signup(client)
     managed = _subscribe(client, token, "lazy.relay.test")
     custom = _subscribe(client, token, "lazy.example")
@@ -548,8 +553,13 @@ def test_expired_claim_is_released_and_reclaimable(app_client) -> None:
         assert expired.relay_pool_domain is None
 
 
-def test_expiry_releases_unpaid_managed_verified_and_unverified_claims(app_client) -> None:
+def test_expiry_releases_unpaid_managed_verified_and_unverified_claims(
+    app_client, monkeypatch
+) -> None:
     client, _ = app_client
+    from blindport.services import subscriptions
+
+    monkeypatch.setattr(subscriptions.settings, "ACCOUNT_MAX_PENDING_RELAY_CLAIMS", 3)
     token = _signup(client)
     managed = _subscribe(client, token, "unpaid.relay.test")
     verified = _subscribe(client, token, "verified-unpaid.example")
@@ -689,8 +699,11 @@ def test_cross_user_cannot_verify_domain_claim(app_client) -> None:
     assert response.status_code == 404
 
 
-def test_reaper_never_releases_live_domain_claims(app_client) -> None:
+def test_reaper_never_releases_live_domain_claims(app_client, monkeypatch) -> None:
     client, _ = app_client
+    from blindport.services import subscriptions
+
+    monkeypatch.setattr(subscriptions.settings, "ACCOUNT_MAX_PENDING_RELAY_CLAIMS", 4)
     token = _signup(client)
     initial = _subscribe(client, token, "initial.example")
     verified = _subscribe(client, token, "verified.example")

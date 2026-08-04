@@ -28,7 +28,11 @@ from ..db import engine
 from .domain_verification import get_domain_verifier
 from .payments import check_and_settle_payment, create_payment
 from .reminder_reconciliation import reconcile_reminders_once
-from .subscriptions import uses_unique_cname_target, verify_subscription_domain
+from .subscriptions import (
+    reap_expired_domain_claims,
+    uses_unique_cname_target,
+    verify_subscription_domain,
+)
 
 
 @dataclass(frozen=True)
@@ -194,9 +198,16 @@ def reconcile_pending_payments_once(batch_size: int | None = None) -> Reconcilia
     if not 1 <= effective_batch_size <= 1000:
         raise ValueError("payment reconciliation batch size must be within 1-1000")
 
+    with Session(engine) as session:
+        reap_expired_domain_claims(session)
+
     enabled_methods = tuple(
         method
-        for method in (PaymentMethod.LIGHTNING, PaymentMethod.NWC)
+        for method in (
+            PaymentMethod.LIGHTNING,
+            PaymentMethod.NWC,
+            PaymentMethod.STABLECOIN_SWAP,
+        )
         if settings.is_payment_method_enabled(method)
     )
     if not enabled_methods and not settings.REMINDER_EMAIL_ENABLED:

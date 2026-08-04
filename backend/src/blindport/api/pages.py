@@ -29,6 +29,7 @@ from ..core.models import (
 )
 from ..db import get_session
 from ..services import subscriptions as subs_svc
+from ..services.btc_usd_price import approximate_usd, price_cache
 from ..services.catalog import get_catalog
 from ..services.rate_limits import (
     RateLimitExceeded,
@@ -90,6 +91,7 @@ def _ctx(request: Request, **extra) -> dict:
         settings.BRAND_NAME == DEFAULT_BRAND_NAME
         and settings.BRAND_TAGLINE == DEFAULT_BRAND_TAGLINE
     )
+    btc_usd_snapshot = price_cache.current()
     social_image_name = "brand-social.png" if official_branding else "brand-avatar.png"
     base = {
         "brand_name": settings.BRAND_NAME,
@@ -120,9 +122,14 @@ def _ctx(request: Request, **extra) -> dict:
         and not _is_onion_request(request),
         "onion_host": settings.ONION_HOST,
         "blindportd_version": settings.BLINDPORTD_VERSION,
+        "btc_usd_price": (
+            str(btc_usd_snapshot.usd_per_btc) if btc_usd_snapshot is not None else ""
+        ),
+        "approximate_usd": approximate_usd,
         "relay_server_name": settings.RELAY_CONTROL_URL.rsplit(":", 1)[0].strip("[]"),
         "nwc_enabled": settings.is_payment_method_enabled(PaymentMethod.NWC),
         "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
+        "stablecoin_enabled": settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP),
         "reminder_email_enabled": settings.REMINDER_EMAIL_ENABLED,
     }
     base.update(extra)

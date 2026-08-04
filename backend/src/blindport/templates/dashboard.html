@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Dashboard | {{ brand_name }}{% endblock %}
 {% block content %}
-<div id="dashboardRoot" class="dashboard content-width" data-token="{{ token }}" data-account-id="{{ user.public_id }}">
+<div id="dashboardRoot" class="dashboard content-width" data-token="{{ token }}" data-account-id="{{ user.public_id }}" data-btc-usd="{{ btc_usd_price }}">
   <header class="dashboard-header">
     <div>
       <p class="eyebrow">Account workspace</p>
@@ -33,7 +33,7 @@
     <div class="section-heading heading-row">
       <div>
         <h2 id="subscriptions-title">Subscriptions</h2>
-        <p>Complete pending tasks, pay, and inspect active ingress.</p>
+        <p>Complete pending tasks, pay, and inspect active ingress. Prices use Bitcoin satoshis (sats); 100 million sats equal 1 BTC.</p>
       </div>
       <a class="text-link" href="#new-subscription">Add subscription</a>
     </div>
@@ -44,7 +44,9 @@
           <header>
             <div>
               <h3>{% if s.product.value == "ip" %}Blindport IP{% elif s.product.value == "port" %}Blindport Port{% else %}Blindport Relay{% endif %}</h3>
-              <p class="sub-price"><span class="cardPrice">{{ s.yearly_price_sats if s.billing_term.value == "yearly" else s.monthly_price_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days</p>
+              {% set card_sats = s.yearly_price_sats if s.billing_term.value == "yearly" else s.monthly_price_sats %}
+              {% set card_usd = approximate_usd(card_sats) %}
+              <p class="sub-price"><span class="cardPrice">{{ card_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days<span class="cardUsd">{% if card_usd %} · about {{ card_usd }} USD{% endif %}</span></p>
             </div>
             <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
           </header>
@@ -59,7 +61,7 @@
             {% if nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{{ "On" if s.auto_renew else "Off" }}</dd></div>{% endif %}
           </dl>
           <div class="task-area">
-            {% if s.status.value in ("pending", "expired", "active") and lightning_enabled and yearly_billing_enabled %}
+            {% if s.status.value in ("pending", "expired", "active") and (lightning_enabled or stablecoin_enabled or (nwc_enabled and user.has_nwc)) and yearly_billing_enabled %}
               <fieldset class="payment-term-control">
                 <legend>Payment term</legend>
                 <div class="segmented">
@@ -92,14 +94,18 @@
                 <p class="field-help">Blindport checks this record automatically when you pay. Claim expires {{ s.domain_claim_expires_at }}.</p>
                 <button type="button" class="verifyDomainBtn button-secondary" data-sub-id="{{ s.public_id }}">Check DNS</button>
                 {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Pay with Lightning</button>{% endif %}
+                {% if stablecoin_enabled %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Pay with stablecoin</button>{% endif %}
               </div>
             {% elif s.product.value == "relay" and s.status.value == "expired" and s.domain %}
               <p>Domain reserved through {{ s.domain_renewal_grace_expires_at }}.</p>
               {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Renew with Lightning</button>{% endif %}
-            {% elif s.status.value in ("pending", "expired") and lightning_enabled %}
-              <button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Pay with Lightning</button>
-            {% elif s.status.value == "active" and lightning_enabled %}
-              <button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Renew with Lightning</button>
+              {% if stablecoin_enabled %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Renew with stablecoin</button>{% endif %}
+            {% elif s.status.value in ("pending", "expired") and (lightning_enabled or stablecoin_enabled) %}
+              {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Pay with Lightning</button>{% endif %}
+              {% if stablecoin_enabled %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Pay with stablecoin</button>{% endif %}
+            {% elif s.status.value == "active" and (lightning_enabled or stablecoin_enabled) %}
+              {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Renew with Lightning</button>{% endif %}
+              {% if stablecoin_enabled %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Renew with stablecoin</button>{% endif %}
             {% elif s.status.value == "active" %}
               <p class="success-text">Ingress is active.</p>
             {% else %}
@@ -118,19 +124,21 @@
     {% else %}
       <div class="empty-state">
         <h3>No subscriptions yet</h3>
-        <p>Create a pending order below, then pay with Lightning.</p>
+        <p>Create a pending order below, then choose an available payment method.</p>
       </div>
     {% endif %}
   </section>
 
   <section id="payPanel" class="payment-panel" aria-labelledby="payment-title" tabindex="-1" hidden>
     <div>
-      <p class="eyebrow">Lightning invoice</p>
+      <p class="eyebrow" id="payEyebrow">Lightning invoice</p>
       <h2 id="payment-title">Complete payment</h2>
       <p id="payStatus" role="status" aria-live="polite"></p>
-      <p>Amount: <strong id="payAmount"></strong> sats</p>
+      <p>Amount: <strong id="payAmount"></strong> sats <span id="payUsd" class="field-help"></span></p>
+      <p id="payBreakdown" class="field-help" hidden></p>
       <p><a id="payUri" class="button-link" href="#">Open in wallet</a></p>
-      <details>
+      <p id="stablecoinNotice" class="warning" hidden>Boltz is an external provider. Confirm the stablecoin asset and network there before sending.</p>
+      <details id="payInvoiceDetails">
         <summary>Show BOLT11 invoice</summary>
         <pre id="payBolt11" class="invoice-box"></pre>
       </details>

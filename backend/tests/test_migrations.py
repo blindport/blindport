@@ -134,6 +134,7 @@ EXPECTED_COLUMNS = {
         "billing_term",
         "period_days",
         "amount_sats",
+        "markup_sats",
         "invoice",
         "payment_hash",
         "invoice_idempotency_key",
@@ -227,7 +228,7 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path)
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0015", "0015")
+    assert database_revisions(engine) == ("0016", "0016")
     verify_database_current(engine)
 
     inspector = inspect(engine)
@@ -400,7 +401,7 @@ def test_0014_upgrades_deployed_0013_subscription_identity(tmp_path) -> None:
 
     original_public_ids = {row.id: str(row.public_id) for row in rows}
     downgrade_database(engine, "0013")
-    assert database_revisions(engine) == ("0013", "0015")
+    assert database_revisions(engine) == ("0013", "0016")
     downgraded = Table("subscription", MetaData(), autoload_with=engine)
     assert "public_id" in downgraded.c
     assert any(
@@ -555,6 +556,7 @@ def test_sqlite_upgrade_from_0001_preserves_existing_payment(tmp_path) -> None:
     assert row.invoice == "lnbc1000existing"
     assert row.payment_hash == "ab" * 32
     assert row.invoice_idempotency_key is None
+    assert row.markup_sats == 0
     assert {index["name"] for index in inspect(engine).get_indexes("payment")} >= {
         "uq_payment_invoice_idempotency_key",
         "uq_payment_payment_hash",
@@ -648,7 +650,7 @@ def test_sqlite_upgrade_from_0003_preserves_tcp_lease_and_adds_transport_identit
 
     with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
         downgrade_database(engine, "0003")
-    assert database_revisions(engine) == ("0015", "0015")
+    assert database_revisions(engine) == ("0016", "0016")
     assert any(
         constraint["column_names"] == ["assigned_ip", "assigned_port", "transport"]
         for constraint in inspect(engine).get_unique_constraints("subscription")
@@ -714,6 +716,65 @@ def test_0015_scrubs_only_direct_client_rate_limit_rows(tmp_path) -> None:
         )
     assert scopes == ["payment-create"]
     assert counts == {"rate-limit-buckets": 1, "unrelated-maintenance": 99}
+
+
+def test_0016_rejects_downgrade_with_stablecoin_payments(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path)
+    upgrade_database(engine)
+    metadata = MetaData()
+    user = Table("user", metadata, autoload_with=engine)
+    subscription = Table("subscription", metadata, autoload_with=engine)
+    payment = Table("payment", metadata, autoload_with=engine)
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            user.insert().values(
+                hashed_token="stablecoin-migration-user",
+                is_admin=False,
+                is_suspended=False,
+                created_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        subscription_id = connection.execute(
+            subscription.insert().values(
+                user_id=user_id,
+                product="ip",
+                delivery="FRAMED",
+                status="PENDING",
+                transport="TCP",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=1000,
+                yearly_price_sats=10000,
+                auto_renew=False,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        payment_id = connection.execute(
+            payment.insert().values(
+                subscription_id=subscription_id,
+                method="STABLECOIN_SWAP",
+                status="PENDING",
+                billing_term="monthly",
+                period_days=30,
+                amount_sats=1100,
+                markup_sats=100,
+                created_at=created_at,
+            )
+        ).inserted_primary_key[0]
+
+    with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
+        downgrade_database(engine, "0015")
+    assert database_revisions(engine) == ("0016", "0016")
+
+    with engine.begin() as connection:
+        connection.execute(payment.delete().where(payment.c.id == payment_id))
+    downgrade_database(engine, "0015")
+    assert database_revisions(engine) == ("0015", "0016")
+    assert "markup_sats" not in {
+        column["name"] for column in inspect(engine).get_columns("payment")
+    }
 
 
 def test_sqlite_0008_backfills_unique_uuid4_public_ids_and_enforces_immutability(
@@ -876,7 +937,7 @@ def test_sqlite_0009_backfills_billing_snapshots_and_supports_rolling_inserts(
     assert (rolling_payment.billing_term, rolling_payment.period_days) == ("monthly", 30)
 
     downgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0015")
+    assert database_revisions(engine) == ("0008", "0016")
     assert "billing_term" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -920,7 +981,7 @@ def test_sqlite_downgrade_rejects_wireguard_subscriptions(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="cannot downgrade while WireGuard subscriptions exist"):
         downgrade_database(engine, "0004")
 
-    assert database_revisions(engine) == ("0015", "0015")
+    assert database_revisions(engine) == ("0016", "0016")
     assert "delivery" in {column["name"] for column in inspect(engine).get_columns("subscription")}
     assert inspect(engine).has_table("wireguardpeer")
 
@@ -931,10 +992,10 @@ def test_sqlite_downgrade_and_upgrade_round_trip(tmp_path) -> None:
     downgrade_database(engine, "base")
 
     assert inspect(engine).get_table_names() == ["alembic_version"]
-    assert database_revisions(engine) == (None, "0015")
+    assert database_revisions(engine) == (None, "0016")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0015", "0015")
+    assert database_revisions(engine) == ("0016", "0016")
 
 
 def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypatch) -> None:
@@ -953,7 +1014,7 @@ def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypa
 
     assert not inspect(engine).has_table("injected_migration_failure")
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0015", "0015")
+    assert database_revisions(engine) == ("0016", "0016")
 
 
 def test_all_persisted_datetimes_are_timezone_aware_in_metadata() -> None:
@@ -977,21 +1038,27 @@ def test_migration_head_matches_sqlmodel_metadata(tmp_path) -> None:
         assert compare_metadata(context, SQLModel.metadata) == []
 
 
+def test_payment_method_metadata_includes_stablecoin_swap() -> None:
+    method_column = SQLModel.metadata.tables["payment"].c.method
+
+    assert method_column.type.enums == ["LIGHTNING", "CASHU", "NWC", "STABLECOIN_SWAP"]
+
+
 def test_current_cli_can_check_head(tmp_path, monkeypatch, capsys) -> None:
     engine = _sqlite_engine(tmp_path)
     monkeypatch.setattr(cli, "engine", engine)
 
     assert cli.main(["upgrade"]) == 0
     assert cli.main(["current", "--check"]) == 0
-    assert "current: 0015\nhead: 0015" in capsys.readouterr().out
+    assert "current: 0016\nhead: 0016" in capsys.readouterr().out
 
     cli.main(["downgrade", "base"])
     capsys.readouterr()
     assert cli.main(["current", "--check"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "current: unversioned\nhead: 0015\n"
+    assert captured.out == "current: unversioned\nhead: 0016\n"
     assert captured.err == (
-        "error: database revision is unversioned, expected migration head 0015\n"
+        "error: database revision is unversioned, expected migration head 0016\n"
     )
     assert "Traceback" not in captured.err
 
@@ -1020,8 +1087,8 @@ def test_current_cli_check_subprocess_exits_without_traceback(tmp_path) -> None:
     )
 
     assert result.returncode == 1
-    assert result.stdout == "current: unversioned\nhead: 0015\n"
+    assert result.stdout == "current: unversioned\nhead: 0016\n"
     assert result.stderr == (
-        "error: database revision is unversioned, expected migration head 0015\n"
+        "error: database revision is unversioned, expected migration head 0016\n"
     )
     assert "Traceback" not in result.stderr

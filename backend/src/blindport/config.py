@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from contextlib import suppress
 from email.headerregistry import Address
 from enum import StrEnum
@@ -290,6 +291,7 @@ class Settings(BaseSettings):
     # Durable per-account abuse limits
     ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS: int = Field(default=20, ge=1, le=1000)
     ACCOUNT_MAX_OPEN_PAYMENTS: int = Field(default=5, ge=1, le=100)
+    ACCOUNT_MAX_PENDING_RELAY_CLAIMS: int = Field(default=2, ge=1, le=20)
 
     # Public request rate limits. Direct-client scopes use only Request.client;
     # production proxies/ASGI servers must be configured with an explicit trusted
@@ -318,6 +320,16 @@ class Settings(BaseSettings):
     PAYMENT_CASHU_ADAPTER: str = "mock"
     PAYMENT_NWC_ADAPTER: str = "mock"
     PAYMENT_ENABLED_METHODS: str = PaymentMethod.LIGHTNING.value
+    STABLECOIN_PAYMENTS_ENABLED: bool = False
+    STABLECOIN_SWAP_MARKUP_BPS: int = Field(default=1000, ge=1, le=10000)
+    STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS: int = Field(default=1200, ge=60, le=3600)
+    STABLECOIN_SWAP_DEFAULT_ASSET: str = "USDC-BASE"
+
+    # Advisory Bitcoin/USD display pricing. This never affects payment amounts.
+    BTC_USD_PRICE_ENABLED: bool = False
+    BTC_USD_PRICE_REFRESH_SECONDS: int = Field(default=300, ge=60, le=3600)
+    BTC_USD_PRICE_MAX_STALE_SECONDS: int = Field(default=1800, ge=300, le=86400)
+    BTC_USD_PRICE_TIMEOUT_SECONDS: float = Field(default=5.0, ge=1, le=15)
 
     # LND REST (required when PAYMENT_LIGHTNING_ADAPTER=lnd)
     LND_REST_URL: str = ""
@@ -358,6 +370,7 @@ class Settings(BaseSettings):
     # Optional payment integrations
     CASHU_MINTS: str = ""  # comma-separated mint URLs
     BOLTZ_URL: str = "https://api.boltz.exchange"
+    BOLTZ_WEB_URL: str = "https://boltz.exchange"
 
     # Relay control plane
     RELAY_CONTROL_URL: str = "relay:5443"
@@ -375,7 +388,8 @@ class Settings(BaseSettings):
     WIREGUARD_RECONCILE_INTERVAL_SECONDS: float = Field(default=10.0, ge=1, le=300)
     WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS: float = Field(default=90.0, ge=1, le=3600)
     RELAY_MANAGED_SUFFIXES: str = ""
-    RELAY_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=7200, ge=60, le=604800)
+    RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=1800, ge=60, le=86400)
+    RELAY_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=3600, ge=60, le=86400)
     RELAY_RENEWAL_GRACE_SECONDS: int = Field(
         default=604800,
         ge=RELAY_RENEWAL_GRACE_MIN_SECONDS,
@@ -447,6 +461,8 @@ class Settings(BaseSettings):
         return tuple(self.NWC_ALLOWED_RELAY_HOSTS.split(","))
 
     def is_payment_method_enabled(self, method: PaymentMethod) -> bool:
+        if method == PaymentMethod.STABLECOIN_SWAP and not self.STABLECOIN_PAYMENTS_ENABLED:
+            return False
         return method in self.enabled_payment_methods
 
     @property
@@ -521,6 +537,39 @@ class Settings(BaseSettings):
         ):
             raise ValueError("PUBLIC_SITE_URL must be an absolute HTTP or HTTPS origin")
         return value.rstrip("/")
+
+    @field_validator("BOLTZ_WEB_URL")
+    @classmethod
+    def validate_boltz_web_url(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("BOLTZ_WEB_URL must be an absolute HTTP or HTTPS origin")
+        parsed = urlsplit(value)
+        try:
+            _ = parsed.port
+            invalid_port = False
+        except ValueError:
+            invalid_port = True
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or invalid_port
+        ):
+            raise ValueError("BOLTZ_WEB_URL must be an absolute HTTP or HTTPS origin")
+        return value.rstrip("/")
+
+    @field_validator("STABLECOIN_SWAP_DEFAULT_ASSET")
+    @classmethod
+    def validate_stablecoin_swap_asset(cls, value: str) -> str:
+        if not re.fullmatch(r"(?:USDC|USDT0)(?:-[A-Z0-9]+)?", value):
+            raise ValueError(
+                "STABLECOIN_SWAP_DEFAULT_ASSET must be a canonical Boltz USDC or USDT0 asset"
+            )
+        return value
 
     @field_validator("WIREGUARD_RELAY_PUBLIC_KEY")
     @classmethod
@@ -703,11 +752,15 @@ class Settings(BaseSettings):
                     "staleness plus one interval"
                 )
         minimum_window = self.PAYMENT_MIN_PAYABLE_SECONDS + self.PAYMENT_EXPIRY_SAFETY_SECONDS
-        if minimum_window >= self.RELAY_DOMAIN_CLAIM_TTL_SECONDS:
-            raise ValueError(
-                "RELAY_DOMAIN_CLAIM_TTL_SECONDS must cover the minimum payable window "
-                "and payment expiry safety interval"
-            )
+        for claim_ttl_field in (
+            "RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS",
+            "RELAY_DOMAIN_CLAIM_TTL_SECONDS",
+        ):
+            if minimum_window >= getattr(self, claim_ttl_field):
+                raise ValueError(
+                    f"{claim_ttl_field} must cover the minimum payable window "
+                    "and payment expiry safety interval"
+                )
         if minimum_window >= self.RESOURCE_RESERVATION_TTL_SECONDS:
             raise ValueError(
                 "RESOURCE_RESERVATION_TTL_SECONDS must cover the minimum payable window "
@@ -733,6 +786,43 @@ class Settings(BaseSettings):
                 "PAYMENT_RECONCILIATION_STALE_AFTER_SECONDS must be at least twice "
                 "PAYMENT_RECONCILIATION_INTERVAL_SECONDS"
             )
+        if self.BTC_USD_PRICE_MAX_STALE_SECONDS < self.BTC_USD_PRICE_REFRESH_SECONDS * 2:
+            raise ValueError(
+                "BTC_USD_PRICE_MAX_STALE_SECONDS must be at least twice "
+                "BTC_USD_PRICE_REFRESH_SECONDS"
+            )
+        if self.STABLECOIN_PAYMENTS_ENABLED:
+            if PaymentMethod.STABLECOIN_SWAP not in self.enabled_payment_methods:
+                raise ValueError(
+                    "PAYMENT_ENABLED_METHODS must include stablecoin_swap when stablecoin "
+                    "payments are enabled"
+                )
+            if not self.PAYMENT_RECONCILIATION_ENABLED:
+                raise ValueError(
+                    "PAYMENT_RECONCILIATION_ENABLED is required when stablecoin payments "
+                    "are enabled"
+                )
+            if (
+                self.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS + self.PAYMENT_EXPIRY_SAFETY_SECONDS
+                >= self.RESOURCE_RESERVATION_TTL_SECONDS
+            ):
+                raise ValueError(
+                    "STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS plus payment expiry safety must "
+                    "be shorter than RESOURCE_RESERVATION_TTL_SECONDS"
+                )
+            for claim_ttl_field in (
+                "RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS",
+                "RELAY_DOMAIN_CLAIM_TTL_SECONDS",
+            ):
+                if (
+                    getattr(self, claim_ttl_field)
+                    <= self.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS
+                    + self.PAYMENT_EXPIRY_SAFETY_SECONDS
+                ):
+                    raise ValueError(
+                        "STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS plus payment expiry safety "
+                        f"must be shorter than {claim_ttl_field}"
+                    )
         if self.NWC_PAYMENT_LEASE_SECONDS < self.NWC_HELPER_TIMEOUT_SECONDS + 5:
             raise ValueError(
                 "NWC_PAYMENT_LEASE_SECONDS must exceed NWC_HELPER_TIMEOUT_SECONDS by at least 5"
@@ -792,8 +882,14 @@ class Settings(BaseSettings):
             failures.append("LND_INVOICE_HMAC_KEY must be set to a dedicated 32-byte hex key")
         if not self.PAYMENT_RECONCILIATION_ENABLED:
             failures.append("PAYMENT_RECONCILIATION_ENABLED must be true")
-        if self.enabled_payment_methods - {PaymentMethod.LIGHTNING, PaymentMethod.NWC}:
+        if self.enabled_payment_methods - {
+            PaymentMethod.LIGHTNING,
+            PaymentMethod.NWC,
+            PaymentMethod.STABLECOIN_SWAP,
+        }:
             failures.append("PAYMENT_ENABLED_METHODS must not enable unsupported methods")
+        if self.STABLECOIN_PAYMENTS_ENABLED and not self.BOLTZ_WEB_URL.startswith("https://"):
+            failures.append("BOLTZ_WEB_URL must use HTTPS when stablecoin payments are enabled")
         if PaymentMethod.NWC in self.enabled_payment_methods:
             if self.PAYMENT_NWC_ADAPTER.lower() != "nwc":
                 failures.append("PAYMENT_NWC_ADAPTER must use the nwc adapter when NWC is enabled")

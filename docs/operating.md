@@ -47,8 +47,14 @@ RELAY_ENABLED=true
 RELAY_SALES_PAUSED=false
 RELAY_MANAGED_DOMAIN_CAP=25
 RELAY_CUSTOMER_DOMAINS_ENABLED=true
+RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS=1800
+RELAY_DOMAIN_CLAIM_TTL_SECONDS=3600
 ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS=20
 ACCOUNT_MAX_OPEN_PAYMENTS=5
+ACCOUNT_MAX_PENDING_RELAY_CLAIMS=2
+BTC_USD_PRICE_ENABLED=true
+BTC_USD_PRICE_REFRESH_SECONDS=300
+BTC_USD_PRICE_MAX_STALE_SECONDS=1800
 TOKEN_BYTES=16
 DEBUG=false
 ```
@@ -221,10 +227,13 @@ operating models:
    each initial or renewal invoice;
    `POST /api/v1/subscriptions/{public_id}/verify-domain` remains available for immediate
    feedback before paying. Configure
-   `RELAY_DOMAIN_CLAIM_TTL_SECONDS` to bound unpaid name holds and
+   `RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS` (30 minutes by default) and
+   `RELAY_DOMAIN_CLAIM_TTL_SECONDS` (one hour by default) to bound unpaid name
+   holds. `ACCOUNT_MAX_PENDING_RELAY_CLAIMS` limits one account to two unpaid
+   Relay claims. Configure
    `RELAY_DNS_TIMEOUT_SECONDS` to bound each recursive lookup. The initial
-   deadline also applies to provider-managed and successfully verified unpaid
-   claims; verification does not extend it. Existing pending rows with a TXT
+   customer deadline also applies after successful verification; verification
+   does not extend it. Existing pending rows with a TXT
    token continue using their returned `_blindport-challenge.<hostname>` TXT
    record only until the existing claim deadline. New claims have no TXT token.
 3. **Future registrar or authoritative-DNS automation:** an integration may
@@ -272,8 +281,8 @@ An active Blindport Relay subscription loses authorization exactly at
 `RELAY_RENEWAL_GRACE_SECONDS` after the period end (seven days by default,
 configurable from 136 seconds to 30 days). Creating a renewal invoice rechecks
 the exact assigned CNAME. The owner must create and settle renewal payment before
-that deadline. Lazy
-reaping reconciles open Lightning and NWC payments before cancellation, then
+that deadline. Periodic and request-time reaping reconcile open Lightning,
+stablecoin swap, and NWC payments before cancellation, then
 clears the domain, verification state, and relay-pool metadata only when no open
 payment remains. Provider-check failures and `PROCESSING` payments retain the
 claim for operator reconciliation. Any later claimant starts the managed or
@@ -517,6 +526,29 @@ reaper still reconciles the provider at the deadline before allowing a domain
 handoff. Domain claim, renewal, and resource reservation settings must each be
 longer than the minimum payable duration plus this safety interval.
 
+Optional stablecoin checkout uses its own invoice expiry,
+`STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS` (1,200 seconds by default), which plus
+the safety interval must remain shorter than the resource reservation. Apply
+migration `0016`, then deploy the new code to every API and reconciler replica
+with the kill switch still false. Only after old replicas are drained should a
+separate configuration rollout add `stablecoin_swap` to
+`PAYMENT_ENABLED_METHODS` and set `STABLECOIN_PAYMENTS_ENABLED=true`.
+`STABLECOIN_SWAP_MARKUP_BPS=1000` charges a 10 percent satoshi markup, rounded
+up. `STABLECOIN_SWAP_DEFAULT_ASSET` selects the initial Boltz USDC or USDT0
+network, but customers may change it in Boltz. Keep `BOLTZ_WEB_URL` on an HTTPS
+origin. Blindport does not request a quote or enforce a fiat conversion rate;
+Boltz determines the stablecoin amount and its own fees. For rollback, disable
+the kill switch first and retain `0016`-compatible application code until no
+stablecoin payment rows remain; older code cannot deserialize that method.
+
+When `BTC_USD_PRICE_ENABLED=true`, each backend process requests
+`https://mempool.space/api/v1/prices` every five minutes. The cache accepts only
+a bounded, valid JSON response and retains the last good USD rate for 30 minutes.
+This requires outbound HTTPS but no credential. Feed failures do not affect
+readiness or payment creation; the UI simply omits approximate USD values. Treat
+those values as orientation only because all configured prices, invoices, and
+settlement checks remain denominated in satoshis.
+
 The timeout bound assumes LND stops or completes `AddInvoice` within the client
 request timeout. An intermediary or provider operation that continues after the
 client has timed out remains ambiguous until lookup by payment hash finds it.
@@ -525,8 +557,8 @@ before their local deadlines elapse.
 
 Each backend replica promptly runs a background scan, then runs at the fixed
 `PAYMENT_RECONCILIATION_INTERVAL_SECONDS` rate. A cycle selects at most
-`PAYMENT_RECONCILIATION_BATCH_SIZE` pending Lightning or NWC payments in payment
-ID order. Provider state is checked before local expiry, and failures are logged
+`PAYMENT_RECONCILIATION_BATCH_SIZE` pending Lightning, stablecoin swap, or NWC
+payments in payment ID order. Provider state is checked before local expiry, and failures are logged
 per payment without stopping later rows. Disabled methods are excluded before
 the batch limit is applied. Keep the stale threshold at least twice the interval,
 and alert on an unavailable `reconciler` readiness component. The settings are

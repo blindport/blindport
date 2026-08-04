@@ -88,9 +88,9 @@ A future registrar or authoritative-DNS integration may automate record changes
 through the same control-plane API, but that facility is not part of v0.
 Blindport itself is not currently an authoritative DNS server. DNS verification
 changes subscription eligibility only; the relay does not authorize the claim
-until payment activates the subscription. Every pending Blindport Relay name has one
-bounded initial payment eligibility deadline, including managed and verified
-custom names. Verification does not reset that deadline. Pending claims created
+until payment activates the subscription. Managed names have a 30-minute initial
+payment deadline; customer-owned names have a one-hour DNS and payment deadline.
+Verification does not reset that deadline. Pending claims created
 before the CNAME rollout retain their existing TXT challenge only until that
 bounded claim expires.
 
@@ -101,7 +101,7 @@ requires a fresh exact-CNAME lookup and retains the assigned target; release aft
 claimant to pass the normal managed or customer-owned rules again with a newly
 generated target. Activation, renewal, and renewal grace retain the assigned
 CNAME target; final release clears it.
-Before either initial or renewal release, open Lightning and NWC payments are
+Before either initial or renewal release, open Lightning, stablecoin swap, and NWC payments are
 reconciled. Confirmed settlement activates the name, while uncertain provider
 state or an irreversible `PROCESSING` payment blocks handoff for operator
 reconciliation.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import pytest
@@ -157,6 +158,78 @@ def test_ip_lightning_flow(app_client, monkeypatch) -> None:
     assert me["subscriptions"][0]["assigned_ip"] in ("203.0.113.10", "203.0.113.11")
     assert me["subscriptions"][0]["assigned_port"] is None
     assert me["subscriptions"][0]["transport"] == "tcp"
+
+
+def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
+    app_client, monkeypatch
+) -> None:
+    from blindport.services import payments
+
+    client, factory = app_client
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_DEFAULT_ASSET", "USDC-BASE")
+    monkeypatch.setattr(payments.settings, "BOLTZ_WEB_URL", "https://boltz.example")
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip"},
+        headers=_auth(token),
+    ).json()
+
+    response = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    payment = response.json()
+    assert payment["method"] == "stablecoin_swap"
+    assert payment["base_amount_sats"] == 7500
+    assert payment["markup_sats"] == 750
+    assert payment["amount_sats"] == 8250
+    assert payment["stablecoin_asset"] == "USDC-BASE"
+    assert payment["lightning_uri"] is None
+    assert payment["qr_svg"] is None
+    checkout = urlsplit(payment["stablecoin_checkout_url"])
+    assert (checkout.scheme, checkout.netloc, checkout.path) == (
+        "https",
+        "boltz.example",
+        "/",
+    )
+    assert parse_qs(checkout.query) == {
+        "sendAsset": ["USDC-BASE"],
+        "receiveAsset": ["LN"],
+        "destination": [payment["invoice"]],
+    }
+    expires_at = datetime.fromisoformat(payment["expires_at"])
+    assert expires_at.tzinfo is not None
+    assert expires_at.utcoffset() == timedelta(0)
+    assert timedelta(seconds=1150) <= expires_at - datetime.now(UTC) <= timedelta(seconds=1200)
+
+    pending = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()
+    assert pending["status"] == "pending"
+    factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
+    paid = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()
+    assert paid["status"] == "paid"
+    assert paid["base_amount_sats"] == 7500
+    assert paid["markup_sats"] == 750
+    assert (
+        client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]["status"]
+        == "active"
+    )
+
+
+def test_stablecoin_markup_rounds_up_without_floating_point(app_client, monkeypatch) -> None:
+    del app_client
+    from blindport.services import payments
+
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
+
+    assert payments.stablecoin_markup_sats(1) == 1
+    assert payments.stablecoin_markup_sats(10) == 1
+    assert payments.stablecoin_markup_sats(11) == 2
 
 
 def test_port_creation_payment_activation_config_and_resolve(app_client) -> None:
@@ -356,8 +429,14 @@ def test_subscription_rejects_second_live_payment(app_client) -> None:
         json={"subscription_id": sub["id"], "method": "cashu"},
         headers=_auth(token),
     )
-    assert second.status_code == 400
-    assert second.json()["detail"] == "subscription already has a pending payment"
+    assert second.status_code == 409
+    conflict = second.json()
+    assert conflict["detail"] == "a lightning payment is already pending for this subscription"
+    assert conflict["existing_payment"]["id"] == first.json()["id"]
+    assert conflict["existing_payment"]["method"] == "lightning"
+    existing_expiry = datetime.fromisoformat(conflict["existing_payment"]["expires_at"])
+    assert existing_expiry.tzinfo is not None
+    assert existing_expiry.utcoffset() == timedelta(0)
 
 
 def test_expired_unpaid_reservation_is_released_and_reused(app_client) -> None:

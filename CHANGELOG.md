@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Optional stablecoin checkout through a prefilled external Boltz flow, with a
+  configurable satoshi surcharge, dedicated kill switch, and LND-only settlement.
+- Approximate cached Bitcoin/USD price labels, bounded unpaid Relay name holds,
+  and structured recovery when another payment method is already pending.
 - A reusable Blindport logo system with profile, favicon, app icon, and social
   preview exports, plus Open Graph and large-card metadata for shared links.
 

@@ -53,14 +53,21 @@ flattened, proxied, and wildcard customer records are not supported in the canar
 Future registrar or authoritative-DNS integrations can automate the same
 subscription and verification API flow.
 
+Unpaid managed names are held for 30 minutes and customer-owned names for one
+hour. One account may hold at most two unpaid Relay claims, and the background
+reconciler releases elapsed claims, limiting no-cost name reservation abuse.
+
 Accounts use a one-time Crockford base32 bearer token. The primary payment path
-is direct Lightning through LND. Cashu and Nostr Wallet Connect adapters remain
-experimental and are not exposed by the dashboard. In particular, Cashu quote
-recovery and reconciliation are not production-ready.
+is direct Lightning through LND. Operators may also expose an optional stablecoin
+checkout that opens a surcharged LND invoice in the external Boltz web app;
+Blindport receives Lightning bitcoin and activates service only after LND reports
+settlement. Cashu and Nostr Wallet Connect adapters remain experimental. Cashu
+quote recovery and reconciliation are not production-ready.
 
 Subscriptions support fixed monthly (30 service days) and yearly (365 service
 days) terms. Prices are snapshotted when a subscription is created, and each
-payment snapshots its amount and exact service period before settlement.
+payment snapshots its amount, any stablecoin surcharge, and exact service period
+before settlement.
 Yearly issuance is controlled by `BILLING_YEARLY_ENABLED` so operators can enable
 it only after completing the migration-first rolling deployment.
 Accounts can optionally store an encrypted email address for seven-day and one-day
@@ -180,6 +187,13 @@ Direct LND invoices use a durable, deterministic outbox. Provider timeouts or a
 process failure after invoice creation can be recovered by payment hash without
 issuing a second invoice. Production requires a dedicated invoice HMAC key shared
 by all API replicas; see [`docs/operating.md`](docs/operating.md).
+
+Stablecoin checkout uses the same durable invoice and settlement path. Blindport
+only builds a prefilled external URL; Boltz selects the network quote and exchange
+rate, and customers can switch among supported USDC and USDT0 networks there.
+The hosted UI may show a cached approximate USD value from mempool.space for
+orientation; satoshi prices remain authoritative when that optional feed is stale
+or unavailable.
 
 For framed delivery, the client and relay exchange length-prefixed JSON frames
 over a long-lived TCP connection. The bearer token authorizes one explicit

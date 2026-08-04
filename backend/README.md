@@ -26,8 +26,14 @@ RELAY_ENABLED=true
 RELAY_SALES_PAUSED=false
 RELAY_MANAGED_DOMAIN_CAP=1000
 RELAY_CUSTOMER_DOMAINS_ENABLED=true
+RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS=1800
+RELAY_DOMAIN_CLAIM_TTL_SECONDS=3600
 ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS=20
 ACCOUNT_MAX_OPEN_PAYMENTS=5
+ACCOUNT_MAX_PENDING_RELAY_CLAIMS=2
+BTC_USD_PRICE_ENABLED=true
+BTC_USD_PRICE_REFRESH_SECONDS=300
+BTC_USD_PRICE_MAX_STALE_SECONDS=1800
 RATE_LIMIT_SIGNUP_REQUESTS=10
 RATE_LIMIT_SIGNUP_WINDOW_SECONDS=60
 RATE_LIMIT_ADMIN_LOGIN_REQUESTS=5
@@ -49,6 +55,16 @@ capacity. Direct Lightning remains mandatory in production. NWC can be enabled a
 with the compiled helper, the `nwc` adapter, payment reconciliation, and a dedicated credential
 encryption key. Checked-in production manifests keep NWC disabled until those secrets and user
 wallet connections are provisioned.
+
+Stablecoin checkout is separately gated by `STABLECOIN_PAYMENTS_ENABLED` and also requires
+`stablecoin_swap` in `PAYMENT_ENABLED_METHODS`. It creates a marked-up LND invoice, opens the
+external `BOLTZ_WEB_URL` with that BOLT11 destination, and relies only on LND settlement for
+activation. `STABLECOIN_SWAP_MARKUP_BPS=1000` applies a 10 percent satoshi surcharge with
+round-up, while Boltz determines the stablecoin amount and exchange rate.
+
+The optional Bitcoin/USD display cache reads the fixed mempool.space price endpoint in the
+background. It never changes invoices or settlement amounts, retains a last-good value for 30
+minutes, and omits USD estimates when no sufficiently fresh value exists.
 
 Expiration reminders are separately gated by `REMINDER_EMAIL_ENABLED`. When enabled,
 recipient addresses are encrypted with purpose-specific AES-GCM associated data and

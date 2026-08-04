@@ -7,6 +7,8 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
+import httpx
+
 import blindport
 
 
@@ -116,6 +118,12 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert 'current.status === "paid"' in dashboard
     assert 'current.status === "expired"' in dashboard
     assert 'current.status === "failed"' in dashboard
+    assert 'method === "stablecoin_swap"' in dashboard
+    assert "payment.stablecoin_checkout_url" in dashboard
+    assert "error.payload?.existing_payment" in dashboard
+    assert "Continue with the existing checkout" in dashboard
+    assert 'window.open("about:blank", "_blank")' in dashboard
+    assert 'payUri.rel = "noopener noreferrer external"' in dashboard
     assert "verify-domain" in dashboard
     assert "Check DNS" in _asset("templates/dashboard.html")
     assert "CNAME verification required" in _asset("templates/dashboard.html")
@@ -201,6 +209,8 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="accountToken" type="password" readonly' in dashboard
     assert 'id="copyInvoiceBtn"' in dashboard
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
+    assert 'id="stablecoinNotice"' in dashboard
+    assert 'class="stablecoinPayBtn button-secondary"' in dashboard
     assert 'id="framedSetupCommand"' in dashboard
     assert 'id="framedConfigInstallCommand"' in dashboard
     assert 'id="generatedClientConfig"' in dashboard
@@ -489,6 +499,60 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
     assert "Tor onion services" in terms.text
     assert "suitable mixnets" in terms.text
     assert "only the limited privacy benefits described above" in terms.text
+
+
+def test_dashboard_stablecoin_control_follows_feature_kill_switch(app_client, monkeypatch) -> None:
+    from blindport.api import pages
+
+    client, _ = app_client
+    signup = client.post("/api/v2/signup").json()
+    client.cookies.set("blindport_token", signup["token"])
+    client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip"},
+        headers={"Authorization": f"Bearer {signup['token']}"},
+    )
+
+    disabled = client.get("/dashboard")
+    monkeypatch.setattr(pages.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    enabled = client.get("/dashboard")
+
+    assert "stablecoinPayBtn" not in disabled.text
+    assert "stablecoinPayBtn" in enabled.text
+    assert "Pay with stablecoin" in enabled.text
+
+
+def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monkeypatch) -> None:
+    from blindport.api import pages
+
+    client, _ = app_client
+    monkeypatch.setattr(pages.settings, "BTC_USD_PRICE_ENABLED", True)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={"time": 1_785_859_508, "USD": 64_000},
+            request=request,
+        )
+    )
+    with httpx.Client(transport=transport) as price_client:
+        pages.price_cache.refresh(price_client)
+
+    landing = client.get("/")
+    signup = client.post("/api/v2/signup").json()
+    client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip"},
+        headers={"Authorization": f"Bearer {signup['token']}"},
+    )
+    client.cookies.set("blindport_token", signup["token"])
+    dashboard = client.get("/dashboard")
+
+    assert "Prices are denominated in Bitcoin (BTC)." in landing.text
+    assert "One bitcoin is 100 million satoshis (sats)." in landing.text
+    assert "about $4.80 USD" in landing.text
+    assert 'data-btc-usd="64000"' in dashboard.text
+    assert "100 million sats equal 1 BTC" in dashboard.text
+    assert "about $4.80 USD" in dashboard.text
 
 
 def test_catalog_exposes_only_configured_managed_suffix_metadata(app_client) -> None:

@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
@@ -57,9 +58,12 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "CA_DIR": str(state_dir / "ca"),
             "SECRET_KEY": "browser-ci-secret",
             "ADMIN_TOKEN": "BROWSERCIADMIN0000",
-            "PAYMENT_ENABLED_METHODS": "lightning",
+            "PAYMENT_ENABLED_METHODS": "lightning,stablecoin_swap",
+            "STABLECOIN_PAYMENTS_ENABLED": "true",
+            "STABLECOIN_SWAP_MARKUP_BPS": "1000",
+            "BOLTZ_WEB_URL": "https://boltz.example",
             "PAYMENT_LIGHTNING_ADAPTER": "mock",
-            "PAYMENT_RECONCILIATION_ENABLED": "false",
+            "PAYMENT_RECONCILIATION_ENABLED": "true",
             "BILLING_YEARLY_ENABLED": "true",
             "RELAY_SHARED_IPS": "203.0.113.20",
             "RELAY_SHARED_TCP_PORTS": "10000-10015",
@@ -458,8 +462,113 @@ def test_dashboard_payment_qr_and_copy_controls(
             page.locator("#copyInvoiceBtn").click()
             assert page.evaluate("navigator.clipboard.readText()") == invoice
             assert page.locator("#copyInvoiceBtn").text_content() == "Copied"
+
+            page.reload(wait_until="networkidle")
+            with (
+                page.expect_popup(),
+                page.expect_response(
+                    lambda response: response.url.endswith("/api/v1/payments")
+                    and response.request.method == "POST"
+                ) as conflict_response_info,
+            ):
+                page.locator(
+                    f'.stablecoinPayBtn[data-sub-id="{subscription["id"]}"]'
+                ).click()
+            conflict_response = conflict_response_info.value
+            assert conflict_response.status == 409
+            assert conflict_response.json()["existing_payment"]["id"] == payment["id"]
+            assert (
+                page.locator("#payStatus")
+                .text_content()
+                .startswith("a lightning payment is already pending")
+            )
+            assert page.locator("#payBolt11").text_content() == invoice
+            assert page.locator("#qrBox svg").is_visible()
             _assert_layout(page)
             assert errors == []
+    finally:
+        context.close()
+
+
+def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        response = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"product": "ip"},
+        )
+        assert response.ok, response.text()
+        subscription = response.json()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    context.route(
+        "https://boltz.example/**",
+        lambda route: route.fulfill(
+            status=200, content_type="text/html", body="Boltz test"
+        ),
+    )
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(error.stack or str(error)))
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        with (
+            page.expect_popup() as popup_info,
+            page.expect_response(
+                lambda payment: payment.url.endswith("/api/v1/payments")
+                and payment.request.method == "POST"
+            ) as payment_response_info,
+        ):
+            page.locator(
+                f'.stablecoinPayBtn[data-sub-id="{subscription["id"]}"]'
+            ).click()
+
+        payment_response = payment_response_info.value
+        assert payment_response.ok, payment_response.text()
+        payment = payment_response.json()
+        popup = popup_info.value
+        popup.wait_for_url("https://boltz.example/**")
+        checkout = urlsplit(popup.url)
+        assert parse_qs(checkout.query) == {
+            "sendAsset": ["USDC-BASE"],
+            "receiveAsset": ["LN"],
+            "destination": [payment["invoice"]],
+        }
+        assert payment["base_amount_sats"] == 7500
+        assert payment["markup_sats"] == 750
+        assert payment["amount_sats"] == 8250
+        assert page.locator("#payAmount").text_content() == "8250"
+        assert (
+            "7500 sats service price + 750 sats"
+            in page.locator("#payBreakdown").text_content()
+        )
+        assert page.locator("#payUri").get_attribute("target") == "_blank"
+        assert page.locator("#payUri").get_attribute("rel") == (
+            "noopener noreferrer external"
+        )
+        assert page.locator("#stablecoinNotice").is_visible()
+        assert page.locator("#qrBox").is_hidden()
+        _assert_layout(page)
+        assert errors == []
+        popup.close()
     finally:
         context.close()
 

@@ -22,11 +22,17 @@ def get_lightning_adapter() -> LightningAdapter:
         # E2E variant: every invoice is paid the moment it is created.
         return MockLightningAdapter(auto_settle=True)
     if name == "lnd":
+        invoice_expiry_ceiling = settings.LND_INVOICE_EXPIRY_SECONDS
+        if settings.STABLECOIN_PAYMENTS_ENABLED:
+            invoice_expiry_ceiling = max(
+                invoice_expiry_ceiling,
+                settings.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS,
+            )
         return LndRestLightningAdapter(
             rest_url=settings.LND_REST_URL,
             cert_path=settings.LND_CERT_PATH,
             macaroon_path=settings.LND_MACAROON_PATH,
-            invoice_expiry_seconds=settings.LND_INVOICE_EXPIRY_SECONDS,
+            invoice_expiry_seconds=invoice_expiry_ceiling,
             request_timeout_seconds=settings.LND_REQUEST_TIMEOUT_SECONDS,
         )
     raise ValueError(f"unknown lightning adapter: {name!r}")

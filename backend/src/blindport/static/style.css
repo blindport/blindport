@@ -409,6 +409,7 @@ summary { display: flex; min-height: 44px; align-items: center; cursor: pointer;
 .dns-instructions button { justify-self: start; margin-top: 0.4rem; }
 .empty-state { padding: 2rem 0; border-block: 1px solid var(--line); }
 .payment-panel { display: grid; margin: 2rem 0; padding: 1.5rem; border: 2px solid var(--accent); border-radius: var(--radius); background: var(--paper); grid-template-columns: minmax(0, 1fr) minmax(220px, 340px); gap: 2rem; }
+.payment-panel[data-payment-method="stablecoin_swap"] { grid-template-columns: minmax(0, 720px); }
 #qrBox { width: 100%; max-width: 340px; justify-self: center; background: white; }
 #qrBox svg { display: block; width: 100%; height: auto; }
 .invoice-box { max-height: 180px; white-space: pre-wrap; overflow-wrap: anywhere; }

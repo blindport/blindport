@@ -32,7 +32,10 @@ def readiness_status() -> tuple[bool, dict[str, str]]:
     except Exception:
         components["migrations"] = _UNAVAILABLE
 
-    if settings.is_payment_method_enabled(PaymentMethod.LIGHTNING):
+    if any(
+        settings.is_payment_method_enabled(method)
+        for method in (PaymentMethod.LIGHTNING, PaymentMethod.STABLECOIN_SWAP)
+    ):
         try:
             healthy = get_lightning_adapter().health()
             components["lightning"] = _OK if healthy else _UNAVAILABLE

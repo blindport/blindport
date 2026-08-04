@@ -14,10 +14,11 @@ os.environ.setdefault("ADMIN_TOKEN", "TESTADMIN0000")
 os.environ.setdefault("PAYMENT_LIGHTNING_ADAPTER", "mock")
 os.environ.setdefault("PAYMENT_CASHU_ADAPTER", "mock")
 os.environ.setdefault("PAYMENT_NWC_ADAPTER", "mock")
-os.environ.setdefault("PAYMENT_ENABLED_METHODS", "lightning,cashu,nwc")
+os.environ.setdefault("PAYMENT_ENABLED_METHODS", "lightning,cashu,nwc,stablecoin_swap")
 os.environ.setdefault("CREDENTIAL_ENCRYPTION_KEY", "cd" * 32)
 os.environ.setdefault("PAYMENT_RECONCILIATION_ENABLED", "false")
 os.environ.setdefault("BILLING_YEARLY_ENABLED", "true")
+os.environ.setdefault("BTC_USD_PRICE_ENABLED", "false")
 os.environ.setdefault("RELAY_PUBLIC_IPS", "203.0.113.10,203.0.113.11")
 os.environ.setdefault("RELAY_SHARED_IPS", "203.0.113.20")
 os.environ.setdefault("RELAY_SHARED_TCP_PORTS", "10000-10001")
@@ -46,6 +47,7 @@ def app_client(monkeypatch, tmp_path):
     from blindport.api import v2 as v2_mod
     from blindport.core import ca as ca_mod
     from blindport.services import agent_orders as agent_orders_mod
+    from blindport.services import btc_usd_price as btc_usd_price_mod
     from blindport.services import client_enrollment as client_enrollment_mod
     from blindport.services import domain_verification as domain_verification_mod
     from blindport.services import health as health_mod
@@ -62,6 +64,7 @@ def app_client(monkeypatch, tmp_path):
     importlib.reload(client_enrollment_mod)
     importlib.reload(domain_verification_mod)
     importlib.reload(subs_mod)
+    importlib.reload(btc_usd_price_mod)
     importlib.reload(payments_mod)
     importlib.reload(agent_orders_mod)
     importlib.reload(rate_limits_mod)

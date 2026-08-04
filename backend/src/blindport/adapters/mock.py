@@ -54,7 +54,7 @@ class MockLightningAdapter(LightningAdapter):
             or expiry_seconds <= 0
         ):
             raise ValueError("invoice expiry must be a positive integer")
-        effective_expiry = min(600, expiry_seconds) if expiry_seconds is not None else 600
+        effective_expiry = expiry_seconds if expiry_seconds is not None else 600
         ph = _hex(32)
         bolt11 = f"lnbcrt{amount_sats}u1mock{ph[:20]}"
         with self._lock:
@@ -86,7 +86,7 @@ class MockLightningAdapter(LightningAdapter):
             or expiry_seconds <= 0
         ):
             raise ValueError("invoice expiry must be a positive integer")
-        effective_expiry = min(600, expiry_seconds) if expiry_seconds is not None else 600
+        effective_expiry = expiry_seconds if expiry_seconds is not None else 600
         payment_hash = sha256(payment_preimage).hexdigest()
         now = time.time()
         with self._lock:

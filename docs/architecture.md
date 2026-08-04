@@ -49,8 +49,8 @@ capacity exists, the payment endpoint returns `409` without calling the payment
 adapter.
 
 Subscriptions snapshot monthly and yearly prices at creation and keep a preferred
-billing term. A payment independently snapshots the selected term, amount, and
-fixed period length (30 service days monthly or 365 service days yearly). The
+billing term. A payment independently snapshots the selected term, charged amount,
+markup, and fixed period length (30 service days monthly or 365 service days yearly). The
 payment snapshot is authoritative at settlement, including after configuration,
 price, or preference changes.
 Yearly issuance is feature-gated during rollout. The gate remains disabled while
@@ -60,12 +60,18 @@ later disabled.
 
 Reservations expire after `RESOURCE_RESERVATION_TTL_SECONDS`, and payment expiry
 is capped at the reservation ownership deadline. Provider state is queried
-before an elapsed Lightning or NWC payment is expired locally. Release paths
+before an elapsed Lightning, stablecoin swap, or NWC payment is expired locally. Release paths
 compare the reservation payment ID, so an old payment cannot clear a newer
 payment's hold. Lightning invoice expiry is also bounded before invoice creation
 by the remaining resource or domain eligibility window, less a configured
 safety interval. Windows shorter than the configured minimum payable duration
 are rejected before the adapter is called.
+
+Only one payment may own a subscription reservation at a time. A request for a
+different method receives a structured conflict containing the existing payment,
+allowing clients to restore that checkout. Blindly replacing an open BOLT11 is
+not allowed because a late settlement of the replaced invoice could otherwise
+grant an unintended second service period.
 
 Settlement conditionally changes one open payment to paid and updates the
 subscription in the same transaction. This makes repeated or concurrent polls
@@ -76,7 +82,7 @@ only that claimant may mint or swap. An uncertain external error becomes
 spent. Cashu remains experimental.
 
 Every API replica also runs a bounded background reconciler after migrations and
-admin bootstrap. It scans pending Lightning and NWC rows in payment ID order,
+admin bootstrap. It scans pending Lightning, stablecoin swap, and NWC rows in payment ID order,
 excluding methods disabled in the current configuration so stale rows cannot
 consume the enabled-method batch. It checks provider settlement before expiry
 and isolates each row in its own session so malformed data or one provider
@@ -103,6 +109,13 @@ by request retry or background reconciliation without issuing a second invoice.
 Concurrent replicas converge through the unique identity/hash indexes, a
 PostgreSQL row lock around issuance and expiry, and a conditional invoice-binding
 update.
+
+Stablecoin checkout reuses this LND outbox without a second provider-side API
+transaction. The API derives a Boltz web URL from the bound BOLT11 invoice,
+configured default asset, and fixed Boltz origin. The customer completes the
+swap externally, and Blindport records no stablecoin address, wallet, or swap ID.
+Boltz quote state is advisory; LND invoice settlement is the only activation
+authority.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment
@@ -146,24 +159,30 @@ suffix. At creation, customer-owned names receive a unique CNAME target whose
 lowercase child label contains 128 bits of cryptographic randomness. The target
 is stored in the existing pool-domain field and remains stable for the retained
 claim. Customer claims cannot create a payment until the requested hostname has
-one direct CNAME answer exactly equal to that target. Unverified
-claims, verified-but-unpaid claims, and managed unpaid claims all retain the
-same initial eligibility deadline and release their unique domain after it.
-Successful verification does not extend or remove that deadline. Pending rows
+one direct CNAME answer exactly equal to that target. Unverified claims and
+verified-but-unpaid claims retain a one-hour eligibility deadline; managed unpaid
+claims retain a 30-minute deadline. Successful verification does not extend or
+remove that deadline. An account may hold at most two unpaid Relay claims. Pending rows
 with a pre-rollout TXT token retain the legacy TXT path until their existing
 claim expires; new rows never receive a token. When an active claim expires,
 authorization stops immediately and a
 separate renewal deadline reserves the verified domain for its existing owner.
 Creating a payment during that bounded grace requires another exact CNAME lookup
-before the same domain can reactivate. After grace, a conditional lazy reaper cancels the subscription and
+before the same domain can reactivate. The periodic payment reconciler and
+request-time reaper cancel elapsed claims and
 clears the domain, verification fields, and pool-domain assignment. Active
 rows and unelapsed renewal holds do not match the release update. Before release,
-the reaper checks open Lightning and NWC payments against their providers so a
+the reaper checks open Lightning, stablecoin swap, and NWC payments against their providers so a
 boundary settlement wins. An uncertain provider check or an irreversible
 `PROCESSING` payment retains the claim for operator reconciliation. The final
 release is conditional on no open payment, while payment settlement remains a
 one-time conditional transaction. Pool-domain assignment is load-distribution
 metadata and is not scarce socket inventory.
+
+An optional process-local Bitcoin/USD cache fetches the fixed mempool.space price
+endpoint outside request handling. Strictly validated last-good values may be used
+for approximate UI labels for 30 minutes. This advisory cache is not a readiness
+dependency and never participates in pricing snapshots, invoices, or settlement.
 
 ## Data paths
 

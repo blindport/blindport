@@ -131,6 +131,35 @@ def test_durable_account_subscription_and_open_payment_caps(app_client, monkeypa
     assert "open payment/reservation limit (1)" in payment_limited.json()["detail"]
 
 
+def test_unpaid_relay_claims_have_a_separate_per_account_cap(app_client, monkeypatch) -> None:
+    from blindport.services import subscriptions
+
+    client, _ = app_client
+    _, token = _signup(client)
+    monkeypatch.setattr(subscriptions.settings, "ACCOUNT_MAX_PENDING_RELAY_CLAIMS", 2)
+
+    claims = []
+    for domain in ("one.relay.test", "customer.example"):
+        response = client.post(
+            "/api/v1/subscriptions",
+            json={"product": "relay", "domain": domain},
+            headers=_auth(token),
+        )
+        assert response.status_code == 200, response.text
+        claims.append(response.json())
+    limited = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "relay", "domain": "three.relay.test"},
+        headers=_auth(token),
+    )
+
+    assert limited.status_code == 429
+    assert limited.json()["detail"] == "account has reached the unpaid Relay claim limit (2)"
+    managed_expiry = datetime.fromisoformat(claims[0]["domain_verification_expires_at"])
+    customer_expiry = datetime.fromisoformat(claims[1]["domain_verification_expires_at"])
+    assert 1790 <= (customer_expiry - managed_expiry).total_seconds() <= 1810
+
+
 def test_suspension_revokes_normal_auth_and_relay_reauthorization(app_client) -> None:
     client, factory = app_client
     account_id, token = _signup(client)

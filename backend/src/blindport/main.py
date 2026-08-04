@@ -17,6 +17,7 @@ from .api import internal, pages, v1, v2
 from .config import settings
 from .core.models import PaymentMethod
 from .db import prepare_database
+from .services.btc_usd_price import run_btc_usd_price_refresh
 from .services.payment_reconciliation import reconciler_health, run_payment_reconciler
 from .services.rate_limits import DirectRateLimiter
 from .services.reminder_reconciliation import get_smtp_adapter
@@ -43,10 +44,21 @@ async def lifespan(app: FastAPI):
             name="payment-reconciler",
         )
     app.state.payment_reconciler_task = reconciler_task
+    price_stop_event = asyncio.Event()
+    price_task: asyncio.Task[None] | None = None
+    if settings.BTC_USD_PRICE_ENABLED:
+        price_task = asyncio.create_task(
+            run_btc_usd_price_refresh(price_stop_event),
+            name="btc-usd-price-refresh",
+        )
+    app.state.btc_usd_price_task = price_task
     logger.info("Blindport backend ready")
     try:
         yield
     finally:
+        if price_task is not None:
+            price_stop_event.set()
+            await price_task
         if reconciler_task is not None:
             stop_reconciler.set()
             try:

@@ -494,6 +494,7 @@ def test_factory_wires_lnd_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(factory.settings, "LND_CERT_PATH", "/lnd/tls.cert")
     monkeypatch.setattr(factory.settings, "LND_MACAROON_PATH", "/lnd/admin.macaroon")
     monkeypatch.setattr(factory.settings, "LND_INVOICE_EXPIRY_SECONDS", 720)
+    monkeypatch.setattr(factory.settings, "STABLECOIN_PAYMENTS_ENABLED", False)
     monkeypatch.setattr(factory.settings, "LND_REQUEST_TIMEOUT_SECONDS", 12.5)
     monkeypatch.setattr(factory, "LndRestLightningAdapter", fake_adapter)
     factory.reset_adapters_for_tests()
@@ -506,4 +507,31 @@ def test_factory_wires_lnd_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         "invoice_expiry_seconds": 720,
         "request_timeout_seconds": 12.5,
     }
+    factory.reset_adapters_for_tests()
+
+
+def test_factory_allows_longer_stablecoin_invoice_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blindport.adapters import factory
+
+    captured: dict[str, Any] = {}
+    sentinel = object()
+
+    def fake_adapter(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(factory.settings, "PAYMENT_LIGHTNING_ADAPTER", "lnd")
+    monkeypatch.setattr(factory.settings, "LND_REST_URL", "https://lnd.example:8080")
+    monkeypatch.setattr(factory.settings, "LND_CERT_PATH", "/lnd/tls.cert")
+    monkeypatch.setattr(factory.settings, "LND_MACAROON_PATH", "/lnd/admin.macaroon")
+    monkeypatch.setattr(factory.settings, "LND_INVOICE_EXPIRY_SECONDS", 600)
+    monkeypatch.setattr(factory.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    monkeypatch.setattr(factory.settings, "STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS", 1200)
+    monkeypatch.setattr(factory, "LndRestLightningAdapter", fake_adapter)
+    factory.reset_adapters_for_tests()
+
+    assert factory.get_lightning_adapter() is sentinel
+    assert captured["invoice_expiry_seconds"] == 1200
     factory.reset_adapters_for_tests()
