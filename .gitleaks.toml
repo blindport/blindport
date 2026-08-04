@@ -1,0 +1,20 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic development keys used only by the isolated Compose test stack"
+condition = "AND"
+regexTarget = "line"
+paths = ['''docker-compose\.yaml$''']
+regexes = [
+  '''LND_INVOICE_HMAC_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"''',
+  '''CREDENTIAL_ENCRYPTION_KEY: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"''',
+  '''BLINDPORT_RELAY_WIREGUARD_KEY: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="''',
+]
+
+[[allowlists]]
+description = "Documentation placeholder, not credential material"
+condition = "AND"
+regexTarget = "line"
+paths = ['''README\.md$''']
+regexes = ['''LND_INVOICE_HMAC_KEY=<dedicated-64-character-lowercase-hex-key>''']
