@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Sign in | {{ brand_name }}{% endblock %}
+{% block content %}
+<section class="auth-page content-narrow" aria-labelledby="login-title">
+  <p class="eyebrow">Account access</p>
+  <h1 id="login-title">Sign in with your token</h1>
+  <p>Your bearer token is the only account credential. This browser can keep more than one account, but Blindport cannot recover their tokens.</p>
+  <form id="savedAccountForm" method="post" action="/login" class="auth-form saved-account-form" hidden>
+    <input type="hidden" id="savedAccountToken" name="token">
+    <label for="savedAccountSelect">Saved account</label>
+    <select id="savedAccountSelect"></select>
+    <div class="form-actions auth-actions">
+      <button type="submit">Sign in to saved account</button>
+      <button type="button" class="button-secondary" id="removeSavedAccountBtn">Remove</button>
+    </div>
+    <p id="savedAccountStatus" class="field-help" role="status" aria-live="polite"></p>
+  </form>
+  <p id="manualLoginLabel" class="auth-divider"><span>Or enter a token</span></p>
+  <form id="loginForm" method="post" action="/login" class="auth-form">
+    <label for="tokenInput">Bearer token</label>
+    <input type="password" id="tokenInput" name="token" autocomplete="current-password" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX..." required>
+    <button type="submit">Sign in</button>
+  </form>
+  {% if invalid_credentials %}<p class="field-error" role="alert">Invalid credentials.</p>{% endif %}
+  <p class="muted">No account yet? <a class="text-link" href="/#order">Choose a plan and create an order</a>.</p>
+</section>
+<script src="/static/account-storage.js"></script>
+<script src="/static/login.js"></script>
+{% endblock %}

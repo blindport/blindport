@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Admin | {{ brand_name }}{% endblock %}
+{% block content %}
+<div class="admin-page content-wide">
+  <header class="dashboard-header">
+    <div>
+      <p class="eyebrow">Operations</p>
+      <h1>Admin</h1>
+    </div>
+    <form method="post" action="/admin/logout"><button type="submit" class="button-secondary">Sign out</button></form>
+  </header>
+
+  <section class="metric-strip" aria-label="Service summary">
+    <div><span>Accounts</span><strong>{{ users | length }}</strong></div>
+    <div><span>Subscriptions</span><strong>{{ subscriptions | length }}</strong></div>
+    <div><span>Active</span><strong>{{ active_count }}</strong></div>
+    <div><span>Payments</span><strong>{{ payments | length }}</strong></div>
+    <div><span>Reminders</span><strong>{{ reminders | length }}</strong></div>
+  </section>
+
+  <section class="admin-section" aria-labelledby="accounts-title">
+    <h2 id="accounts-title">Accounts</h2>
+    <div class="table-wrap">
+      <table class="responsive-table">
+        <caption>All bearer-token accounts</caption>
+        <thead><tr><th scope="col">Account ID</th><th scope="col">Status</th><th scope="col">Created</th><th scope="col">Last seen</th><th scope="col">NWC</th><th scope="col">Action</th></tr></thead>
+        <tbody>
+        {% for u in users %}
+          <tr>
+            <td data-label="Account ID"><code>{{ u.public_id }}</code></td>
+            <td data-label="Status">{{ "Suspended" if u.is_suspended else "Enabled" }}</td>
+            <td data-label="Created">{{ u.created_at }}</td>
+            <td data-label="Last seen">{{ u.last_seen_at or "Never" }}</td>
+            <td data-label="NWC">{{ "Connected" if u.has_nwc else "Not connected" }}</td>
+            <td data-label="Action">
+              {% if u.is_suspended %}
+              <form method="post" action="/admin/accounts/{{ u.public_id }}/restore"><button type="submit" class="button-secondary">Restore</button></form>
+              {% else %}
+              <form method="post" action="/admin/accounts/{{ u.public_id }}/suspend"><button type="submit" class="button-secondary">Suspend</button></form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="admin-section" aria-labelledby="admin-subscriptions-title">
+    <h2 id="admin-subscriptions-title">Subscriptions</h2>
+    <div class="table-wrap">
+      <table class="responsive-table">
+        <caption>All product subscriptions</caption>
+        <thead><tr><th scope="col">Reference</th><th scope="col">Account ID</th><th scope="col">Product</th><th scope="col">Status</th><th scope="col">Billing term</th><th scope="col">Ingress</th><th scope="col">Domain</th><th scope="col">Term ends</th></tr></thead>
+        <tbody>
+        {% for s in subscriptions %}
+          <tr>
+            <td data-label="Reference"><code>{{ s.public_id }}</code></td>
+            <td data-label="Account ID"><code>{{ account_by_user_id.get(s.user_id, "Unknown") }}</code></td>
+            <td data-label="Product">{{ s.product.value }}</td>
+            <td data-label="Status">{{ s.status.value }}</td>
+            <td data-label="Billing term">{{ s.billing_term.value }}</td>
+            <td data-label="Ingress">{% if s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}/{{ s.transport.value }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}Pending{% endif %}</td>
+            <td data-label="Domain">{{ s.domain or "" }}{% if s.relay_pool_domain %}<br><span class="muted">via {{ s.relay_pool_domain }}</span>{% endif %}</td>
+            <td data-label="Term ends">{{ s.current_period_end or "" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="admin-section" aria-labelledby="payments-title">
+    <h2 id="payments-title">Payments</h2>
+    <div class="table-wrap">
+      <table class="responsive-table">
+        <caption>All payment attempts</caption>
+        <thead><tr><th scope="col">Reference</th><th scope="col">Account ID</th><th scope="col">Subscription</th><th scope="col">Method</th><th scope="col">Status</th><th scope="col">Term</th><th scope="col">Amount</th><th scope="col">Payment hash</th></tr></thead>
+        <tbody>
+        {% for p in payments %}
+          <tr>
+            <td data-label="Reference"><code>{{ p.id }}</code></td>
+            <td data-label="Account ID"><code>{{ account_by_payment_id.get(p.id, "Unknown") }}</code></td>
+            <td data-label="Subscription"><code>{{ subscription_public_id_by_pk.get(p.subscription_id, "Unknown") }}</code></td>
+            <td data-label="Method">{{ p.method.value }}</td>
+            <td data-label="Status">{{ p.status.value }}</td>
+            <td data-label="Term">{{ p.billing_term.value }} ({{ p.period_days }} days)</td>
+            <td data-label="Amount">{{ p.amount_sats }} sats</td>
+            <td data-label="Payment hash"><code>{{ (p.payment_hash or "")[:20] }}</code></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if reminders %}
+  <section class="admin-section" aria-labelledby="reminders-title">
+    <h2 id="reminders-title">Reminder deliveries</h2>
+    <div class="table-wrap">
+      <table class="responsive-table">
+        <caption>Expiration reminder outbox</caption>
+        <thead><tr><th scope="col">Reference</th><th scope="col">Subscription</th><th scope="col">Notice</th><th scope="col">State</th><th scope="col">Attempts</th><th scope="col">Sent</th><th scope="col">Error</th><th scope="col">Updated</th></tr></thead>
+        <tbody>
+        {% for reminder in reminders %}
+          <tr>
+            <td data-label="Reference"><code>{{ reminder.id }}</code></td>
+            <td data-label="Subscription"><code>{{ subscription_public_id_by_pk.get(reminder.subscription_id, "Unknown") }}</code></td>
+            <td data-label="Notice">{{ reminder.kind.value }}</td>
+            <td data-label="State">{{ reminder.state.value }}</td>
+            <td data-label="Attempts">{{ reminder.attempt_count }}</td>
+            <td data-label="Sent">{{ reminder.sent_at or "" }}</td>
+            <td data-label="Error"><code>{{ reminder.error_code or "" }}</code></td>
+            <td data-label="Updated">{{ reminder.updated_at }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

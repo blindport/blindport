@@ -1,0 +1,430 @@
+"""Server-rendered landing page + admin panel."""
+
+from __future__ import annotations
+
+import json
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from sqlmodel import Session, select
+
+from ..config import settings
+from ..core import tokens
+from ..core.auth import (
+    create_admin_browser_session,
+    is_exact_admin_token,
+    validate_admin_browser_session,
+)
+from ..core.models import (
+    DeliveryMode,
+    Payment,
+    PaymentMethod,
+    ProductType,
+    ReminderDelivery,
+    Subscription,
+    SubscriptionStatus,
+    User,
+)
+from ..db import get_session
+from ..services import subscriptions as subs_svc
+from ..services.catalog import get_catalog
+from ..services.rate_limits import (
+    RateLimitExceeded,
+    RateLimitScope,
+    direct_client_identifier,
+    enforce_rate_limit,
+    spec_for,
+)
+
+router = APIRouter()
+
+_ADMIN_SESSION_COOKIE = "blindport_admin_session"
+_CUSTOMER_COOKIE = "blindport_token"
+_LEGACY_ADMIN_COOKIE = "blindport_admin"
+
+templates: Jinja2Templates | None = None
+
+
+def init_templates(directory: str) -> None:
+    global templates
+    templates = Jinja2Templates(directory=directory)
+
+
+def _get_user_by_token(session: Session, raw_token: str) -> User | None:
+    if not raw_token:
+        return None
+    try:
+        normalized = tokens.crockford.normalize(raw_token)
+    except Exception:
+        return None
+    hashed = tokens.hash_token(normalized)
+    return session.exec(
+        select(User).where(
+            User.hashed_token == hashed,
+            User.is_admin.is_(False),  # type: ignore[union-attr]
+            User.is_suspended.is_(False),  # type: ignore[union-attr]
+        )
+    ).first()
+
+
+def _is_onion_request(request: Request) -> bool:
+    return bool(settings.ONION_HOST) and request.url.hostname == settings.ONION_HOST
+
+
+def _ctx(request: Request, **extra) -> dict:
+    base = {
+        "brand_name": settings.BRAND_NAME,
+        "brand_tagline": settings.BRAND_TAGLINE,
+        "ip_price": settings.IP_MONTHLY_SATS,
+        "ip_yearly_price": settings.IP_YEARLY_SATS,
+        "port_price": settings.PORT_MONTHLY_SATS,
+        "port_yearly_price": settings.PORT_YEARLY_SATS,
+        "relay_price": settings.RELAY_MONTHLY_SATS,
+        "relay_yearly_price": settings.RELAY_YEARLY_SATS,
+        "yearly_billing_enabled": settings.BILLING_YEARLY_ENABLED,
+        "cookie_secure": settings.ENVIRONMENT.value == "production"
+        and not _is_onion_request(request),
+        "onion_host": settings.ONION_HOST,
+        "blindportd_version": settings.BLINDPORTD_VERSION,
+        "relay_server_name": settings.RELAY_CONTROL_URL.rsplit(":", 1)[0].strip("[]"),
+        "nwc_enabled": settings.is_payment_method_enabled(PaymentMethod.NWC),
+        "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
+        "reminder_email_enabled": settings.REMINDER_EMAIL_ENABLED,
+    }
+    base.update(extra)
+    return base
+
+
+def _cookie_secure(request: Request) -> bool:
+    return settings.ENVIRONMENT.value == "production" and not _is_onion_request(request)
+
+
+def _set_admin_session(response: Response, request: Request) -> None:
+    response.set_cookie(
+        _ADMIN_SESSION_COOKIE,
+        create_admin_browser_session(),
+        max_age=settings.ADMIN_SESSION_MAX_AGE_SECONDS,
+        path="/admin",
+        secure=_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def _clear_admin_session(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        _ADMIN_SESSION_COOKIE,
+        path="/admin",
+        secure=_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+
+
+def _clear_customer_session(response: Response, request: Request) -> None:
+    response.delete_cookie(
+        _CUSTOMER_COOKIE,
+        path="/",
+        secure=_cookie_secure(request),
+        samesite="lax",
+    )
+
+
+def _clear_legacy_admin_session(response: Response, request: Request) -> None:
+    """Expire the retired root-scoped cookie that contained the raw admin token."""
+    response.delete_cookie(
+        _LEGACY_ADMIN_COOKIE,
+        path="/",
+        secure=_cookie_secure(request),
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _enforce_login_rate_limit(
+    request: Request,
+    session: Session,
+    scope: RateLimitScope,
+) -> None:
+    try:
+        enforce_rate_limit(session, spec_for(scope), direct_client_identifier(request))
+    except RateLimitExceeded as error:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "request rate limit exceeded",
+            headers={"Cache-Control": "no-store", "Retry-After": str(error.retry_after)},
+        ) from error
+
+
+def _invalid_login(request: Request, template_name: str) -> HTMLResponse:
+    assert templates is not None
+    response = templates.TemplateResponse(
+        request,
+        template_name,
+        _ctx(request, invalid_credentials=True),
+        status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    _clear_legacy_admin_session(response, request)
+    return response
+
+
+@router.get("/", response_class=HTMLResponse)
+def landing(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    assert templates is not None
+    catalog = get_catalog(session)
+    response = templates.TemplateResponse(
+        request,
+        "landing.html",
+        _ctx(
+            request,
+            catalog=catalog,
+            catalog_by_product={p.product.value: p for p in catalog.products},
+        ),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/guide", response_class=HTMLResponse)
+def guide(request: Request) -> HTMLResponse:
+    assert templates is not None
+    response = templates.TemplateResponse(request, "guide.html", _ctx(request))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/terms", response_class=HTMLResponse)
+def terms(request: Request) -> HTMLResponse:
+    assert templates is not None
+    response = templates.TemplateResponse(request, "terms.html", _ctx(request))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    """Browser dashboard. Reads token from `blindport_token` cookie (set client-side
+    after signup). The cookie is the canonical browser storage of the token.
+    """
+    assert templates is not None
+    raw_token = request.cookies.get("blindport_token", "")
+    user = _get_user_by_token(session, raw_token)
+    if user is None:
+        response = templates.TemplateResponse(request, "login.html", _ctx(request))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    subs_svc.reap_expired_domain_claims(session)
+    subs = session.exec(select(Subscription).where(Subscription.user_id == user.id)).all()
+    subs_svc.expire_elapsed_subscriptions(session, subs)
+    framed_subscriptions = [
+        subscription
+        for subscription in subs
+        if subscription.delivery == DeliveryMode.FRAMED
+        and subscription.status != SubscriptionStatus.CANCELLED
+    ]
+    wireguard_subscriptions = [
+        subscription
+        for subscription in subs
+        if subscription.delivery == DeliveryMode.WIREGUARD
+        and subscription.status != SubscriptionStatus.CANCELLED
+    ]
+    client_mappings: list[dict[str, str]] = []
+    for subscription in framed_subscriptions:
+        if subscription.status != SubscriptionStatus.ACTIVE:
+            continue
+        if subscription.product == ProductType.RELAY:
+            mapping = {
+                "subscription_id": str(subscription.public_id),
+                "upstream": "127.0.0.1:443",
+                "http_challenge_upstream": "127.0.0.1:80",
+            }
+        else:
+            mapping = {
+                "subscription_id": str(subscription.public_id),
+                "upstream": "127.0.0.1:80",
+            }
+        client_mappings.append(mapping)
+    catalog = get_catalog(session)
+    response = templates.TemplateResponse(
+        request,
+        "dashboard.html",
+        _ctx(
+            request,
+            user=user,
+            subscriptions=subs,
+            framed_subscriptions=framed_subscriptions,
+            wireguard_subscriptions=wireguard_subscriptions,
+            client_config_json=(
+                json.dumps({"version": 1, "mappings": client_mappings}, indent=2)
+                if client_mappings
+                else ""
+            ),
+            token=raw_token,
+            catalog=catalog,
+            catalog_by_product={p.product.value: p for p in catalog.products},
+        ),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/login")
+def login(
+    request: Request,
+    token: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    _enforce_login_rate_limit(request, session, RateLimitScope.BROWSER_LOGIN)
+
+    is_admin = is_exact_admin_token(token)
+    user = _get_user_by_token(session, token)
+    if is_admin:
+        response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        _clear_customer_session(response, request)
+        _clear_legacy_admin_session(response, request)
+        _set_admin_session(response, request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if user is not None:
+        response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
+        _clear_admin_session(response, request)
+        _clear_legacy_admin_session(response, request)
+        response.set_cookie(
+            _CUSTOMER_COOKIE,
+            token,
+            path="/",
+            secure=_cookie_secure(request),
+            samesite="lax",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    return _invalid_login(request, "login.html")
+
+
+@router.get("/admin", response_class=HTMLResponse)
+def admin_panel(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+    assert templates is not None
+    admin_cookie = request.cookies.get(_ADMIN_SESSION_COOKIE, "")
+    if not validate_admin_browser_session(admin_cookie):
+        response = templates.TemplateResponse(request, "admin_login.html", _ctx(request))
+        response.headers["Cache-Control"] = "no-store"
+        _clear_legacy_admin_session(response, request)
+        return response
+    users = session.exec(select(User).where(User.is_admin.is_(False))).all()  # type: ignore[union-attr]
+    subs_svc.reap_expired_domain_claims(session)
+    subs = session.exec(
+        select(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
+    ).all()
+    subs_svc.expire_elapsed_subscriptions(session, subs)
+    payments = session.exec(
+        select(Payment).join(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
+    ).all()
+    reminders = session.exec(
+        select(ReminderDelivery).join(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
+    ).all()
+    account_by_user_id = {user.id: user.public_id for user in users}
+    subscription_by_pk = {subscription.id: subscription for subscription in subs}
+    account_by_payment_id = {
+        payment.id: account_by_user_id.get(subscription_by_pk[payment.subscription_id].user_id)
+        for payment in payments
+        if payment.subscription_id in subscription_by_pk
+    }
+    subscription_public_id_by_pk = {
+        subscription.id: subscription.public_id for subscription in subs
+    }
+    response = templates.TemplateResponse(
+        request,
+        "admin.html",
+        _ctx(
+            request,
+            users=users,
+            subscriptions=subs,
+            payments=payments,
+            reminders=reminders,
+            account_by_user_id=account_by_user_id,
+            account_by_payment_id=account_by_payment_id,
+            subscription_public_id_by_pk=subscription_public_id_by_pk,
+            active_count=sum(1 for s in subs if s.status == SubscriptionStatus.ACTIVE),
+        ),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    _clear_legacy_admin_session(response, request)
+    return response
+
+
+def _set_browser_account_suspension(
+    request: Request,
+    account_id: UUID,
+    suspended: bool,
+    session: Session,
+) -> RedirectResponse:
+    if not validate_admin_browser_session(request.cookies.get(_ADMIN_SESSION_COOKIE, "")):
+        response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+        _clear_admin_session(response, request)
+        _clear_legacy_admin_session(response, request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    target = session.exec(
+        select(User).where(
+            User.public_id == account_id,
+            User.is_admin.is_(False),  # type: ignore[union-attr]
+        )
+    ).first()
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "account not found")
+    target.is_suspended = suspended
+    session.add(target)
+    session.commit()
+    response = RedirectResponse(
+        url="/admin#accounts-title",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/admin/accounts/{account_id}/suspend")
+def admin_suspend_account(
+    account_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    return _set_browser_account_suspension(request, account_id, True, session)
+
+
+@router.post("/admin/accounts/{account_id}/restore")
+def admin_restore_account(
+    account_id: UUID,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    return _set_browser_account_suspension(request, account_id, False, session)
+
+
+@router.post("/admin/login")
+def admin_login(
+    request: Request,
+    token: str = Form(...),
+    session: Session = Depends(get_session),
+) -> Response:
+    _enforce_login_rate_limit(request, session, RateLimitScope.ADMIN_LOGIN)
+    if not is_exact_admin_token(token):
+        return _invalid_login(request, "admin_login.html")
+    resp = RedirectResponse(url="/admin", status_code=303)
+    _clear_customer_session(resp, request)
+    _clear_legacy_admin_session(resp, request)
+    _set_admin_session(resp, request)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@router.post("/admin/logout")
+def admin_logout(request: Request) -> RedirectResponse:
+    resp = RedirectResponse(url="/admin", status_code=303)
+    _clear_admin_session(resp, request)
+    _clear_legacy_admin_session(resp, request)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp

@@ -1,0 +1,47 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: detect-private-key
+      - id: mixed-line-ending
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(backend|tests)/
+      - id: ruff-format
+        files: ^(backend|tests)/
+
+  - repo: local
+    hooks:
+      - id: go-fmt
+        name: go fmt
+        entry: bash -c 'cd go && gofmt -l -w .'
+        language: system
+        files: ^go/.*\.go$
+        pass_filenames: false
+      - id: go-vet
+        name: go vet
+        entry: bash -c 'cd go && go vet ./...'
+        language: system
+        files: ^go/.*\.go$
+        pass_filenames: false
+      - id: go-build
+        name: go build
+        entry: bash -c 'cd go && go build ./...'
+        language: system
+        files: ^go/.*\.go$
+        pass_filenames: false
+      - id: nwc-helper-check
+        name: NWC helper test, typecheck, lint, and build
+        entry: bash -c 'cd tools/nwc-helper && bun install --frozen-lockfile && bun test && bun run typecheck && bun run lint && bun run build'
+        language: system
+        files: ^tools/nwc-helper/
+        pass_filenames: false
