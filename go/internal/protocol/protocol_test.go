@@ -15,7 +15,9 @@ func TestFrameRoundtrip(t *testing.T) {
 		{Type: TypeOpen, Stream: 7, Proto: "tcp", Src: "9.9.9.9:1", Dst: "1.2.3.4:443"},
 		{Type: TypeData, Stream: 7, Data: []byte("hello world")},
 		{Type: TypeDatagram, Stream: 8, Data: []byte("one packet")},
+		{Type: TypeCloseWrite, Stream: 7},
 		{Type: TypeClose, Stream: 7},
+		{Type: TypeHelloOK, Capabilities: []Capability{CapabilityTCPHalfClose}},
 	}
 	for _, f := range cases {
 		var buf bytes.Buffer
@@ -32,6 +34,16 @@ func TestFrameRoundtrip(t *testing.T) {
 		if !bytes.Equal(got.Data, f.Data) {
 			t.Errorf("data mismatch: %q vs %q", got.Data, f.Data)
 		}
+	}
+}
+
+func TestFrameCapabilities(t *testing.T) {
+	frame := &Frame{Capabilities: []Capability{"future", CapabilityTCPHalfClose}}
+	if !frame.HasCapability(CapabilityTCPHalfClose) {
+		t.Fatal("advertised TCP half-close capability not found")
+	}
+	if frame.HasCapability("missing") {
+		t.Fatal("unadvertised capability found")
 	}
 }
 

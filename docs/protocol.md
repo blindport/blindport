@@ -19,13 +19,16 @@ followed by one JSON object. Zero-length frames are invalid; the encoded frame
 limit is 1 MiB. A `data` frame carries at most 16 KiB after JSON base64 encoding
 rules are applied to its byte field.
 
-Current clients send protocol version `1`:
+Current clients send protocol version `1` and advertise independently optional
+capabilities:
 
 ```json
-{"type":"hello","version":1,"token":"...","claim":{"kind":"port","ip":"203.0.113.20","port":10000,"transport":"udp"}}
+{"type":"hello","version":1,"token":"...","claim":{"kind":"port","ip":"203.0.113.20","port":10000,"transport":"udp"},"capabilities":["tcp_half_close"]}
 ```
 
-The relay returns `hello_ok` or `hello_err`. After `hello_ok`, the relay sends
+The relay returns `hello_ok` or `hello_err`. A `hello_ok` echoes only capabilities
+offered by the client and supported by the relay. An absent or empty capability
+list selects no extensions. After `hello_ok`, the relay sends
 `open` frames and both sides exchange `data`, `datagram`, and `close`; `ping`
 receives `pong`. TCP streams use `data` frames with at most 16 KiB. UDP
 associations use one `datagram` frame per complete packet with at most 65,507
@@ -35,7 +38,8 @@ tunnel permits a configured number of concurrent streams (256 by default, with
 a hard maximum of 1024), and each stream has a 32-item, 512 KiB receive queue.
 When a TCP queue is full, the tunnel reader waits and propagates backpressure to
 the sender; TCP bytes are never dropped and temporary saturation does not close
-the stream. UDP retains the nonblocking drop policy described below.
+the stream. Queued TCP payload remains readable before EOF after either `close`
+or negotiated `close_write`. UDP retains the nonblocking drop policy described below.
 Serialized frame writes have a 10-second deadline; a peer that stops reading
 loses that tunnel instead of holding its write mutex and ingress handlers
 indefinitely.
@@ -61,8 +65,17 @@ claims.
 
 An omitted frame version is legacy version `0` and remains valid for TCP claims.
 UDP requires version `1`. Relays return their current version in `hello_ok` and
-reject versions newer than they support. This marker provides safe UDP rollout,
-but it is not general capability negotiation.
+reject versions newer than they support. This marker provides safe UDP rollout.
+Independent extensions use the capability negotiation in HELLO and HELLO_OK.
+
+When both peers select `tcp_half_close`, either side can send
+`{"type":"close_write","stream":7}` after its final `data` frame. This propagates
+TCP FIN in that direction only. The receiver drains all preceding data and then
+observes EOF while retaining the ability to send reverse-direction data. A
+`close` frame still tears down both directions and releases the stream. Without
+the selected capability, peers never send `close_write` and preserve the legacy
+behavior where the first completed copy closes the full stream. `close_write` is
+invalid for UDP streams.
 
 The backend resolution response contains dedicated IP strings, relay domain
 strings, and structured Blindport Port leases. Authorization compares the complete
@@ -153,6 +166,6 @@ priority, resume, or session migration between relays. UDP is carried over the
 reliable, ordered TCP control tunnel, so it can experience head-of-line blocking
 and does not retain native UDP loss or latency behavior.
 
-There is a scalar version marker but no independent capability negotiation.
+There is a scalar version marker plus independent capability negotiation.
 Extensions that change validation, framing, or authorization must increment the
-version or add a negotiated capability before mixed deployment.
+version or be gated by a capability selected by both peers before mixed deployment.

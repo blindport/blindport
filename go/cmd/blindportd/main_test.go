@@ -263,8 +263,12 @@ func TestExchangeHelloClearsDeadlineAfterHelloOK(t *testing.T) {
 		_ = protocol.WriteFrame(server, &protocol.Frame{Type: protocol.TypePing})
 	}()
 	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "hello.example"}
-	if err := exchangeHello(client, "token", claim, 20*time.Millisecond); err != nil {
+	halfClose, err := exchangeHello(client, "token", claim, 20*time.Millisecond)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if halfClose {
+		t.Fatal("legacy relay unexpectedly negotiated TCP half-close")
 	}
 	if _, err := protocol.ReadFrame(client); err != nil {
 		t.Fatalf("post-HELLO read failed after deadline should be cleared: %v", err)
@@ -286,8 +290,97 @@ func TestExchangeHelloRequiresVersionedRelayForUDP(t *testing.T) {
 		Kind: protocol.ClaimPort, IP: "203.0.113.20", Port: 10000,
 		Transport: protocol.TransportUDP,
 	}
-	if err := exchangeHello(client, "token", claim, time.Second); err == nil || !strings.Contains(err.Error(), "UDP requires") {
+	if _, err := exchangeHello(client, "token", claim, time.Second); err == nil || !strings.Contains(err.Error(), "UDP requires") {
 		t.Fatalf("exchangeHello() error = %v", err)
+	}
+}
+
+func TestExchangeHelloNegotiatesTCPHalfClose(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		hello, _ := protocol.ReadFrame(server)
+		if !hello.HasCapability(protocol.CapabilityTCPHalfClose) {
+			t.Error("HELLO did not advertise TCP half-close")
+		}
+		_ = protocol.WriteFrame(server, &protocol.Frame{
+			Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion,
+			Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose},
+		})
+	}()
+	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "hello.example"}
+	halfClose, err := exchangeHello(client, "token", claim, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !halfClose {
+		t.Fatal("TCP half-close was not negotiated")
+	}
+}
+
+func TestHandleTCPStreamPropagatesRequestFINAndLargeResponse(t *testing.T) {
+	upstream := listenLocal(t)
+	upstreamDone := make(chan error, 1)
+	response := append(bytes.Repeat([]byte("x"), 40*protocol.MaxDataPayloadSize), []byte("final reverse response")...)
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			upstreamDone <- err
+			return
+		}
+		defer conn.Close()
+		request, err := io.ReadAll(conn)
+		if err != nil {
+			upstreamDone <- err
+			return
+		}
+		if string(request) != "request requiring FIN" {
+			upstreamDone <- fmt.Errorf("upstream request = %q", request)
+			return
+		}
+		_, err = conn.Write(response)
+		upstreamDone <- err
+	}()
+
+	agentRaw, relayRaw := net.Pipe()
+	handlerDone := make(chan struct{})
+	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) {
+		handleTCPStream(slog.Default(), stream, upstream.Addr().String())
+		close(handlerDone)
+	})
+	relay := tunnel.New(relayRaw, nil)
+	agent.EnableTCPHalfClose()
+	relay.EnableTCPHalfClose()
+	go func() { _ = agent.Run() }()
+	go func() { _ = relay.Run() }()
+	defer agent.Close()
+	defer relay.Close()
+
+	stream, err := relay.OpenStream("tcp", "src", "dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stream, "request requiring FIN"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, response) {
+		t.Fatalf("response length = %d, want %d", len(got), len(response))
+	}
+	if err := <-upstreamDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("TCP handler did not fully clean up")
 	}
 }
 

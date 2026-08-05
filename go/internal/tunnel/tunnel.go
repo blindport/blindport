@@ -27,6 +27,7 @@ type Conn struct {
 	onOpen     func(stream *Stream) // server-side handler
 	onUDPDrop  func()
 	onClose    func()
+	halfClose  bool
 }
 
 // MaxConcurrentStreams bounds resources allocated to one tunnel.
@@ -58,6 +59,12 @@ func NewWithStreamLimit(raw net.Conn, onOpen func(*Stream), maxStreams int) (*Co
 // receive queue. It must be called before Run.
 func (c *Conn) SetUDPDropHandler(handler func()) {
 	c.onUDPDrop = handler
+}
+
+// EnableTCPHalfClose enables the negotiated TCP half-close extension. It must
+// only be called when both peers selected protocol.CapabilityTCPHalfClose.
+func (c *Conn) EnableTCPHalfClose() {
+	c.halfClose = true
 }
 
 // WriteFrame sends a frame with write-mutex protection.
@@ -160,6 +167,21 @@ func (c *Conn) Run() error {
 			if s, ok := c.removeStream(f.Stream); ok {
 				s.closeRX()
 			}
+		case protocol.TypeCloseWrite:
+			if !c.halfClose {
+				return fmt.Errorf("unexpected CLOSE_WRITE without negotiated capability")
+			}
+			if f.Stream == 0 {
+				return fmt.Errorf("CLOSE_WRITE with zero stream ID")
+			}
+			s, ok := c.getStream(f.Stream)
+			if !ok {
+				continue
+			}
+			if s.Protocol != protocol.TransportTCP {
+				return fmt.Errorf("CLOSE_WRITE for non-TCP stream %d", f.Stream)
+			}
+			s.closeRead()
 		case protocol.TypePing:
 			_ = c.WriteFrame(&protocol.Frame{Type: protocol.TypePong})
 		case protocol.TypePong:
@@ -242,7 +264,12 @@ type Stream struct {
 	rxCh        chan []byte
 	rxQueued    atomic.Int64
 	doneCh      chan struct{}
-	once        sync.Once
+	rxDoneCh    chan struct{}
+	closeOnce   sync.Once
+	rxCloseOnce sync.Once
+	txCloseOnce sync.Once
+	txClosed    atomic.Bool
+	txMu        sync.Mutex
 }
 
 func newStream(c *Conn, id uint32) *Stream {
@@ -252,6 +279,7 @@ func newStream(c *Conn, id uint32) *Stream {
 		Protocol: protocol.TransportTCP,
 		rxCh:     make(chan []byte, streamReceiveQueueSize),
 		doneCh:   make(chan struct{}),
+		rxDoneCh: make(chan struct{}),
 	}
 }
 
@@ -271,7 +299,7 @@ func (s *Stream) queueTCPPayload(payload []byte) {
 	s.rxQueued.Add(size)
 	select {
 	case s.rxCh <- payload:
-	case <-s.doneCh:
+	case <-s.rxDoneCh:
 		s.rxQueued.Add(-size)
 	}
 }
@@ -289,7 +317,7 @@ func (s *Stream) queueUDPPayload(payload []byte) bool {
 	}
 	release := func() { s.rxQueued.Add(-size) }
 	select {
-	case <-s.doneCh:
+	case <-s.rxDoneCh:
 		release()
 		return false
 	default:
@@ -319,8 +347,8 @@ func (s *Stream) dequeuePayload() ([]byte, bool) {
 	select {
 	case payload := <-s.rxCh:
 		return consume(payload)
-	case <-s.doneCh:
-		// DATA frames queued before CLOSE must remain readable. Recheck after
+	case <-s.rxDoneCh:
+		// DATA frames queued before CLOSE or CLOSE_WRITE must remain readable. Recheck after
 		// observing closure so a simultaneously ready payload wins deterministically.
 		select {
 		case payload := <-s.rxCh:
@@ -353,6 +381,11 @@ func (s *Stream) Write(p []byte) (int, error) {
 	if s.Protocol != protocol.TransportTCP {
 		return 0, errors.New("byte-stream write is unavailable for UDP")
 	}
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	if s.txClosed.Load() {
+		return 0, io.ErrClosedPipe
+	}
 	written := 0
 	for len(p) > 0 {
 		n := min(len(p), protocol.MaxDataPayloadSize)
@@ -363,6 +396,30 @@ func (s *Stream) Write(p []byte) (int, error) {
 		p = p[n:]
 	}
 	return written, nil
+}
+
+// CloseWrite signals EOF to the peer while keeping the receive direction open.
+// Without negotiated support it falls back to the legacy full stream close.
+func (s *Stream) CloseWrite() error {
+	if s.Protocol != protocol.TransportTCP {
+		return errors.New("write half-close is unavailable for UDP")
+	}
+	if !s.conn.halfClose {
+		return s.Close()
+	}
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	select {
+	case <-s.doneCh:
+		return io.ErrClosedPipe
+	default:
+	}
+	var err error
+	s.txCloseOnce.Do(func() {
+		s.txClosed.Store(true)
+		err = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeCloseWrite, Stream: s.ID})
+	})
+	return err
 }
 
 // ReadDatagram consumes exactly one UDP datagram without merging packet boundaries.
@@ -396,10 +453,14 @@ func (s *Stream) WriteDatagram(p []byte) (int, error) {
 
 // Close signals the peer to close the stream and tears down local state.
 func (s *Stream) Close() error {
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
 	closed := false
-	s.once.Do(func() {
+	s.closeOnce.Do(func() {
 		s.conn.removeStream(s.ID)
+		s.txClosed.Store(true)
 		close(s.doneCh)
+		s.closeRead()
 		closed = true
 	})
 	if closed {
@@ -410,8 +471,14 @@ func (s *Stream) Close() error {
 
 // closeRX closes the receive channel (called when peer sends CLOSE or tunnel dies).
 func (s *Stream) closeRX() {
-	s.once.Do(func() {
+	s.closeOnce.Do(func() {
 		s.conn.removeStream(s.ID)
+		s.txClosed.Store(true)
 		close(s.doneCh)
+		s.closeRead()
 	})
+}
+
+func (s *Stream) closeRead() {
+	s.rxCloseOnce.Do(func() { close(s.rxDoneCh) })
 }

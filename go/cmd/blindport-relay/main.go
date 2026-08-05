@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +20,7 @@ import (
 	"github.com/blindport/blindport/internal/protocol"
 	"github.com/blindport/blindport/internal/relayauth"
 	"github.com/blindport/blindport/internal/sniproxy"
+	"github.com/blindport/blindport/internal/tcpproxy"
 	"github.com/blindport/blindport/internal/tunnel"
 	"github.com/blindport/blindport/internal/wgnet"
 )
@@ -391,7 +391,12 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
-	if err := protocol.WriteFrame(conn, &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion}); err != nil {
+	halfClose := hello.HasCapability(protocol.CapabilityTCPHalfClose)
+	reply := &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion}
+	if halfClose {
+		reply.Capabilities = []protocol.Capability{protocol.CapabilityTCPHalfClose}
+	}
+	if err := protocol.WriteFrame(conn, reply); err != nil {
 		r.metrics.control[controlWriteError].Add(1)
 		_ = conn.Close()
 		return
@@ -402,6 +407,9 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		return
 	}
 	t.SetUDPDropHandler(func() { r.metrics.udp.dropped.Add(1) })
+	if halfClose {
+		t.EnableTCPHalfClose()
+	}
 	handshakeComplete()
 	r.registerTunnel(key, hello.Claim.Kind, t)
 	defer r.unregisterTunnel(key, hello.Claim.Kind, t)
@@ -1042,25 +1050,9 @@ func (r *relay) forwardTo(conn net.Conn, key, port string) bool {
 	r.metrics.streams[index].active.Add(1)
 	r.metrics.streams[index].total.Add(1)
 	defer r.metrics.streams[index].active.Add(-1)
-	type copyResult struct {
-		direction int
-		bytes     int64
-	}
-	done := make(chan copyResult, 2)
-	go func() {
-		copied, _ := io.Copy(stream, conn)
-		done <- copyResult{direction: 0, bytes: copied}
-	}()
-	go func() {
-		copied, _ := io.Copy(conn, stream)
-		done <- copyResult{direction: 1, bytes: copied}
-	}()
-	first := <-done
-	r.metrics.bytes[index][first.direction].Add(uint64(first.bytes))
-	_ = conn.Close()
-	_ = stream.Close()
-	second := <-done
-	r.metrics.bytes[index][second.direction].Add(uint64(second.bytes))
+	result := tcpproxy.Proxy(conn, stream)
+	r.metrics.bytes[index][0].Add(uint64(result.LeftToRight))
+	r.metrics.bytes[index][1].Add(uint64(result.RightToLeft))
 	return true
 }
 

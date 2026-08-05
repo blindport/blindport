@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
+	"github.com/blindport/blindport/internal/tcpproxy"
 	"github.com/blindport/blindport/internal/tunnel"
 )
 
@@ -403,7 +404,8 @@ func runOnceWithHelloTimeout(ctx context.Context, log *slog.Logger, relayAddr, t
 	defer conn.Close()
 	stopCancellation := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopCancellation()
-	if err := exchangeHello(conn, token, claim, timeout); err != nil {
+	halfClose, err := exchangeHello(conn, token, claim, timeout)
+	if err != nil {
 		return 0, err
 	}
 	log.Info("tunnel established", "relay", relayAddr, "claim", claim, "upstream", upstream, "http_challenge_upstream", httpChallengeUpstream)
@@ -412,6 +414,9 @@ func runOnceWithHelloTimeout(ctx context.Context, log *slog.Logger, relayAddr, t
 	t := tunnel.New(conn, func(s *tunnel.Stream) {
 		handleIncoming(log, s, claim, upstream, httpChallengeUpstream, expectedTransport)
 	})
+	if halfClose {
+		t.EnableTCPHalfClose()
+	}
 	establishedAt := time.Now()
 	err = t.Run()
 	return time.Since(establishedAt), err
@@ -435,27 +440,31 @@ func dialRelay(ctx context.Context, dialer contextDialer, relayAddr string, tlsC
 	return tlsConn, nil
 }
 
-func exchangeHello(conn net.Conn, token string, claim *protocol.Claim, timeout time.Duration) error {
+func exchangeHello(conn net.Conn, token string, claim *protocol.Claim, timeout time.Duration) (bool, error) {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return fmt.Errorf("set hello deadline: %w", err)
+		return false, fmt.Errorf("set hello deadline: %w", err)
 	}
-	if err := protocol.WriteFrame(conn, &protocol.Frame{Type: protocol.TypeHello, Version: protocol.CurrentVersion, Token: token, Claim: claim}); err != nil {
-		return fmt.Errorf("send hello: %w", err)
+	hello := &protocol.Frame{
+		Type: protocol.TypeHello, Version: protocol.CurrentVersion, Token: token, Claim: claim,
+		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose},
+	}
+	if err := protocol.WriteFrame(conn, hello); err != nil {
+		return false, fmt.Errorf("send hello: %w", err)
 	}
 	reply, err := protocol.ReadFrame(conn)
 	if err != nil {
-		return fmt.Errorf("read hello reply: %w", err)
+		return false, fmt.Errorf("read hello reply: %w", err)
 	}
 	if reply.Type != protocol.TypeHelloOK {
-		return fmt.Errorf("hello rejected: %s", reply.Msg)
+		return false, fmt.Errorf("hello rejected: %s", reply.Msg)
 	}
 	if err := protocol.ValidateVersion(reply.Version, claim); err != nil {
-		return fmt.Errorf("hello version: %w", err)
+		return false, fmt.Errorf("hello version: %w", err)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
-		return fmt.Errorf("clear hello deadline: %w", err)
+		return false, fmt.Errorf("clear hello deadline: %w", err)
 	}
-	return nil
+	return reply.HasCapability(protocol.CapabilityTCPHalfClose), nil
 }
 
 func claimTransportForTunnel(claim *protocol.Claim) protocol.Transport {
@@ -509,11 +518,7 @@ func handleTCPStream(log *slog.Logger, s *tunnel.Stream, upstream string) {
 		log.Warn("dial upstream", "err", err, "upstream", upstream)
 		return
 	}
-	defer up.Close()
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(up, s); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(s, up); done <- struct{}{} }()
-	<-done
+	tcpproxy.Proxy(s, up)
 }
 
 func handleUDPAssociation(log *slog.Logger, s *tunnel.Stream, upstream string) {

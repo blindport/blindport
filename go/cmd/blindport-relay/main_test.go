@@ -300,12 +300,18 @@ func TestControlAdmissionIsReleasedAfterHello(t *testing.T) {
 		close(done)
 	}()
 	claim := &protocol.Claim{Kind: protocol.ClaimIP, IP: "203.0.113.10"}
-	if err := protocol.WriteFrame(client, &protocol.Frame{Type: protocol.TypeHello, Token: "token", Claim: claim}); err != nil {
+	if err := protocol.WriteFrame(client, &protocol.Frame{
+		Type: protocol.TypeHello, Token: "token", Claim: claim,
+		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	reply, err := protocol.ReadFrame(client)
 	if err != nil || reply.Type != protocol.TypeHelloOK {
 		t.Fatalf("HELLO reply = %+v, %v", reply, err)
+	}
+	if !reply.HasCapability(protocol.CapabilityTCPHalfClose) {
+		t.Fatal("relay did not select offered TCP half-close capability")
 	}
 	select {
 	case <-released:
@@ -622,6 +628,9 @@ func TestMultipleControlListenersServeControlProtocol(t *testing.T) {
 		_ = conn.Close()
 		if err != nil || reply.Type != protocol.TypeHelloOK {
 			t.Fatalf("control listener %s HELLO reply = %+v, %v", bound.listener.Addr(), reply, err)
+		}
+		if len(reply.Capabilities) != 0 {
+			t.Fatalf("legacy HELLO selected capabilities %v", reply.Capabilities)
 		}
 	}
 	cancel()

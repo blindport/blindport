@@ -178,6 +178,121 @@ func TestStreamDrainsQueuedPayloadAfterPeerClose(t *testing.T) {
 	})
 }
 
+func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
+	a, b := net.Pipe()
+	requestRead := make(chan []byte, 1)
+	serverDone := make(chan error, 1)
+	server := New(a, func(stream *Stream) {
+		defer stream.Close()
+		request, err := io.ReadAll(stream)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		requestRead <- request
+		response := append(bytes.Repeat([]byte("r"), (streamReceiveQueueSize+8)*protocol.MaxDataPayloadSize), []byte("final reverse response")...)
+		if _, err := stream.Write(response); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- stream.CloseWrite()
+	})
+	client := New(b, nil)
+	server.EnableTCPHalfClose()
+	client.EnableTCPHalfClose()
+	serverRun := make(chan error, 1)
+	clientRun := make(chan error, 1)
+	go func() { serverRun <- server.Run() }()
+	go func() { clientRun <- client.Run() }()
+	defer server.Close()
+	defer client.Close()
+
+	stream, err := client.OpenStream("tcp", "src", "dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := []byte("request requiring EOF")
+	if _, err := stream.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-requestRead; !bytes.Equal(got, request) {
+		t.Fatalf("request = %q, want %q", got, request)
+	}
+
+	wantSize := (streamReceiveQueueSize+8)*protocol.MaxDataPayloadSize + len("final reverse response")
+	response, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response) != wantSize || !bytes.HasSuffix(response, []byte("final reverse response")) {
+		t.Fatalf("response length = %d, suffix = %q", len(response), response[max(0, len(response)-22):])
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Write([]byte("after FIN")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("write after CloseWrite error = %v", err)
+	}
+	_ = stream.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, clientOK := client.getStream(stream.ID); !clientOK {
+			if _, serverOK := server.getStream(stream.ID); !serverOK {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, ok := client.getStream(stream.ID); ok {
+		t.Fatal("client stream remained registered after full close")
+	}
+	if _, ok := server.getStream(stream.ID); ok {
+		t.Fatal("server stream remained registered after full close")
+	}
+
+	_ = client.Close()
+	_ = server.Close()
+	if err := <-clientRun; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("client Run error = %v", err)
+	}
+	if err := <-serverRun; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("server Run error = %v", err)
+	}
+}
+
+func TestCloseWriteUsesLegacyCloseWithoutNegotiation(t *testing.T) {
+	raw := &bufferConn{}
+	connection := New(raw, nil)
+	stream := newStream(connection, 1)
+	if err := connection.addStream(stream); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	frame, err := protocol.ReadFrame(&raw.Buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if frame.Type != protocol.TypeClose {
+		t.Fatalf("legacy CloseWrite frame = %q, want %q", frame.Type, protocol.TypeClose)
+	}
+}
+
+func TestRunRejectsUnnegotiatedCloseWrite(t *testing.T) {
+	err := runTunnelFrames(t, func(*Stream) {}, []*protocol.Frame{
+		{Type: protocol.TypeOpen, Stream: 1},
+		{Type: protocol.TypeCloseWrite, Stream: 1},
+	})
+	if err == nil || !strings.Contains(err.Error(), "without negotiated capability") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
 func TestStreamAPIsRejectWrongTransport(t *testing.T) {
 	c := New(&bufferConn{}, nil)
 	tcp := newStream(c, 1)

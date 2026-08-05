@@ -26,15 +26,24 @@ import (
 type FrameType string
 
 const (
-	TypeHello    FrameType = "hello"
-	TypeHelloOK  FrameType = "hello_ok"
-	TypeHelloErr FrameType = "hello_err"
-	TypeOpen     FrameType = "open"
-	TypeData     FrameType = "data"
-	TypeDatagram FrameType = "datagram"
-	TypeClose    FrameType = "close"
-	TypePing     FrameType = "ping"
-	TypePong     FrameType = "pong"
+	TypeHello      FrameType = "hello"
+	TypeHelloOK    FrameType = "hello_ok"
+	TypeHelloErr   FrameType = "hello_err"
+	TypeOpen       FrameType = "open"
+	TypeData       FrameType = "data"
+	TypeDatagram   FrameType = "datagram"
+	TypeCloseWrite FrameType = "close_write"
+	TypeClose      FrameType = "close"
+	TypePing       FrameType = "ping"
+	TypePong       FrameType = "pong"
+)
+
+// Capability identifies an independently negotiated protocol extension.
+type Capability string
+
+const (
+	// CapabilityTCPHalfClose permits CLOSE_WRITE frames on TCP streams.
+	CapabilityTCPHalfClose Capability = "tcp_half_close"
 )
 
 // ClaimKind identifies which product the client is claiming on this tunnel.
@@ -105,16 +114,27 @@ func validHostname(value string) bool {
 
 // Frame is the union envelope for all messages.
 type Frame struct {
-	Type    FrameType `json:"type"`
-	Version uint16    `json:"version,omitempty"`
-	Token   string    `json:"token,omitempty"`
-	Claim   *Claim    `json:"claim,omitempty"`
-	Msg     string    `json:"msg,omitempty"`
-	Stream  uint32    `json:"stream,omitempty"`
-	Proto   string    `json:"proto,omitempty"`
-	Src     string    `json:"src,omitempty"`
-	Dst     string    `json:"dst,omitempty"`
-	Data    []byte    `json:"data,omitempty"`
+	Type         FrameType    `json:"type"`
+	Version      uint16       `json:"version,omitempty"`
+	Token        string       `json:"token,omitempty"`
+	Claim        *Claim       `json:"claim,omitempty"`
+	Msg          string       `json:"msg,omitempty"`
+	Stream       uint32       `json:"stream,omitempty"`
+	Proto        string       `json:"proto,omitempty"`
+	Src          string       `json:"src,omitempty"`
+	Dst          string       `json:"dst,omitempty"`
+	Data         []byte       `json:"data,omitempty"`
+	Capabilities []Capability `json:"capabilities,omitempty"`
+}
+
+// HasCapability reports whether a handshake frame advertises capability.
+func (f *Frame) HasCapability(capability Capability) bool {
+	for _, offered := range f.Capabilities {
+		if offered == capability {
+			return true
+		}
+	}
+	return false
 }
 
 const (

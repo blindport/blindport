@@ -213,3 +213,10 @@ type peekedConn struct {
 }
 
 func (p *peekedConn) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+func (p *peekedConn) CloseWrite() error {
+	if conn, ok := p.Conn.(interface{ CloseWrite() error }); ok {
+		return conn.CloseWrite()
+	}
+	return p.Conn.Close()
+}
