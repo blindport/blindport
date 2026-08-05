@@ -30,6 +30,7 @@ from ..config import settings
 from ..core.models import (
     AgentOrder,
     BillingTerm,
+    DeliveryMode,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -665,7 +666,12 @@ def create_payment(
     require_payment_method_enabled(method)
     subs.reap_expired_domain_claims(session)
     session.refresh(subscription)
-    selected_term = billing_term or subscription.billing_term
+    routed_ip = (
+        subscription.product == ProductType.IP and subscription.delivery == DeliveryMode.WIREGUARD
+    )
+    if routed_ip and billing_term == BillingTerm.MONTHLY:
+        raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+    selected_term = BillingTerm.YEARLY if routed_ip else (billing_term or subscription.billing_term)
     if agent_order_id is not None:
         order = session.get(AgentOrder, agent_order_id)
         if order is None or order.subscription_id != subscription.id:
@@ -700,6 +706,7 @@ def create_payment(
                 return existing
             raise OpenPaymentConflictError(existing)
 
+    subs.require_product_billing_term(subscription.product, subscription.delivery, selected_term)
     subs.require_billing_term_enabled(selected_term)
     session.exec(
         select(User)

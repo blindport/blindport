@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from ..core import tokens
 from ..core.auth import AdminPrincipal, current_admin, current_user
-from ..core.models import ProductType, Subscription, User
+from ..core.models import DeliveryMode, IPLease, ProductType, Subscription, SubscriptionStatus, User
 from ..core.schemas import (
     AccountMeResponse,
     AccountSignupResponse,
@@ -18,10 +18,14 @@ from ..core.schemas import (
     ClientCertificateRequest,
     ClientCertificateResponse,
     PublicAccountStatusResponse,
+    SMTPApprovalRequest,
+    SMTPLeaseResponse,
+    SMTPRevocationRequest,
     WireGuardConfigResponse,
     WireGuardKeyRequest,
 )
 from ..db import get_session
+from ..services import ip_leases
 from ..services import subscriptions as subs_svc
 from ..services.allocator import NoCapacityError
 from ..services.catalog import ProductUnavailableError
@@ -48,6 +52,55 @@ from ..services.wireguard import (
 )
 
 router = APIRouter(prefix="/api/v2")
+
+
+def _smtp_response(lease: IPLease, subscription: Subscription) -> SMTPLeaseResponse:
+    return SMTPLeaseResponse(
+        lease_id=lease.public_id,
+        subscription_id=subscription.public_id,
+        address=lease.address,
+        state=lease.state,
+        smtp_enabled=lease.smtp_enabled,
+        intended_use=lease.smtp_intended_use,
+        fee_paid_sats=lease.smtp_fee_paid_sats,
+        reviewed_at=lease.smtp_reviewed_at,
+        reviewed_by=lease.smtp_reviewed_by,
+        review_reference=lease.smtp_review_reference,
+        revoked_at=lease.smtp_revoked_at,
+        revocation_reason=lease.smtp_revocation_reason,
+    )
+
+
+def _active_routed_subscription(session: Session, public_id: UUID) -> Subscription:
+    subscription = session.exec(
+        select(Subscription).where(Subscription.public_id == public_id)
+    ).one_or_none()
+    if subscription is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subscription not found")
+    account = session.exec(
+        select(User)
+        .where(User.id == subscription.user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    subscription = session.exec(
+        select(Subscription)
+        .where(Subscription.id == subscription.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    subs_svc.expire_elapsed_subscriptions(session, [subscription])
+    if (
+        account.is_suspended
+        or account.is_admin
+        or subscription.product != ProductType.IP
+        or subscription.delivery != DeliveryMode.WIREGUARD
+        or subscription.status != SubscriptionStatus.ACTIVE
+    ):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "subscription is not an active routed Blindport IP"
+        )
+    return subscription
 
 
 @router.post("/signup", response_model=AccountSignupResponse)
@@ -97,11 +150,18 @@ def _set_account_suspension(
     suspended: bool,
     session: Session,
 ) -> PublicAccountStatusResponse:
-    target = session.exec(select(User).where(User.public_id == account_id)).first()
+    target = session.exec(
+        select(User)
+        .where(User.public_id == account_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
     target.is_suspended = suspended
     session.add(target)
+    if suspended and target.id is not None:
+        ip_leases.revoke_smtp_for_user(session, target.id, reason="account suspended")
     session.commit()
     return PublicAccountStatusResponse(
         account_id=target.public_id,
@@ -125,6 +185,49 @@ def unsuspend_account(
     session: Session = Depends(get_session),
 ) -> PublicAccountStatusResponse:
     return _set_account_suspension(account_id, False, session)
+
+
+@router.post(
+    "/admin/subscriptions/{subscription_id}/smtp-egress/approve",
+    response_model=SMTPLeaseResponse,
+)
+def approve_smtp_egress(
+    subscription_id: UUID,
+    body: SMTPApprovalRequest,
+    admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> SMTPLeaseResponse:
+    subscription = _active_routed_subscription(session, subscription_id)
+    try:
+        lease = ip_leases.approve_smtp(
+            session,
+            subscription,
+            intended_use=body.intended_use,
+            fee_paid_sats=body.fee_paid_sats,
+            review_reference=body.review_reference,
+            reviewed_by=admin.audience,
+        )
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _smtp_response(lease, subscription)
+
+
+@router.post(
+    "/admin/subscriptions/{subscription_id}/smtp-egress/revoke",
+    response_model=SMTPLeaseResponse,
+)
+def revoke_smtp_egress(
+    subscription_id: UUID,
+    body: SMTPRevocationRequest,
+    _admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> SMTPLeaseResponse:
+    subscription = _active_routed_subscription(session, subscription_id)
+    try:
+        lease = ip_leases.revoke_smtp(session, subscription, reason=body.reason)
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _smtp_response(lease, subscription)
 
 
 @router.post(

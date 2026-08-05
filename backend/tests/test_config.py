@@ -705,18 +705,24 @@ def test_wireguard_relay_key_is_canonical_and_nonzero(value: str) -> None:
         Settings(_env_file=None, WIREGUARD_RELAY_PUBLIC_KEY=value)
 
 
-def test_wireguard_reconciliation_must_fit_resource_quarantine() -> None:
+def test_wireguard_reconciliation_must_fit_ip_quarantine() -> None:
     public_key = base64.b64encode(bytes(range(1, 33))).decode()
-    with pytest.raises(ValidationError, match="RESOURCE_REUSE_QUARANTINE_SECONDS"):
+    with pytest.raises(ValidationError, match="IP_REUSE_QUARANTINE_SECONDS"):
         Settings(
             _env_file=None,
             WIREGUARD_PUBLIC_IPS="198.51.100.20",
             WIREGUARD_RELAY_PUBLIC_KEY=public_key,
             WIREGUARD_ENDPOINT="wg.example:51820",
-            WIREGUARD_RECONCILE_INTERVAL_SECONDS=45,
-            WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS=135,
-            RESOURCE_REUSE_QUARANTINE_SECONDS=180,
+            WIREGUARD_RECONCILE_INTERVAL_SECONDS=300,
+            WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS=3300,
+            IP_REUSE_QUARANTINE_SECONDS=3600,
         )
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_wireguard_smtp_egress_fee_must_be_positive(value: int) -> None:
+    with pytest.raises(ValidationError, match="WIREGUARD_SMTP_EGRESS_FEE_SATS"):
+        Settings(_env_file=None, WIREGUARD_SMTP_EGRESS_FEE_SATS=value)
 
 
 @pytest.mark.parametrize(

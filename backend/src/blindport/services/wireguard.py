@@ -19,6 +19,9 @@ from ..config import settings
 from ..core.models import (
     ClientCredential,
     DeliveryMode,
+    IPLease,
+    IPLeaseDelivery,
+    IPLeaseState,
     ProductType,
     Subscription,
     SubscriptionStatus,
@@ -57,6 +60,11 @@ class WireGuardDesiredState:
     generated_at: datetime
     managed_prefixes: list[str]
     peers: list[WireGuardDesiredPeer]
+
+
+@dataclass(frozen=True)
+class WireGuardDesiredStateV2(WireGuardDesiredState):
+    smtp_allowed_prefixes: list[str]
 
 
 def _active_routed_subscriptions(
@@ -281,4 +289,39 @@ def desired_state(session: Session) -> WireGuardDesiredState:
         generated_at=datetime.now(UTC),
         managed_prefixes=managed,
         peers=peers,
+    )
+
+
+def desired_state_v2(session: Session) -> WireGuardDesiredStateV2:
+    """Build the v2 snapshot with default-deny outbound SMTP exceptions."""
+    base = desired_state(session)
+    active_prefixes = {prefix for peer in base.peers for prefix in peer.allowed_prefixes}
+    approved = session.exec(
+        select(IPLease).where(
+            IPLease.delivery == IPLeaseDelivery.WIREGUARD,
+            IPLease.state == IPLeaseState.ACTIVE,
+            IPLease.released_at.is_(None),  # type: ignore[union-attr]
+            IPLease.smtp_enabled.is_(True),  # type: ignore[union-attr]
+            IPLease.smtp_reviewed_at.is_not(None),  # type: ignore[union-attr]
+            IPLease.smtp_revoked_at.is_(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    smtp_prefixes = sorted(
+        prefix for lease in approved if (prefix := f"{lease.address}/32") in active_prefixes
+    )
+    canonical = json.dumps(
+        {
+            "managed_prefixes": base.managed_prefixes,
+            "peers": [vars(peer) for peer in base.peers],
+            "smtp_allowed_prefixes": smtp_prefixes,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return WireGuardDesiredStateV2(
+        revision=hashlib.sha256(canonical).hexdigest(),
+        generated_at=base.generated_at,
+        managed_prefixes=base.managed_prefixes,
+        peers=base.peers,
+        smtp_allowed_prefixes=smtp_prefixes,
     )

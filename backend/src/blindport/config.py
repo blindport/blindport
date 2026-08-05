@@ -388,6 +388,7 @@ class Settings(BaseSettings):
     WIREGUARD_PERSISTENT_KEEPALIVE_SECONDS: int = Field(default=25, ge=0, le=120)
     WIREGUARD_RECONCILE_INTERVAL_SECONDS: float = Field(default=10.0, ge=1, le=300)
     WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS: float = Field(default=90.0, ge=1, le=3600)
+    WIREGUARD_SMTP_EGRESS_FEE_SATS: int = Field(default=50000, gt=0, le=100000000)
     RELAY_MANAGED_SUFFIXES: str = ""
     RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=1800, ge=60, le=86400)
     RELAY_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=3600, ge=60, le=86400)
@@ -399,6 +400,7 @@ class Settings(BaseSettings):
     RELAY_DNS_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0, le=30)
     RESOURCE_RESERVATION_TTL_SECONDS: int = Field(default=1800, ge=60, le=86400)
     RESOURCE_REUSE_QUARANTINE_SECONDS: int = Field(default=180, ge=60, le=86400)
+    IP_REUSE_QUARANTINE_SECONDS: int = Field(default=604800, ge=3600, le=7776000)
 
     # Token format settings
     TOKEN_BYTES: int = 16  # 16 bytes -> 26 base32 chars
@@ -744,12 +746,12 @@ class Settings(BaseSettings):
                     "WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS must be at least twice "
                     "WIREGUARD_RECONCILE_INTERVAL_SECONDS"
                 )
-            if self.RESOURCE_REUSE_QUARANTINE_SECONDS <= (
+            if self.IP_REUSE_QUARANTINE_SECONDS <= (
                 self.WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS
                 + self.WIREGUARD_RECONCILE_INTERVAL_SECONDS
             ):
                 raise ValueError(
-                    "RESOURCE_REUSE_QUARANTINE_SECONDS must exceed WireGuard reconciliation "
+                    "IP_REUSE_QUARANTINE_SECONDS must exceed WireGuard reconciliation "
                     "staleness plus one interval"
                 )
         minimum_window = self.PAYMENT_MIN_PAYABLE_SECONDS + self.PAYMENT_EXPIRY_SAFETY_SECONDS

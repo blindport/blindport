@@ -70,6 +70,50 @@
     </div>
   </section>
 
+  <section class="admin-section" aria-labelledby="ip-leases-title">
+    <h2 id="ip-leases-title">Dedicated IP lease history</h2>
+    <div class="table-wrap">
+      <table class="responsive-table">
+        <caption>Every dedicated IP assignment episode and outbound SMTP review</caption>
+        <thead><tr><th scope="col">Lease</th><th scope="col">Subscription</th><th scope="col">Address</th><th scope="col">Delivery</th><th scope="col">State</th><th scope="col">Reserved</th><th scope="col">Released</th><th scope="col">SMTP status</th><th scope="col">SMTP review</th></tr></thead>
+        <tbody>
+        {% for lease in leases %}
+          <tr>
+            <td data-label="Lease"><code>{{ lease.public_id }}</code>{% if lease.imported %}<br><span class="muted">Imported</span>{% endif %}</td>
+            <td data-label="Subscription"><code>{{ subscription_public_id_by_pk.get(lease.subscription_id, "Unknown") }}</code></td>
+            <td data-label="Address"><code>{{ lease.address }}</code></td>
+            <td data-label="Delivery">{{ lease.delivery.value }}</td>
+            <td data-label="State">{{ lease.state.value }}{% if lease.release_reason %}<br><span class="muted">{{ lease.release_reason }}</span>{% endif %}</td>
+            <td data-label="Reserved">{{ lease.reserved_at }}</td>
+            <td data-label="Released">{{ lease.released_at or "" }}</td>
+            <td data-label="SMTP status">
+              {% if lease.smtp_enabled %}Approved{% elif lease.smtp_revoked_at %}Revoked{% else %}Default deny{% endif %}
+              {% if lease.smtp_review_reference %}<br><span class="muted">{{ lease.smtp_review_reference }}</span>{% endif %}
+            </td>
+            <td data-label="SMTP review">
+              {% if lease.state.value == "active" and lease.delivery.value == "wireguard" and not lease.released_at %}
+                {% if lease.smtp_enabled %}
+                <form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/revoke">
+                  <label>Reason <input name="reason" required maxlength="255"></label>
+                  <button type="submit" class="button-secondary">Revoke TCP/25</button>
+                </form>
+                {% else %}
+                <form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/approve">
+                  <label>Intended use <input name="intended_use" required maxlength="500"></label>
+                  <label>Fee paid <input name="fee_paid_sats" type="number" min="{{ smtp_fee_sats }}" value="{{ smtp_fee_sats }}" required></label>
+                  <label>Review reference <input name="review_reference" required maxlength="200"></label>
+                  <button type="submit" class="button-secondary">Approve TCP/25</button>
+                </form>
+                {% endif %}
+              {% else %}Not eligible{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="admin-section" aria-labelledby="payments-title">
     <h2 id="payments-title">Payments</h2>
     <div class="table-wrap">

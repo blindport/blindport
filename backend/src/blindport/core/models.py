@@ -56,6 +56,18 @@ class SubscriptionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class IPLeaseState(StrEnum):
+    RESERVED = "reserved"
+    ACTIVE = "active"
+    QUARANTINED = "quarantined"
+    RELEASED = "released"
+
+
+class IPLeaseDelivery(StrEnum):
+    FRAMED = "framed"
+    WIREGUARD = "wireguard"
+
+
 class PaymentMethod(StrEnum):
     LIGHTNING = "lightning"
     CASHU = "cashu"
@@ -206,6 +218,63 @@ class Subscription(SQLModel, table=True):
     current_period_start: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     current_period_end: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     auto_renew: bool = False  # tied to NWC
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+
+
+class IPLease(SQLModel, table=True):
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('reserved', 'active', 'quarantined', 'released')",
+            name="ck_iplease_state",
+        ),
+        CheckConstraint("smtp_fee_paid_sats >= 0", name="ck_iplease_smtp_fee_nonnegative"),
+        Index(
+            "uq_iplease_unreleased_address",
+            "address",
+            unique=True,
+            sqlite_where=text("released_at IS NULL"),
+            postgresql_where=text("released_at IS NULL"),
+        ),
+        Index(
+            "uq_iplease_unreleased_subscription",
+            "subscription_id",
+            unique=True,
+            sqlite_where=text("released_at IS NULL"),
+            postgresql_where=text("released_at IS NULL"),
+        ),
+        Index("ix_iplease_subscription_created", "subscription_id", "created_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    public_id: UUID = Field(default_factory=uuid4, index=True, unique=True, nullable=False)
+    subscription_id: int = Field(foreign_key="subscription.id")
+    reservation_payment_id: int | None = Field(default=None, index=True)
+    address: str = Field(max_length=45)
+    delivery: IPLeaseDelivery = Field(
+        sa_type=Enum(IPLeaseDelivery, values_callable=_enum_values, name="ipleasedelivery")
+    )
+    state: IPLeaseState = Field(
+        default=IPLeaseState.RESERVED,
+        sa_type=Enum(IPLeaseState, values_callable=_enum_values, name="ipleasestate"),
+        sa_column_kwargs={"server_default": text("'reserved'")},
+    )
+    reserved_at: datetime = Field(sa_type=DateTime(timezone=True))
+    activated_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    expired_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    quarantined_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    quarantine_until: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    released_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    release_reason: str | None = Field(default=None, max_length=255)
+    imported: bool = False
+    smtp_enabled: bool = False
+    smtp_intended_use: str | None = Field(default=None, max_length=500)
+    smtp_fee_paid_sats: int = 0
+    smtp_reviewed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    smtp_reviewed_by: str | None = Field(default=None, max_length=100)
+    smtp_review_reference: str | None = Field(default=None, max_length=200)
+    smtp_revoked_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    smtp_revocation_reason: str | None = Field(default=None, max_length=255)
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
 

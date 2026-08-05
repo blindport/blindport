@@ -24,6 +24,7 @@ from ..core.models import (
     Transport,
     User,
 )
+from . import ip_leases
 from .allocator import NoCapacityError, ResourceAllocator
 from .catalog import require_product_available
 from .domain_verification import DomainVerificationResult, DomainVerifier
@@ -55,6 +56,20 @@ def require_billing_term_enabled(term: BillingTerm) -> None:
     """Keep yearly issuance gated until a migration-first rollout is complete."""
     if term == BillingTerm.YEARLY and not settings.BILLING_YEARLY_ENABLED:
         raise ValueError("yearly billing is not enabled")
+
+
+def require_product_billing_term(
+    product: ProductType,
+    delivery: DeliveryMode,
+    term: BillingTerm,
+) -> None:
+    """Enforce product-specific terms independently of HTTP request validation."""
+    if (
+        product == ProductType.IP
+        and delivery == DeliveryMode.WIREGUARD
+        and term != BillingTerm.YEARLY
+    ):
+        raise ValueError("WireGuard Blindport IP is available with yearly billing only")
 
 
 def _utcnow() -> datetime:
@@ -431,9 +446,13 @@ def expire_elapsed_subscriptions(
             "updated_at": now,
         }
         if sub.product in _SCARCE_PRODUCTS and sub.assigned_ip:
-            values["resource_quarantined_until"] = now + timedelta(
-                seconds=settings.RESOURCE_REUSE_QUARANTINE_SECONDS
+            quarantine_seconds = (
+                settings.IP_REUSE_QUARANTINE_SECONDS
+                if sub.product == ProductType.IP
+                else settings.RESOURCE_REUSE_QUARANTINE_SECONDS
             )
+            quarantine_until = now + timedelta(seconds=quarantine_seconds)
+            values["resource_quarantined_until"] = quarantine_until
         elif sub.product == ProductType.RELAY:
             values["domain_renewal_grace_expires_at"] = (period_end or now) + timedelta(
                 seconds=settings.RELAY_RENEWAL_GRACE_SECONDS
@@ -448,7 +467,10 @@ def expire_elapsed_subscriptions(
             .values(**values)
             .execution_options(synchronize_session=False)
         )
-        changed = result.rowcount == 1 or changed
+        if result.rowcount == 1:
+            if sub.product == ProductType.IP:
+                ip_leases.quarantine(session, sub, quarantine_until)
+            changed = True
     if changed:
         session.commit()
         for sub in rows:
@@ -469,6 +491,7 @@ def create_subscription(
     reap_domains: bool = True,
 ) -> Subscription:
     """Create a pending subscription, optionally leaving its transaction to the caller."""
+    require_product_billing_term(product, delivery, billing_term)
     require_billing_term_enabled(billing_term)
     if transport != Transport.TCP and product != ProductType.PORT:
         raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
@@ -692,6 +715,7 @@ def cancel_pending_subscription(session: Session, sub: Subscription) -> Subscrip
         raise SubscriptionCancellationConflict(
             "a payment is still pending; complete it or wait for it to expire"
         )
+    ip_leases.release(session, current, "pending subscription cancelled")
     session.commit()
     cancelled = session.get(Subscription, sub.id, populate_existing=True)
     if cancelled is None:  # pragma: no cover - foreign keys prevent normal deletion
@@ -707,6 +731,7 @@ def release_reservation(session: Session, sub: Subscription, payment_id: int) ->
         or sub.reservation_expires_at is None
     ):
         return False
+    ip_leases.release(session, sub, "payment reservation released")
     sub.assigned_ip = None
     sub.assigned_port = None
     sub.reservation_expires_at = None
@@ -780,6 +805,7 @@ def reap_elapsed_resource_holds(session: Session) -> None:
             .execution_options(synchronize_session=False)
         )
         if result.rowcount == 1:
+            ip_leases.release(session, sub, "resource quarantine elapsed")
             session.commit()
         else:
             session.rollback()
@@ -795,6 +821,7 @@ def reap_elapsed_resource_holds(session: Session) -> None:
             continue
         payment_id = sub.reservation_payment_id
         if payment_id is None:
+            ip_leases.release(session, sub, "orphaned reservation elapsed")
             sub.assigned_ip = None
             sub.assigned_port = None
             sub.reservation_expires_at = None
@@ -877,6 +904,8 @@ def reserve_subscription_resource(
                 sub.resource_quarantined_until = None
                 sub.updated_at = now
                 session.add(sub)
+                if sub.product == ProductType.IP:
+                    ip_leases.reserve(session, sub, payment_id, ip)
                 session.flush()
         except IntegrityError:
             session.refresh(sub)
@@ -915,6 +944,7 @@ def activate_subscription(
     sub.resource_quarantined_until = None
     sub.updated_at = now
     session.add(sub)
+    ip_leases.activate(session, sub)
     return sub
 
 
@@ -930,4 +960,5 @@ def renew_subscription(session: Session, sub: Subscription, period_days: int) ->
     sub.resource_quarantined_until = None
     sub.updated_at = now
     session.add(sub)
+    ip_leases.activate(session, sub)
     return sub

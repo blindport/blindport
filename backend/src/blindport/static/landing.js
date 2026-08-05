@@ -14,6 +14,9 @@ function selectedProduct() {
 }
 
 function selectedBillingTerm() {
+  if (selectedProduct()?.value === "ip" && selectedValue("orderDelivery") === "wireguard") {
+    return "yearly";
+  }
   return selectedValue("orderBillingTerm") || "monthly";
 }
 
@@ -28,6 +31,16 @@ function updatePlanPrices() {
     price.querySelector("strong").textContent = price.dataset[priceKey];
     price.querySelector("span").textContent = billingDays(term);
   });
+}
+
+function enforceRoutedYearly() {
+  const routed = selectedProduct()?.value === "ip" && selectedValue("orderDelivery") === "wireguard";
+  const monthly = orderForm.querySelector('input[name="orderBillingTerm"][value="monthly"]');
+  const yearly = orderForm.querySelector('input[name="orderBillingTerm"][value="yearly"]');
+  if (!monthly || !yearly) return;
+  monthly.disabled = routed;
+  if (routed) yearly.checked = true;
+  updatePlanPrices();
 }
 
 function selectedValue(name) {
@@ -92,6 +105,7 @@ function configureProduct() {
   if (product === "ip") chooseFirstEnabled("orderDelivery");
   if (product === "port") chooseFirstEnabled("orderTransport");
   if (product === "relay") updateRelayMode();
+  enforceRoutedYearly();
 }
 
 function validateConfiguration() {
@@ -178,6 +192,7 @@ orderForm.addEventListener("change", (event) => {
   }
   if (event.target.name === "domainMode") updateRelayMode();
   if (event.target.name === "orderBillingTerm") updatePlanPrices();
+  if (event.target.name === "orderDelivery") enforceRoutedYearly();
 });
 
 document.querySelectorAll(".product-jump").forEach((link) => {

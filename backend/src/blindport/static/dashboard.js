@@ -51,6 +51,10 @@ function chooseEnabledRadio(name) {
 }
 
 function selectedNewBillingTerm() {
+  if (document.getElementById("product")?.value === "ip" &&
+      document.getElementById("delivery")?.value === "wireguard") {
+    return "yearly";
+  }
   return chooseEnabledRadio("newBillingTerm")?.value || "monthly";
 }
 
@@ -96,6 +100,13 @@ function updateSubscriptionFields() {
   document.getElementById("transportField").hidden = product !== "port";
   document.getElementById("domainField").hidden = product !== "relay";
   if (product !== "ip") delivery.value = "framed";
+  const routed = product === "ip" && delivery.value === "wireguard";
+  const monthlyTerm = document.querySelector('input[name="newBillingTerm"][value="monthly"]');
+  const yearlyTerm = document.querySelector('input[name="newBillingTerm"][value="yearly"]');
+  if (monthlyTerm && yearlyTerm) {
+    monthlyTerm.disabled = routed;
+    if (routed) yearlyTerm.checked = true;
+  }
   updateDashboardDomainMode();
   const option = productSelect.selectedOptions[0];
   const term = selectedNewBillingTerm();
@@ -188,6 +199,7 @@ document.getElementById("newSubForm").addEventListener("submit", async (event) =
 });
 
 function selectedPaymentTerm(card) {
+  if (card.dataset.delivery === "wireguard") return "yearly";
   return card.querySelector('input[name^="paymentTerm-"]:checked')?.value || "monthly";
 }
 

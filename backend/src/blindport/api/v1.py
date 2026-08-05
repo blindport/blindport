@@ -57,6 +57,7 @@ from ..core.schemas import (
 )
 from ..db import get_session
 from ..services import agent_orders as agent_orders_svc
+from ..services import ip_leases
 from ..services import payments as payments_svc
 from ..services import subscriptions as subs_svc
 from ..services.allocator import NoCapacityError
@@ -901,11 +902,18 @@ def _set_account_suspension(
     suspended: bool,
     session: Session,
 ) -> AccountStatusResponse:
-    target = session.get(User, user_id)
+    target = session.exec(
+        select(User)
+        .where(User.id == user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
     target.is_suspended = suspended
     session.add(target)
+    if suspended and target.id is not None:
+        ip_leases.revoke_smtp_for_user(session, target.id, reason="account suspended")
     session.commit()
     return AccountStatusResponse(user_id=target.id or 0, is_suspended=target.is_suspended)
 

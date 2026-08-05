@@ -14,6 +14,7 @@ from .models import (
     AgentOrderState,
     BillingTerm,
     DeliveryMode,
+    IPLeaseState,
     PaymentMethod,
     PaymentStatus,
     ProductType,
@@ -87,6 +88,51 @@ class AccountStatusResponse(BaseModel):
 class PublicAccountStatusResponse(BaseModel):
     account_id: UUID
     is_suspended: bool
+
+
+class SMTPApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    intended_use: str = Field(min_length=1, max_length=500)
+    fee_paid_sats: int = Field(ge=0)
+    review_reference: str = Field(min_length=1, max_length=200)
+
+    @field_validator("intended_use", "review_reference")
+    @classmethod
+    def validate_audit_text(cls, value: str) -> str:
+        if value.strip() != value or not value.isascii() or not value.isprintable():
+            raise ValueError("audit text must be trimmed printable ASCII")
+        return value
+
+
+class SMTPRevocationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: str = Field(min_length=1, max_length=255)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        if value.strip() != value or not value.isascii() or not value.isprintable():
+            raise ValueError("reason must be trimmed printable ASCII")
+        return value
+
+
+class SMTPLeaseResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    lease_id: UUID
+    subscription_id: UUID
+    address: str
+    state: IPLeaseState
+    smtp_enabled: bool
+    intended_use: str | None
+    fee_paid_sats: int
+    reviewed_at: datetime | None
+    reviewed_by: str | None
+    review_reference: str | None
+    revoked_at: datetime | None
+    revocation_reason: str | None
 
 
 class CreateSubscriptionRequest(BaseModel):

@@ -24,6 +24,9 @@ from blindport.core.models import (
     BillingTerm,
     ClientCredential,
     DeliveryMode,
+    IPLease,
+    IPLeaseDelivery,
+    IPLeaseState,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -299,7 +302,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0016")
+    assert database_revisions(engine) == ("0008", "0017")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -352,7 +355,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0016", "0016")
+    assert database_revisions(engine) == ("0017", "0017")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -570,8 +573,59 @@ def test_postgres_migration_and_database_lifecycle() -> None:
 
         for payment in payments:
             session.delete(payment)
+        session.execute(
+            delete(IPLease).where(
+                IPLease.subscription_id.in_([subscription.id for subscription in subscriptions])  # type: ignore[union-attr]
+            )
+        )
         for subscription in subscriptions:
             session.delete(subscription)
+        session.delete(user)
+        session.commit()
+
+
+def test_postgres_0017_backfills_deployed_ip_assignment_enums() -> None:
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    downgrade_database(engine, "0016")
+    now = datetime.now(UTC)
+    marker = f"postgres-0017-backfill-{uuid4()}"
+    with Session(engine) as session:
+        user = User(hashed_token=marker)
+        session.add(user)
+        session.flush()
+        subscription = Subscription(
+            user_id=user.id,  # type: ignore[arg-type]
+            product=ProductType.IP,
+            delivery=DeliveryMode.WIREGUARD,
+            status=SubscriptionStatus.ACTIVE,
+            assigned_ip="198.51.100.201",
+            billing_term=BillingTerm.MONTHLY,
+            monthly_price_sats=7500,
+            yearly_price_sats=75000,
+            current_period_start=now,
+            current_period_end=now + timedelta(days=30),
+        )
+        session.add(subscription)
+        session.commit()
+        subscription_id = subscription.id
+        user_id = user.id
+
+    upgrade_database(engine)
+    with Session(engine) as session:
+        lease = session.exec(
+            select(IPLease).where(IPLease.subscription_id == subscription_id)
+        ).one()
+        assert lease.delivery == IPLeaseDelivery.WIREGUARD
+        assert lease.state == IPLeaseState.ACTIVE
+        assert lease.imported is True
+        assert lease.smtp_enabled is False
+        session.delete(lease)
+        subscription = session.get(Subscription, subscription_id)
+        user = session.get(User, user_id)
+        assert subscription is not None and user is not None
+        session.delete(subscription)
         session.delete(user)
         session.commit()
 
@@ -1019,7 +1073,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0016", "0016")
+        assert database_revisions(engine) == ("0017", "0017")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()
@@ -1149,9 +1203,19 @@ def test_postgres_concurrent_scarce_reservations_use_distinct_assignments() -> N
             "203.0.113.11",
         }
         assert all(outer_transaction_usable for _, outer_transaction_usable in results)
+        with Session(engine) as session:
+            leases = session.exec(
+                select(IPLease).where(IPLease.subscription_id.in_(subscription_ids))  # type: ignore[union-attr]
+            ).all()
+            assert {lease.address for lease in leases} == {
+                "203.0.113.10",
+                "203.0.113.11",
+            }
+            assert all(lease.released_at is None for lease in leases)
     finally:
         with Session(engine) as session:
             session.execute(delete(Payment).where(Payment.subscription_id.in_(subscription_ids)))
+            session.execute(delete(IPLease).where(IPLease.subscription_id.in_(subscription_ids)))
             session.execute(delete(Subscription).where(Subscription.id.in_(subscription_ids)))
             session.execute(delete(User).where(User.id == user_id))
             session.commit()
@@ -1554,6 +1618,16 @@ def test_postgres_concurrent_settlement_renews_once(monkeypatch: pytest.MonkeyPa
         )
         session.add(subscription)
         session.flush()
+        session.add(
+            IPLease(
+                subscription_id=subscription.id,
+                address=subscription.assigned_ip,
+                delivery=IPLeaseDelivery.FRAMED,
+                state=IPLeaseState.ACTIVE,
+                reserved_at=subscription.current_period_start,
+                activated_at=subscription.current_period_start,
+            )
+        )
         payment = Payment(
             subscription_id=subscription.id,
             method=PaymentMethod.LIGHTNING,
@@ -1606,6 +1680,7 @@ def test_postgres_concurrent_settlement_renews_once(monkeypatch: pytest.MonkeyPa
     finally:
         with Session(engine) as session:
             session.execute(delete(Payment).where(Payment.id == payment_id))
+            session.execute(delete(IPLease).where(IPLease.subscription_id == subscription_id))
             session.execute(delete(Subscription).where(Subscription.id == subscription_id))
             session.execute(delete(User).where(User.id == user_id))
             session.commit()

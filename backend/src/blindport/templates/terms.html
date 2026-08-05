@@ -5,14 +5,16 @@
   <header>
     <p class="eyebrow">Plain-language beta terms</p>
     <h1 id="terms-title">Service terms</h1>
-    <p class="lead">Blindport provides public ingress for lawful services running on hardware you control. By creating an order or operating an endpoint, you agree to these terms.</p>
-    <p class="muted">Effective August 4, 2026</p>
+    <p class="lead">Blindport provides public network identities for lawful services running on hardware you control. By creating an order or operating an endpoint, you agree to these terms.</p>
+    <p class="muted">Effective August 5, 2026</p>
   </header>
 
   <section aria-labelledby="intended-use-title">
     <h2 id="intended-use-title">Intended use</h2>
-    <p>Blindport is built for self-hosters who want easier public reachability and less exposure of their origin address to ordinary visitors and internet scans. Blindport's network path does not disclose the origin address to them, but application behavior, DNS history, headers, or third-party integrations may still reveal it. The application, data, and TLS termination can remain on your hardware while Blindport supplies the public network path.</p>
-    <p>You are responsible for the service behind your endpoint, its security, its users, and the content or activity it makes available.</p>
+    <p>Blindport is built for self-hosters who want easier public reachability and less exposure of their origin address. Framed products provide ingress to selected services. Routed Blindport IP assigns one static public IPv4 address to a WireGuard interface for inbound and outbound traffic without network address translation.</p>
+    <p>The network path can still expose information because application behavior, DNS history, headers, or third-party integrations may reveal an origin address.</p>
+    <p>Routed Blindport IP is prepaid for 365 service days. The address remains assigned for the active paid term unless renumbering is technically, legally, or operationally unavoidable. You receive a right to use the address, not ownership of it.</p>
+    <p>You are responsible for traffic through your endpoint, the service behind it, account and host security, users, content, backups, and compliance with applicable law.</p>
   </section>
 
   <section aria-labelledby="beta-title">
@@ -26,22 +28,35 @@
     <p>We may introduce reasonable traffic, bandwidth, connection, or rate limits when needed to keep the service reliable and available. We will publish material limits before they apply when practical. Urgent limits may be applied immediately to contain abuse, instability, security incidents, or harm to other users.</p>
   </section>
 
+  <section aria-labelledby="smtp-title">
+    <h2 id="smtp-title">Outbound email</h2>
+    <p>New outbound TCP connections to port 25 are blocked on routed Blindport IP by default. Ports 465 and 587 are not covered by this default block.</p>
+    <p>A port 25 exception requires contacting support, review of the intended use and technical safeguards, and an additional nonrefundable fee of at least {{ smtp_egress_fee_sats }} sats. Approval is discretionary, applies only to the current IP lease, and may be revoked immediately after spam, a material change in use, inaccurate review information, or an unresolved abuse report.</p>
+  </section>
+
   <section aria-labelledby="data-title">
     <h2 id="data-title">Source addresses and logs</h2>
-    <p>Blindport does not persist visitor or request source IP addresses in application records. Source addresses are processed transiently where required to route active traffic, apply in-memory abuse controls, and carry connection metadata to customer infrastructure. Allocated service addresses, domains, subscriptions, account activity times, and payment records are retained as necessary to provide the service.</p>
+    <p>Blindport does not persist visitor or request source IP addresses, traffic destinations, DNS queries, or payloads in application records. Addresses are processed transiently where required to route active traffic and enforce network policy. Blindport retains durable account-to-IP lease history, lease state and timestamps, SMTP review and revocation records, subscriptions, account activity times, and payment records as necessary to provide and protect the service.</p>
     <p>Hosted access logging is disabled. Blindport operational logs omit visitor and request source addresses and are deleted within 30 days. Customer systems and independent network, hosting, DNS, certificate, payment, email, and monitoring providers are outside this retention commitment and may keep their own records. When you choose stablecoin checkout, Boltz receives the invoice and can observe your selected asset, network, wallet activity, and swap transaction.</p>
   </section>
 
   <section aria-labelledby="lawful-use-title">
     <h2 id="lawful-use-title">Lawful use and upstream providers</h2>
-    <p>You may not use a Blindport IP, Port, or Relay endpoint for content or activity that violates laws applicable to you, Blindport, or the infrastructure used to provide the service.</p>
-    <p>Blindport depends on network, hosting, DNS, and payment providers. We cannot prevent those providers from investigating use, filtering traffic, or suspending their services or Blindport infrastructure. We may suspend or remove an endpoint when we reasonably believe it is being used unlawfully, when an upstream provider requires action, or when continued operation threatens the service's security, reliability, or availability.</p>
-    <p><strong>An endpoint removed for illegal content or activity is not eligible for a refund.</strong></p>
+    <p>You may not use Blindport for unlawful activity; child sexual abuse material or exploitation; phishing, fraud, credential theft, malware, ransomware, spyware, botnets, command and control, denial of service, unauthorized access or scanning, source spoofing, unsolicited messaging, illegal commerce, infringement, doxxing, threats, or deliberate resource or network-reputation abuse. You may not resell access as an open proxy or attempt to bypass network controls.</p>
+    <p>Blindport depends on network, hosting, DNS, and payment providers. We cannot prevent those providers from investigating use, filtering traffic, or suspending their services or Blindport infrastructure.</p>
+    <p>We may ask for a response and remediation within a stated deadline when a credible report includes the relevant address, timestamp, protocol, and evidence. We may rate-limit, filter, suspend, or terminate service immediately for an active attack, severe unlawful use, material risk, nonresponse, repeated violations, or an upstream requirement. We disclose only information we retain and only in response to valid binding legal process, unless emergency law permits otherwise.</p>
+    <p><strong>Service suspended or terminated for prohibited activity is not eligible for a refund. Paid SMTP review fees are nonrefundable.</strong></p>
+  </section>
+
+  <section aria-labelledby="address-title">
+    <h2 id="address-title">Address reputation and service limits</h2>
+    <p>Public address reputation, geolocation, acceptance by third parties, and freedom from previous use are not guaranteed. Report a material preexisting reputation problem promptly; replacement remains subject to available inventory and review.</p>
+    <p>There is no backup of customer systems or application data. Expiration or termination removes network authorization and the address may be quarantined before reassignment. Established sessions may end without notice when authorization is removed.</p>
   </section>
 
   <section aria-labelledby="threat-model-title">
     <h2 id="threat-model-title">Privacy and threat model</h2>
-    <p>Blindport is privacy-enhancing ingress, not an anonymity network or censorship-resistance system. Blindport and its providers can observe connection metadata such as addresses, ports or SNI hostnames, timing, and traffic volume. Payloads are opaque to Blindport only when your service uses suitable end-to-end encryption.</p>
+    <p>Blindport is privacy-enhancing network infrastructure, not an anonymity network or censorship-resistance system. Blindport and its providers can observe connection metadata such as addresses, ports or SNI hostnames, timing, and traffic volume. Payloads are opaque to Blindport only when your service uses suitable end-to-end encryption.</p>
     <p>This architecture is not designed to resist a state-level adversary, targeted traffic correlation, legal compulsion, infrastructure seizure, or coordinated pressure on upstream providers. It is intended for ordinary lawful self-hosting where origin-address privacy and ease of use matter.</p>
     <p>Operators who require anonymity or censorship resistance should evaluate tools designed for those goals, such as Tor onion services, suitable mixnets, or other specialized systems, against their exact threat model. We support the broader goals of privacy, anonymity, and censorship resistance; Blindport itself provides only the limited privacy benefits described above.</p>
   </section>

@@ -62,7 +62,11 @@ def get_catalog(session: Session) -> CatalogResponse:
         and row.assigned_ip in wireguard_inventory
     }
     framed_available = max(0, len(framed_inventory) - len(used_framed))
-    wireguard_available = max(0, len(wireguard_inventory) - len(used_wireguard))
+    wireguard_available = (
+        max(0, len(wireguard_inventory) - len(used_wireguard))
+        if settings.BILLING_YEARLY_ENABLED
+        else 0
+    )
     ip_available = framed_available + wireguard_available
     ip = _available_product(
         ProductType.IP,

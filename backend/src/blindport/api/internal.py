@@ -32,6 +32,7 @@ from ..core.models import (
 from ..db import get_session
 from ..services import subscriptions as subs_svc
 from ..services.wireguard import desired_state as wireguard_desired_state
+from ..services.wireguard import desired_state_v2 as wireguard_desired_state_v2
 
 router = APIRouter(prefix="/internal/v1")
 v2_router = APIRouter(prefix="/internal/v2")
@@ -75,6 +76,10 @@ class WireGuardDesiredStateResponse(BaseModel):
     generated_at: datetime
     managed_prefixes: list[str]
     peers: list[WireGuardDesiredPeerResponse]
+
+
+class WireGuardDesiredStateV2Response(WireGuardDesiredStateResponse):
+    smtp_allowed_prefixes: list[str]
 
 
 def _resolve(
@@ -163,6 +168,22 @@ def wireguard_peers(session: Session = Depends(get_session)) -> WireGuardDesired
         generated_at=snapshot.generated_at,
         managed_prefixes=snapshot.managed_prefixes,
         peers=[WireGuardDesiredPeerResponse(**vars(peer)) for peer in snapshot.peers],
+    )
+
+
+@v2_router.get(
+    "/wireguard/peers",
+    response_model=WireGuardDesiredStateV2Response,
+    dependencies=[Depends(_require_relay_secret)],
+)
+def wireguard_peers_v2(session: Session = Depends(get_session)) -> WireGuardDesiredStateV2Response:
+    snapshot = wireguard_desired_state_v2(session)
+    return WireGuardDesiredStateV2Response(
+        revision=snapshot.revision,
+        generated_at=snapshot.generated_at,
+        managed_prefixes=snapshot.managed_prefixes,
+        peers=[WireGuardDesiredPeerResponse(**vars(peer)) for peer in snapshot.peers],
+        smtp_allowed_prefixes=snapshot.smtp_allowed_prefixes,
     )
 
 

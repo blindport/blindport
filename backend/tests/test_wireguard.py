@@ -54,7 +54,7 @@ def _enroll_identity(client, token: str) -> tuple[str, Ed25519PrivateKey]:
 def _activate_routed_ip(client, factory, token: str) -> dict:
     subscription = client.post(
         "/api/v1/subscriptions",
-        json={"product": "ip", "delivery": "wireguard"},
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "yearly"},
         headers=_auth(token),
     )
     assert subscription.status_code == 200, subscription.text
@@ -235,7 +235,7 @@ def test_wireguard_delivery_rejects_wrong_product_or_disabled_plane(app_client) 
     token = client.post("/api/v1/signup").json()["token"]
     disabled = client.post(
         "/api/v1/subscriptions",
-        json={"product": "ip", "delivery": "wireguard"},
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "yearly"},
         headers=_auth(token),
     )
     assert disabled.status_code == 400
@@ -246,3 +246,399 @@ def test_wireguard_delivery_rejects_wrong_product_or_disabled_plane(app_client) 
         headers=_auth(token),
     )
     assert invalid.status_code == 422
+
+
+def test_routed_ip_is_annual_only_for_orders_and_payments(app_client, monkeypatch) -> None:
+    client, _ = app_client
+    _configure_wireguard(monkeypatch)
+    token = client.post("/api/v1/signup").json()["token"]
+
+    monthly = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip", "delivery": "wireguard"},
+        headers=_auth(token),
+    )
+    assert monthly.status_code == 400
+    assert (
+        monthly.json()["detail"] == "WireGuard Blindport IP is available with yearly billing only"
+    )
+
+    anonymous = client.post(
+        "/api/v2/orders",
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "monthly"},
+    )
+    assert anonymous.status_code == 400
+    assert anonymous.json()["detail"] == monthly.json()["detail"]
+
+    yearly = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "yearly"},
+        headers=_auth(token),
+    )
+    assert yearly.status_code == 200, yearly.text
+    explicit_monthly = client.post(
+        "/api/v1/payments",
+        json={
+            "subscription_id": yearly.json()["id"],
+            "method": "lightning",
+            "billing_term": "monthly",
+        },
+        headers=_auth(token),
+    )
+    assert explicit_monthly.status_code == 400
+    omitted = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": yearly.json()["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert omitted.status_code == 200, omitted.text
+    assert (omitted.json()["billing_term"], omitted.json()["period_days"]) == ("yearly", 365)
+
+
+def test_routed_catalog_capacity_requires_global_yearly_billing(app_client, monkeypatch) -> None:
+    client, _ = app_client
+    _configure_wireguard(monkeypatch)
+    from blindport.services import catalog
+
+    monkeypatch.setattr(catalog.settings, "BILLING_YEARLY_ENABLED", False)
+    ip = next(
+        item for item in client.get("/api/v1/catalog").json()["products"] if item["product"] == "ip"
+    )
+    assert ip["capacity"]["wireguard_available"] == 0
+    assert ip["capacity"]["framed_available"] == 2
+
+
+def test_routed_smtp_admin_is_default_deny_and_v2_only(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    _configure_wireguard(monkeypatch)
+    token = client.post("/api/v1/signup").json()["token"]
+    instance_id, identity_key = _enroll_identity(client, token)
+    subscription = _activate_routed_ip(client, factory, token)
+    key_request = _key_request(instance_id, identity_key, 1, bytes(range(33, 65)))
+    assert (
+        client.post(
+            "/api/v2/client/wireguard/key", json=key_request, headers=_auth(token)
+        ).status_code
+        == 200
+    )
+    relay_headers = {"X-Relay-Secret": "test-secret"}
+    v1_before = client.get("/internal/v1/wireguard/peers", headers=relay_headers).json()
+    v2_before = client.get("/internal/v2/wireguard/peers", headers=relay_headers).json()
+    assert "smtp_allowed_prefixes" not in v1_before
+    assert v2_before["smtp_allowed_prefixes"] == []
+
+    path = f"/api/v2/admin/subscriptions/{subscription['id']}/smtp-egress/approve"
+    request = {
+        "intended_use": "Transactional account notifications",
+        "fee_paid_sats": 50000,
+        "review_reference": "ticket-123",
+    }
+    assert client.post(path, json=request).status_code == 401
+    low_fee = client.post(
+        path,
+        json={**request, "fee_paid_sats": 49999},
+        headers=_auth("TESTADMIN0000"),
+    )
+    assert low_fee.status_code == 400
+    assert (
+        client.post(
+            path,
+            json={**request, "unexpected": True},
+            headers=_auth("TESTADMIN0000"),
+        ).status_code
+        == 422
+    )
+
+    approved = client.post(path, json=request, headers=_auth("TESTADMIN0000"))
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["smtp_enabled"] is True
+    assert approved.json()["reviewed_by"] == "blindport-admin-api-v1"
+    v2_approved = client.get("/internal/v2/wireguard/peers", headers=relay_headers).json()
+    assert v2_approved["smtp_allowed_prefixes"] == ["198.51.100.20/32"]
+    assert v2_approved["revision"] != v2_before["revision"]
+    assert (
+        client.get("/internal/v1/wireguard/peers", headers=relay_headers).json()["revision"]
+        == v1_before["revision"]
+    )
+
+    revoke_path = f"/api/v2/admin/subscriptions/{subscription['id']}/smtp-egress/revoke"
+    revoked = client.post(
+        revoke_path,
+        json={"reason": "Customer request"},
+        headers=_auth("TESTADMIN0000"),
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json()["smtp_enabled"] is False
+    v2_revoked = client.get("/internal/v2/wireguard/peers", headers=relay_headers).json()
+    assert v2_revoked["smtp_allowed_prefixes"] == []
+    assert v2_revoked["revision"] == v2_before["revision"]
+
+    client.post("/admin/login", data={"token": "TESTADMIN0000"})
+    panel = client.get("/admin")
+    assert f"/admin/ip-leases/{approved.json()['lease_id']}/smtp/approve" in panel.text
+    assert "Dedicated IP lease history" in panel.text
+    browser_approve = client.post(
+        f"/admin/ip-leases/{approved.json()['lease_id']}/smtp/approve",
+        data={
+            "intended_use": "Transactional account notifications",
+            "fee_paid_sats": "50000",
+            "review_reference": "browser-ticket-124",
+        },
+        follow_redirects=False,
+    )
+    assert browser_approve.status_code == 303
+    assert browser_approve.headers["location"] == "/admin#ip-leases-title"
+    assert client.get("/internal/v2/wireguard/peers", headers=relay_headers).json()[
+        "smtp_allowed_prefixes"
+    ] == ["198.51.100.20/32"]
+    browser_revoke = client.post(
+        f"/admin/ip-leases/{approved.json()['lease_id']}/smtp/revoke",
+        data={"reason": "Browser review revoked"},
+        follow_redirects=False,
+    )
+    assert browser_revoke.status_code == 303
+
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+    assert (
+        client.get("/internal/v2/wireguard/peers", headers=relay_headers).json()[
+            "smtp_allowed_prefixes"
+        ]
+        == []
+    )
+    inactive = client.post(path, json=request, headers=_auth("TESTADMIN0000"))
+    assert inactive.status_code == 400
+    assert inactive.json()["detail"] == "subscription is not an active routed Blindport IP"
+
+
+def test_account_suspension_permanently_revokes_routed_smtp(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    _configure_wireguard(monkeypatch)
+    account = client.post("/api/v2/signup").json()
+    subscription = _activate_routed_ip(client, factory, account["token"])
+    path = f"/api/v2/admin/subscriptions/{subscription['id']}/smtp-egress/approve"
+    request = {
+        "intended_use": "Transactional account notifications",
+        "fee_paid_sats": 50000,
+        "review_reference": "suspension-review-1",
+    }
+    admin = _auth("TESTADMIN0000")
+
+    assert client.post(path, json=request, headers=admin).status_code == 200
+    suspended = client.post(f"/api/v2/admin/users/{account['account_id']}/suspend", headers=admin)
+    assert suspended.status_code == 200, suspended.text
+    blocked = client.post(path, json=request, headers=admin)
+    assert blocked.status_code == 400
+    assert blocked.json()["detail"] == "subscription is not an active routed Blindport IP"
+    assert (
+        client.post(
+            f"/api/v2/admin/users/{account['account_id']}/unsuspend", headers=admin
+        ).status_code
+        == 200
+    )
+
+    from blindport.core.models import IPLease
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        lease = session.exec(select(IPLease)).one()
+        assert lease.smtp_enabled is False
+        assert lease.smtp_revoked_at is not None
+        assert lease.smtp_revocation_reason == "account suspended"
+
+
+def test_routed_dashboard_hides_payments_when_yearly_billing_is_disabled(
+    app_client, monkeypatch
+) -> None:
+    client, _ = app_client
+    _configure_wireguard(monkeypatch)
+    account = client.post("/api/v2/signup").json()
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "yearly"},
+        headers=_auth(account["token"]),
+    )
+    assert subscription.status_code == 200, subscription.text
+
+    from blindport.api import pages
+
+    monkeypatch.setattr(pages.settings, "BILLING_YEARLY_ENABLED", False)
+    assert client.post("/login", data={"token": account["token"]}).status_code == 200
+    dashboard = client.get("/dashboard")
+    assert dashboard.status_code == 200
+    assert "Annual routed-IP payments are currently unavailable." in dashboard.text
+    assert 'class="payBtn' not in dashboard.text
+    assert 'class="stablecoinPayBtn' not in dashboard.text
+    assert 'class="nwcPayBtn' not in dashboard.text
+    assert 'class="inline-nwc-form' not in dashboard.text
+
+
+def test_legacy_monthly_routed_snapshot_settles_and_auto_renews_yearly(
+    app_client, monkeypatch
+) -> None:
+    client, factory = app_client
+    _configure_wireguard(monkeypatch)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "yearly"},
+        headers=_auth(token),
+    ).json()
+    issued = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    ).json()
+
+    from blindport.core.models import BillingTerm, IPLease, IPLeaseState, Payment, PaymentMethod
+    from blindport.db import engine
+    from blindport.services.payment_reconciliation import reconcile_pending_payments_once
+
+    with Session(engine) as session:
+        payment = session.get(Payment, issued["id"])
+        assert payment is not None
+        payment.billing_term = BillingTerm.MONTHLY
+        payment.period_days = 30
+        payment.amount_sats = 7500
+        session.add(payment)
+        session.commit()
+        lease = session.exec(select(IPLease)).one()
+        assert lease.state == IPLeaseState.RESERVED
+
+    factory.get_lightning_adapter().mark_paid(issued["payment_hash"])
+    settled = client.get(f"/api/v1/payments/{issued['id']}", headers=_auth(token))
+    assert settled.status_code == 200, settled.text
+    assert (settled.json()["billing_term"], settled.json()["period_days"]) == ("monthly", 30)
+
+    omitted_renewal = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert omitted_renewal.status_code == 200, omitted_renewal.text
+    assert (omitted_renewal.json()["billing_term"], omitted_renewal.json()["period_days"]) == (
+        "yearly",
+        365,
+    )
+    with Session(engine) as session:
+        open_renewal = session.get(Payment, omitted_renewal.json()["id"])
+        assert open_renewal is not None
+        open_renewal.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(open_renewal)
+        session.commit()
+    expired = client.get(f"/api/v1/payments/{omitted_renewal.json()['id']}", headers=_auth(token))
+    assert expired.json()["status"] == "expired"
+
+    nwc = client.post(
+        "/api/v1/me/nwc",
+        json={"nwc_uri": "nostr+walletconnect://legacy-routed-renewal"},
+        headers=_auth(token),
+    )
+    assert nwc.status_code == 200, nwc.text
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        assert stored.billing_term == BillingTerm.MONTHLY
+        stored.auto_renew = True
+        stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
+        session.add(stored)
+        session.commit()
+        lease = session.exec(select(IPLease)).one()
+        assert lease.state == IPLeaseState.ACTIVE
+
+    summary = reconcile_pending_payments_once()
+    assert summary.auto_renewed == 1
+    with Session(engine) as session:
+        renewal = session.exec(select(Payment).where(Payment.method == PaymentMethod.NWC)).one()
+        assert (renewal.billing_term, renewal.period_days, renewal.amount_sats) == (
+            BillingTerm.YEARLY,
+            365,
+            75000,
+        )
+
+
+def test_ip_lease_lifecycle_and_reassignment_history(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    _configure_wireguard(monkeypatch)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _activate_routed_ip(client, factory, token)
+
+    from blindport.core.models import IPLease, IPLeaseState
+    from blindport.db import engine
+    from blindport.services import subscriptions as subscription_service
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        first_lease = session.exec(select(IPLease)).one()
+        first_id = first_lease.public_id
+        stored.current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+        subscription_service.expire_elapsed_subscriptions(session, [stored])
+        session.refresh(first_lease)
+        assert first_lease.state == IPLeaseState.QUARANTINED
+        assert first_lease.expired_at is not None
+        subscription_service.renew_subscription(session, stored, 365)
+        session.commit()
+        session.refresh(first_lease)
+        assert first_lease.public_id == first_id
+        assert first_lease.state == IPLeaseState.ACTIVE
+
+        stored.current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+        subscription_service.expire_elapsed_subscriptions(session, [stored])
+        stored.resource_quarantined_until = datetime.now(UTC) - timedelta(seconds=1)
+        first_lease.quarantine_until = stored.resource_quarantined_until
+        session.add(stored)
+        session.add(first_lease)
+        session.commit()
+        subscription_service.reap_elapsed_resource_holds(session)
+        session.refresh(first_lease)
+        assert first_lease.state == IPLeaseState.RELEASED
+        assert first_lease.released_at is not None
+
+    second = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "yearly"},
+        headers=_auth(token),
+    ).json()
+    payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": second["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert payment.status_code == 200, payment.text
+    with Session(engine) as session:
+        leases = session.exec(select(IPLease).order_by(IPLease.created_at)).all()
+        assert len(leases) == 2
+        assert leases[0].released_at is not None
+        assert leases[1].released_at is None
+        assert leases[0].address == leases[1].address == "198.51.100.20"
+
+
+def test_port_reservation_does_not_create_ip_lease(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert payment.status_code == 200, payment.text
+
+    from blindport.core.models import IPLease
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        assert session.exec(select(IPLease)).all() == []

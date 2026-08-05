@@ -57,11 +57,11 @@
     <article>
       <h3>Blindport IP</h3>
       <p class="product-purpose">One dedicated public IPv4</p>
-      <p class="price-line">{{ ip.monthly_price_sats }} <span>sats / 30 days{% set ip_usd = approximate_usd(ip.monthly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
+      <p class="price-line">{{ ip.monthly_price_sats }} <span>sats / 30 days for framed delivery{% set ip_usd = approximate_usd(ip.monthly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>Framed mode forwards configured TCP listeners</li>
-        <li>WireGuard routes the complete /32 to a Linux host</li>
-        <li>Only routed mode preserves native UDP, ICMP, and client IPs</li>
+        <li>WireGuard routes the complete static /32 in both directions</li>
+        <li>Routed mode is annual and preserves native TCP, UDP, ICMP, and peer IPs</li>
       </ul>
       <p class="product-state{% if not ip.available %} is-unavailable{% endif %}">{% if ip.available %}Available{% elif ip.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
       {% if ip.available %}<a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>{% endif %}
@@ -196,7 +196,7 @@
             <legend>Delivery mode</legend>
             <div class="choice-list">
               <label><input type="radio" name="orderDelivery" value="framed" checked{% if not catalog_by_product.ip.capacity.framed_available %} disabled{% endif %}> <span><strong>Framed</strong> (forward selected local TCP services through <code>blindportd</code>; no network administration capability required)</span></label>
-              <label><input type="radio" name="orderDelivery" value="wireguard"{% if not catalog_by_product.ip.capacity.wireguard_available %} disabled{% endif %}> <span><strong>WireGuard</strong> (route the public /32 to a Linux host; requires kernel WireGuard and <code>CAP_NET_ADMIN</code>)</span></label>
+              <label><input type="radio" name="orderDelivery" value="wireguard"{% if not catalog_by_product.ip.capacity.wireguard_available %} disabled{% endif %}> <span><strong>WireGuard</strong> (annual only; route the complete static public /32 to a Linux host for inbound and outbound traffic; requires kernel WireGuard and <code>CAP_NET_ADMIN</code>)</span></label>
             </div>
           </fieldset>
           <fieldset id="portConfig" hidden>

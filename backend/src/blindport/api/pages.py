@@ -20,6 +20,8 @@ from ..core.auth import (
 )
 from ..core.models import (
     DeliveryMode,
+    IPLease,
+    IPLeaseState,
     Payment,
     PaymentMethod,
     ProductType,
@@ -29,6 +31,7 @@ from ..core.models import (
     User,
 )
 from ..db import get_session
+from ..services import ip_leases
 from ..services import subscriptions as subs_svc
 from ..services.btc_usd_price import approximate_usd, price_cache
 from ..services.catalog import get_catalog
@@ -138,6 +141,7 @@ def _ctx(request: Request, **extra) -> dict:
         "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
         "stablecoin_enabled": settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP),
         "reminder_email_enabled": settings.REMINDER_EMAIL_ENABLED,
+        "smtp_egress_fee_sats": settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
         "request_origin_shell": shlex.quote(request_origin),
         "request_origin_json": json.dumps(request_origin),
         "backend_flag_shell": backend_flag_shell,
@@ -399,6 +403,13 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
     reminders = session.exec(
         select(ReminderDelivery).join(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
     ).all()
+    leases = session.exec(
+        select(IPLease)
+        .join(Subscription)
+        .join(User)
+        .where(User.is_admin.is_(False))  # type: ignore[union-attr]
+        .order_by(IPLease.created_at.desc())
+    ).all()
     account_by_user_id = {user.id: user.public_id for user in users}
     subscription_by_pk = {subscription.id: subscription for subscription in subs}
     account_by_payment_id = {
@@ -418,10 +429,12 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
             subscriptions=subs,
             payments=payments,
             reminders=reminders,
+            leases=leases,
             account_by_user_id=account_by_user_id,
             account_by_payment_id=account_by_payment_id,
             subscription_public_id_by_pk=subscription_public_id_by_pk,
             active_count=sum(1 for s in subs if s.status == SubscriptionStatus.ACTIVE),
+            smtp_fee_sats=settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
         ),
     )
     response.headers["Cache-Control"] = "no-store"
@@ -442,15 +455,20 @@ def _set_browser_account_suspension(
         response.headers["Cache-Control"] = "no-store"
         return response
     target = session.exec(
-        select(User).where(
+        select(User)
+        .where(
             User.public_id == account_id,
             User.is_admin.is_(False),  # type: ignore[union-attr]
         )
-    ).first()
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
     if target is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "account not found")
     target.is_suspended = suspended
     session.add(target)
+    if suspended and target.id is not None:
+        ip_leases.revoke_smtp_for_user(session, target.id, reason="account suspended")
     session.commit()
     response = RedirectResponse(
         url="/admin#accounts-title",
@@ -476,6 +494,100 @@ def admin_restore_account(
     session: Session = Depends(get_session),
 ) -> RedirectResponse:
     return _set_browser_account_suspension(request, account_id, False, session)
+
+
+def _admin_lease_subscription(session: Session, lease_id: UUID) -> tuple[IPLease, Subscription]:
+    lease = session.exec(select(IPLease).where(IPLease.public_id == lease_id)).one_or_none()
+    if lease is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "IP lease not found")
+    subscription = session.get(Subscription, lease.subscription_id)
+    if subscription is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subscription not found")
+    account = session.exec(
+        select(User)
+        .where(User.id == subscription.user_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    subscription = session.exec(
+        select(Subscription)
+        .where(Subscription.id == subscription.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    lease = session.exec(
+        select(IPLease)
+        .where(IPLease.id == lease.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    if (
+        account.is_suspended
+        or account.is_admin
+        or subscription.status != SubscriptionStatus.ACTIVE
+        or subscription.product != ProductType.IP
+        or subscription.delivery != DeliveryMode.WIREGUARD
+        or lease.state != IPLeaseState.ACTIVE
+        or lease.released_at is not None
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "lease is not an active routed IP lease")
+    return lease, subscription
+
+
+def _browser_admin_redirect(request: Request) -> RedirectResponse | None:
+    if validate_admin_browser_session(request.cookies.get(_ADMIN_SESSION_COOKIE, "")):
+        return None
+    response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+    _clear_admin_session(response, request)
+    _clear_legacy_admin_session(response, request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/admin/ip-leases/{lease_id}/smtp/approve")
+def admin_approve_smtp(
+    lease_id: UUID,
+    request: Request,
+    intended_use: str = Form(..., min_length=1, max_length=500),
+    fee_paid_sats: int = Form(..., ge=0),
+    review_reference: str = Form(..., min_length=1, max_length=200),
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    unauthorized = _browser_admin_redirect(request)
+    if unauthorized is not None:
+        return unauthorized
+    lease, subscription = _admin_lease_subscription(session, lease_id)
+    try:
+        ip_leases.approve_smtp(
+            session,
+            subscription,
+            intended_use=intended_use,
+            fee_paid_sats=fee_paid_sats,
+            review_reference=review_reference,
+            reviewed_by="blindport-admin-browser-v1",
+        )
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    response = RedirectResponse(url="/admin#ip-leases-title", status_code=status.HTTP_303_SEE_OTHER)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/admin/ip-leases/{lease_id}/smtp/revoke")
+def admin_revoke_smtp(
+    lease_id: UUID,
+    request: Request,
+    reason: str = Form(..., min_length=1, max_length=255),
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    unauthorized = _browser_admin_redirect(request)
+    if unauthorized is not None:
+        return unauthorized
+    _lease, subscription = _admin_lease_subscription(session, lease_id)
+    ip_leases.revoke_smtp(session, subscription, reason=reason)
+    response = RedirectResponse(url="/admin#ip-leases-title", status_code=status.HTTP_303_SEE_OTHER)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/admin/login")

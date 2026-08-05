@@ -240,7 +240,11 @@ def test_service_terms_are_readable_without_horizontal_overflow(
             assert page.get_by_role(
                 "heading", name="Privacy and threat model"
             ).is_visible()
-            assert page.locator("main > article > section").count() == 7
+            assert page.get_by_role("heading", name="Outbound email").is_visible()
+            assert page.get_by_role(
+                "heading", name="Address reputation and service limits"
+            ).is_visible()
+            assert page.locator("main > article > section").count() == 9
             footer = page.locator(".site-footer")
             footer_link = footer.get_by_role("link", name="Terms", exact=True)
             assert footer_link.get_attribute("href") == "/terms"

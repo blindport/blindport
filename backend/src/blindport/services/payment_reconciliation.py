@@ -16,6 +16,8 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..core.models import (
+    BillingTerm,
+    DeliveryMode,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -147,7 +149,12 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                     session,
                     subscription,
                     PaymentMethod.NWC,
-                    subscription.billing_term,
+                    (
+                        BillingTerm.YEARLY
+                        if subscription.product == ProductType.IP
+                        and subscription.delivery == DeliveryMode.WIREGUARD
+                        else subscription.billing_term
+                    ),
                 )
                 created += 1
         except ValueError:
