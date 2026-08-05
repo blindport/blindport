@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,20 +26,6 @@ func TestIperf3ThroughMultiplexedTunnel(t *testing.T) {
 		t.Skip("iperf3 is unavailable")
 	}
 
-	originPort := reserveTCPPort(t)
-	origin := exec.Command(iperf3, "-s", "-p", strconv.Itoa(originPort))
-	var originOutput bytes.Buffer
-	origin.Stdout = &originOutput
-	origin.Stderr = &originOutput
-	if err := origin.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = origin.Process.Kill()
-		_ = origin.Wait()
-	})
-	waitForTCPListener(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(originPort)))
-
 	public, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -46,10 +34,12 @@ func TestIperf3ThroughMultiplexedTunnel(t *testing.T) {
 
 	agentRaw, relayRaw := net.Pipe()
 	var agentActive atomic.Int64
+	var originAddress atomic.Value
+	originAddress.Store("")
 	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) {
 		agentActive.Add(1)
 		defer agentActive.Add(-1)
-		handleTCPStream(slog.Default(), stream, net.JoinHostPort("127.0.0.1", strconv.Itoa(originPort)))
+		handleTCPStream(slog.Default(), stream, originAddress.Load().(string))
 	})
 	relay := tunnel.New(relayRaw, nil)
 	agent.EnableTCPHalfClose()
@@ -91,28 +81,31 @@ func TestIperf3ThroughMultiplexedTunnel(t *testing.T) {
 
 	for _, reverse := range []bool{false, true} {
 		mode := "forward"
-		args := []string{"-c", "127.0.0.1", "-p", strconv.Itoa(public.Addr().(*net.TCPAddr).Port), "-t", "1", "-J"}
 		if reverse {
 			mode = "reverse"
-			args = append(args, "-R")
 		}
 		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			output, err := exec.CommandContext(ctx, iperf3, args...).CombinedOutput()
-			if ctx.Err() != nil {
-				t.Fatalf("iperf3 timed out: %s", output)
+			originPort := reserveTCPPort(t)
+			originAddress.Store(net.JoinHostPort("127.0.0.1", strconv.Itoa(originPort)))
+			origin := startIperfServer(t, iperf3, originPort)
+			defer func() { _, _ = origin.stop() }()
+
+			args := []string{"-c", "127.0.0.1", "-p", strconv.Itoa(public.Addr().(*net.TCPAddr).Port), "-t", "1", "-J"}
+			if reverse {
+				args = append(args, "-R")
 			}
-			if err != nil {
-				t.Fatalf("iperf3 failed: %v\n%s", err, output)
+			clientErr := runIperfClientWithStartupRetries(t, iperf3, args, relay, agent, &opened, &relayActive, &agentActive)
+			waitForNoActiveProxies(t, relay, agent, &relayActive, &agentActive)
+			originOutput, originErr := origin.stop()
+			if clientErr != nil {
+				t.Fatalf("%v\norigin output:\n%s", clientErr, originOutput)
+			}
+			if originErr != nil {
+				t.Fatalf("stop iperf3 server: %v\n%s", originErr, originOutput)
 			}
 		})
 	}
 
-	if opened.Load() < 4 {
-		t.Fatalf("opened %d streams, want separate control and data streams in both modes", opened.Load())
-	}
-	waitForNoActiveProxies(t, relay, agent, &relayActive, &agentActive)
 	_ = public.Close()
 	if err := <-acceptDone; err != nil && !errors.Is(err, net.ErrClosed) {
 		t.Fatal(err)
@@ -146,18 +139,77 @@ func reserveTCPPort(t *testing.T) int {
 	return port
 }
 
-func waitForTCPListener(t *testing.T, address string) {
+type iperfServer struct {
+	cancel   context.CancelFunc
+	command  *exec.Cmd
+	output   bytes.Buffer
+	stopOnce sync.Once
+	stopErr  error
+}
+
+func startIperfServer(t *testing.T, executable string, port int) *iperfServer {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", address, 25*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	server := &iperfServer{cancel: cancel}
+	command := exec.CommandContext(ctx, executable, "-s", "-p", strconv.Itoa(port))
+	command.WaitDelay = 2 * time.Second
+	command.Stdout = &server.output
+	command.Stderr = &server.output
+	if err := command.Start(); err != nil {
+		cancel()
+		t.Fatal(err)
 	}
-	t.Fatalf("iperf3 server did not listen on %s", address)
+	server.command = command
+	return server
+}
+
+func (s *iperfServer) stop() (string, error) {
+	s.stopOnce.Do(func() {
+		s.cancel()
+		s.stopErr = s.command.Wait()
+		if exitErr := (*exec.ExitError)(nil); errors.As(s.stopErr, &exitErr) && !exitErr.ProcessState.Exited() {
+			s.stopErr = nil
+		}
+	})
+	return s.output.String(), s.stopErr
+}
+
+func runIperfClientWithStartupRetries(
+	t *testing.T,
+	executable string,
+	args []string,
+	relay, agent *tunnel.Conn,
+	opened, relayActive, agentActive *atomic.Int64,
+) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var failures []string
+	for attempt := 1; attempt <= 8; attempt++ {
+		openedBefore := opened.Load()
+		output, err := exec.CommandContext(ctx, executable, args...).CombinedOutput()
+		waitForNoActiveProxies(t, relay, agent, relayActive, agentActive)
+		openedByAttempt := opened.Load() - openedBefore
+		if err == nil {
+			if openedByAttempt < 2 {
+				return fmt.Errorf("iperf3 opened %d streams, want separate control and data streams", openedByAttempt)
+			}
+			return nil
+		}
+		failures = append(failures, fmt.Sprintf("attempt %d (%d streams): %v\n%s", attempt, openedByAttempt, err, output))
+		if ctx.Err() != nil || openedByAttempt >= 2 {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt*25) * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("iperf3 did not complete after bounded startup retries:\n%s", strings.Join(failures, "\n"))
 }
 
 func waitForNoActiveProxies(t *testing.T, relay, agent *tunnel.Conn, relayActive, agentActive *atomic.Int64) {
