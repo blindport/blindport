@@ -22,6 +22,8 @@ type mapping struct {
 	SubscriptionID        string `json:"subscription_id"`
 	Upstream              string `json:"upstream"`
 	HTTPChallengeUpstream string `json:"http_challenge_upstream,omitempty"`
+	TLSMode               string `json:"tls_mode,omitempty"`
+	ACMETermsAccepted     bool   `json:"acme_terms_accepted,omitempty"`
 	Source                string `json:"-"`
 	OrderKey              string `json:"-"`
 	Product               string `json:"-"`
@@ -40,8 +42,14 @@ type workerPlan struct {
 	RelayAddr             string
 	Upstream              string
 	HTTPChallengeUpstream string
+	TLSMode               string
 	Claim                 *protocol.Claim
 }
+
+const (
+	tlsModePassthrough = "passthrough"
+	tlsModeAutomatic   = "automatic"
+)
 
 var upstreamHostnameLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
@@ -92,7 +100,7 @@ func loadStaticConfigWithPermissions(path string, ownerOnly bool) ([]mapping, er
 	if err := rejectTrailingJSON(decoder); err != nil {
 		return nil, fmt.Errorf("decode config %q: %w", path, err)
 	}
-	if cfg.Version != 1 {
+	if cfg.Version != 1 && cfg.Version != 2 {
 		return nil, fmt.Errorf("config %q has unsupported version %d", path, cfg.Version)
 	}
 	if len(cfg.Mappings) == 0 {
@@ -100,6 +108,14 @@ func loadStaticConfigWithPermissions(path string, ownerOnly bool) ([]mapping, er
 	}
 	for i := range cfg.Mappings {
 		cfg.Mappings[i].Source = fmt.Sprintf("config %q mapping %d", path, i)
+		if cfg.Version == 1 {
+			if cfg.Mappings[i].TLSMode != "" || cfg.Mappings[i].ACMETermsAccepted {
+				return nil, fmt.Errorf("%s: TLS settings require config version 2", cfg.Mappings[i].Source)
+			}
+			cfg.Mappings[i].TLSMode = tlsModePassthrough
+		} else if cfg.Mappings[i].TLSMode == "" {
+			return nil, fmt.Errorf("%s: config version 2 requires an explicit tls_mode", cfg.Mappings[i].Source)
+		}
 	}
 	if err := validateMappings(cfg.Mappings); err != nil {
 		return nil, err
@@ -137,10 +153,32 @@ func validateMappings(mappings []mapping) error {
 				return fmt.Errorf("%s: invalid http_challenge_upstream: %w", source, err)
 			}
 		}
+		if err := validateTLSMapping(item, source); err != nil {
+			return err
+		}
 		if previous, ok := seen[item.SubscriptionID]; ok {
 			return fmt.Errorf("duplicate subscription_id %s in %s and %s", item.SubscriptionID, previous, source)
 		}
 		seen[item.SubscriptionID] = source
+	}
+	return nil
+}
+
+func validateTLSMapping(item mapping, source string) error {
+	switch item.TLSMode {
+	case "", tlsModePassthrough:
+		if item.ACMETermsAccepted {
+			return fmt.Errorf("%s: acme_terms_accepted is only valid with automatic TLS", source)
+		}
+	case tlsModeAutomatic:
+		if !item.ACMETermsAccepted {
+			return fmt.Errorf("%s: automatic TLS requires acme_terms_accepted=true", source)
+		}
+		if item.HTTPChallengeUpstream != "" {
+			return fmt.Errorf("%s: automatic TLS and http_challenge_upstream are mutually exclusive", source)
+		}
+	default:
+		return fmt.Errorf("%s: tls_mode must be passthrough or automatic", source)
 	}
 	return nil
 }
@@ -243,6 +281,9 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 		if item.HTTPChallengeUpstream != "" && claim.Kind != protocol.ClaimRelay {
 			return nil, fmt.Errorf("subscription %s: http_challenge_upstream is only valid for Blindport Relay", item.SubscriptionID)
 		}
+		if item.TLSMode == tlsModeAutomatic && claim.Kind != protocol.ClaimRelay {
+			return nil, fmt.Errorf("subscription %s: automatic TLS is only valid for Blindport Relay", item.SubscriptionID)
+		}
 		endpoints, err := provisioningEndpoints(row, relayOverride)
 		if err != nil {
 			return nil, fmt.Errorf("subscription %s: %w", item.SubscriptionID, err)
@@ -254,6 +295,7 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 				RelayAddr:             endpoint,
 				Upstream:              item.Upstream,
 				HTTPChallengeUpstream: item.HTTPChallengeUpstream,
+				TLSMode:               normalizedTLSMode(item.TLSMode),
 				Claim:                 &claimCopy,
 			})
 		}
@@ -265,6 +307,13 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 		return plans[i].RelayAddr < plans[j].RelayAddr
 	})
 	return plans, nil
+}
+
+func normalizedTLSMode(mode string) string {
+	if mode == "" {
+		return tlsModePassthrough
+	}
+	return mode
 }
 
 func provisioningEndpoints(row provisioning, relayOverride string) ([]string, error) {

@@ -122,26 +122,64 @@ Pass `--config /etc/blindport/config.json` or set
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "mappings": [
     {
       "subscription_id": "12312312-3123-4123-8123-123123123123",
-      "upstream": "traefik:443",
-      "http_challenge_upstream": "traefik:80"
+      "upstream": "web:8080",
+      "tls_mode": "automatic",
+      "acme_terms_accepted": true
     },
-    {"subscription_id": "45645645-6456-4456-8456-456456456456", "upstream": "photos:8080"}
+    {"subscription_id": "45645645-6456-4456-8456-456456456456", "upstream": "traefik:443", "tls_mode": "passthrough", "http_challenge_upstream": "traefik:80"}
   ]
 }
 ```
 
 The top-level and mapping objects reject unknown fields. The version must be
-`1`, mappings must be nonempty, subscription IDs must be canonical UUIDv4 strings and unique,
+`1` or `2`, mappings must be nonempty, subscription IDs must be canonical UUIDv4 strings and unique,
 and each upstream must be a `host:port` with a port in `1-65535`. The paid
 subscription transport determines whether the agent dials it with TCP or UDP.
 IPv6 addresses use `[address]:port`. The config must be a regular file, not a
 symlink, must be owned by the agent's effective UID, and must not be writable
 by group or others. On Linux these properties are checked after opening with
 `O_NOFOLLOW`. Config files larger than 1 MiB are rejected.
+
+Version 1 remains fully compatible and always selects TLS passthrough. Version 2
+requires each mapping to set `tls_mode` explicitly to `passthrough` or
+`automatic`. Automatic TLS is valid only for Relay mappings and requires the
+operator's explicit `acme_terms_accepted: true`. It obtains one exact-hostname
+certificate through the relay's destination-port-80 HTTP-01 path, terminates TLS
+inside `blindportd`, and forwards decrypted plaintext to `upstream`. It does not
+require Traefik, root, or a local public port. Automatic mode rejects
+`http_challenge_upstream`; use passthrough when an origin proxy or server should
+continue owning TLS and ACME.
+
+The ACME account and certificates are atomically persisted under the private
+`BLINDPORT_STATE_DIR/acme` tree. Directories must use mode `0700`, files use mode
+`0600`, and unsafe ownership, permissions, symlinks, malformed keys, or
+certificates containing names other than the exact Relay hostname are rejected.
+Issuance waits until at least one relay-edge tunnel has completed HELLO, then
+allows a short settling interval. Failures use minute-scale bounded exponential
+backoff, avoiding both a startup race, repeated ACME orders while no edge is
+available, and rapid consumption of CA authorization-failure limits. Renewal uses
+the ACME Renewal Information window when the CA advertises ARI, selecting a
+deterministically spread point in the first half with an expiry safety margin.
+CAs without ARI use a deterministic, conservatively jittered schedule around
+two-thirds of certificate lifetime (or 30 days before expiry for longer-lived
+certificates). Successful renewal hot-reloads certificates for new handshakes;
+existing TLS sessions continue normally. The default directory is
+Let's Encrypt production; use `--acme-directory` or
+`BLINDPORT_ACME_DIRECTORY_URL` for a private or staging ACME server and
+`--acme-email` or `BLINDPORT_ACME_EMAIL` for an optional account contact. Email
+changes update the existing ACME account. Changing directories requires a
+separate state directory because accounts are never reused across CAs. Back up
+the state directory because it contains private ACME keys.
+
+TLS handshakes and HTTP-01 stream handling are each bounded to 10 seconds. The
+agent closes the individual tunnel stream when a bound expires because the
+multiplexed stream API does not provide socket deadlines. Challenge requests
+retain the relay's strict HTTP/1.1 GET, exact Host, bodyless request, token, and
+16 KiB header constraints.
 
 `http_challenge_upstream` is optional and valid only for Blindport Relay. It receives
 relay-validated ACME HTTP-01 requests on destination port 80. Normal Blindport Relay
@@ -203,8 +241,9 @@ services:
       tech.blindport.mapping.web.product: "relay"
       tech.blindport.mapping.web.domain: "web.relay.blindport.com"
       tech.blindport.mapping.web.billing_term: "monthly"
-      tech.blindport.mapping.web.upstream: "web:443"
-      tech.blindport.mapping.web.http_challenge_upstream: "web:80"
+      tech.blindport.mapping.web.upstream: "web:8080"
+      tech.blindport.mapping.web.tls_mode: "automatic"
+      tech.blindport.mapping.web.acme_terms_accepted: "true"
 
   blindportd:
     image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
@@ -239,7 +278,10 @@ orders use `.product` with `relay`, `port`, or `ip`, an optional
 requires `.domain`. Port accepts `.transport` as `tcp` (the default) or `udp`.
 Docker IP orders always use framed delivery. Existing mappings keep using
 `.subscription` and `.upstream`; `.subscription` and `.product` are mutually
-exclusive.
+exclusive. Relay mappings may add `.tls_mode` as `automatic` or `passthrough`.
+Automatic mode also requires `.acme_terms_accepted: "true"`; omitted mode keeps
+legacy Docker mappings in passthrough mode. All provisioned relay-edge workers
+for one hostname share one in-process certificate and HTTP-01 challenge manager.
 
 The backend creates a pending subscription exactly once for each mapping name.
 Changing that name's product, domain, transport, or billing term is rejected; use
@@ -309,7 +351,8 @@ requires that identity.
   can take up to one configured poll interval to apply.
 - Static configuration is still read once at startup. Docker and active framed
   provisioning are reconciled in-process; routed WireGuard changes still require
-  a restart. Client certificates renew in-process and are used on reconnect.
+  a restart. Client and automatic Relay certificates renew in-process without a
+  daemon restart.
 - Backend bootstrap requests and the relay protocol HELLO exchange are limited
   to 10 seconds. Bootstrap response bodies are size-limited and strictly parsed.
 - Declared Docker orders can register and make one initial NWC payment. Label

@@ -22,6 +22,7 @@ import (
 	"github.com/blindport/blindport/internal/protocol"
 	"github.com/blindport/blindport/internal/tcpproxy"
 	"github.com/blindport/blindport/internal/tunnel"
+	"github.com/go-acme/lego/v4/lego"
 )
 
 const (
@@ -76,6 +77,8 @@ func main() {
 	serverName := flag.String("server-name", os.Getenv("BLINDPORT_SERVER_NAME"), "TLS ServerName for every relay (defaults independently to each relay host)")
 	socks5Address := flag.String("socks5", os.Getenv("BLINDPORT_SOCKS5"), "SOCKS5 proxy address for backend and relay connections (host:port)")
 	stateDir := flag.String("state-dir", defaultCredentialStateDir(), "private directory for persistent client identity (or BLINDPORT_STATE_DIR)")
+	acmeEmail := flag.String("acme-email", os.Getenv("BLINDPORT_ACME_EMAIL"), "optional ACME account contact email")
+	acmeDirectory := flag.String("acme-directory", envDefault("BLINDPORT_ACME_DIRECTORY_URL", lego.LEDirectoryProduction), "ACME directory URL for automatic Relay TLS")
 	flag.Parse()
 	if *showVersion {
 		fmt.Fprintf(os.Stdout, "blindportd %s\n", version)
@@ -192,6 +195,12 @@ func main() {
 			logger.Warn("mTLS DISABLED (BLINDPORT_INSECURE_SKIP_TLS=1)")
 		}
 
+		acmeManagers, err := newLazyACMERegistry(ctx, *stateDir, *acmeDirectory, *acmeEmail, outbound.httpClient, logger)
+		if err != nil {
+			logger.Error("initialize automatic TLS state", "err", err)
+			os.Exit(1)
+		}
+		defer acmeManagers.Close()
 		supervisor := newWorkerSupervisor(ctx, func(workerCtx context.Context, plan workerPlan) {
 			var tlsConfig *tls.Config
 			if material != nil {
@@ -202,7 +211,11 @@ func main() {
 					return
 				}
 			}
-			runWorker(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig)
+			var automatic *acmeDomainManager
+			if plan.TLSMode == tlsModeAutomatic && plan.Claim != nil {
+				automatic = acmeManagers.manager(plan.Claim.Domain)
+			}
+			runWorker(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic)
 		})
 		agent := &dockerAgent{
 			docker: dockerClient, static: mappings,
@@ -210,7 +223,7 @@ func main() {
 			fetchConfig: func(fetchCtx context.Context) ([]provisioning, error) {
 				return fetchConfigWithClient(fetchCtx, outbound.httpClient, *backendURL, token)
 			},
-			supervisor: supervisor, relayOverride: *relayOverride, pollInterval: *dockerPollInterval,
+			supervisor: automaticPlanReconciler{registry: acmeManagers, workers: supervisor}, relayOverride: *relayOverride, pollInterval: *dockerPollInterval,
 			logger: logger, now: time.Now, orderCache: make(map[string]*orderCacheEntry),
 		}
 		logger.Info("continuous Docker discovery started", "poll_interval", *dockerPollInterval, "static_mappings", len(mappings))
@@ -281,9 +294,35 @@ func main() {
 		tlsConfigs[plan.RelayAddr] = tlsConfig
 	}
 	logger.Info("tunnel workers started", "workers", len(plans), "mappings", countMappings(plans))
+	var acmeManagers *acmeRegistry
+	if plansUseAutomaticTLS(plans) {
+		acmeManagers, err = newACMERegistry(ctx, *stateDir, *acmeDirectory, *acmeEmail, outbound.httpClient, logger)
+		if err != nil {
+			logger.Error("initialize automatic TLS state", "err", err)
+			os.Exit(1)
+		}
+		defer acmeManagers.Close()
+		if err := acmeManagers.Reconcile(plans); err != nil {
+			logger.Error("initialize automatic TLS managers", "err", err)
+			os.Exit(1)
+		}
+	}
 	runWorkerPlans(plans, func(plan workerPlan) {
-		runWorker(ctx, logger, plan, token, outbound.relayDialer, tlsConfigs[plan.RelayAddr])
+		var automatic *acmeDomainManager
+		if acmeManagers != nil && plan.Claim != nil {
+			automatic = acmeManagers.manager(plan.Claim.Domain)
+		}
+		runWorker(ctx, logger, plan, token, outbound.relayDialer, tlsConfigs[plan.RelayAddr], automatic)
 	})
+}
+
+func plansUseAutomaticTLS(plans []workerPlan) bool {
+	for _, plan := range plans {
+		if plan.TLSMode == tlsModeAutomatic {
+			return true
+		}
+	}
+	return false
 }
 
 func loadToken(flagValue, path string) (string, error) {
@@ -414,10 +453,14 @@ func chooseProvisioning(cfg []provisioning, kind, ip string, port uint16, transp
 }
 
 func runOnce(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream string, dialer contextDialer, tlsConfig *tls.Config) (time.Duration, error) {
-	return runOnceWithHelloTimeout(ctx, log, relayAddr, token, claim, upstream, httpChallengeUpstream, dialer, tlsConfig, helloTimeout)
+	return runOnceManaged(ctx, log, relayAddr, token, claim, upstream, httpChallengeUpstream, dialer, tlsConfig, helloTimeout, nil)
 }
 
 func runOnceWithHelloTimeout(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream string, dialer contextDialer, tlsConfig *tls.Config, timeout time.Duration) (time.Duration, error) {
+	return runOnceManaged(ctx, log, relayAddr, token, claim, upstream, httpChallengeUpstream, dialer, tlsConfig, timeout, nil)
+}
+
+func runOnceManaged(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream string, dialer contextDialer, tlsConfig *tls.Config, timeout time.Duration, automatic *acmeDomainManager) (time.Duration, error) {
 	conn, err := dialRelay(ctx, dialer, relayAddr, tlsConfig)
 	if err != nil {
 		return 0, fmt.Errorf("dial relay: %w", err)
@@ -433,10 +476,13 @@ func runOnceWithHelloTimeout(ctx context.Context, log *slog.Logger, relayAddr, t
 
 	expectedTransport := claimTransportForTunnel(claim)
 	t := tunnel.New(conn, func(s *tunnel.Stream) {
-		handleIncoming(log, s, claim, upstream, httpChallengeUpstream, expectedTransport)
+		handleIncomingManaged(log, s, claim, upstream, httpChallengeUpstream, expectedTransport, automatic)
 	})
 	if halfClose {
 		t.EnableTCPHalfClose()
+	}
+	if automatic != nil {
+		automatic.edgeReady()
 	}
 	establishedAt := time.Now()
 	err = t.Run()
@@ -496,6 +542,10 @@ func claimTransportForTunnel(claim *protocol.Claim) protocol.Transport {
 }
 
 func handleIncoming(log *slog.Logger, s *tunnel.Stream, claim *protocol.Claim, upstream, httpChallengeUpstream string, expected protocol.Transport) {
+	handleIncomingManaged(log, s, claim, upstream, httpChallengeUpstream, expected, nil)
+}
+
+func handleIncomingManaged(log *slog.Logger, s *tunnel.Stream, claim *protocol.Claim, upstream, httpChallengeUpstream string, expected protocol.Transport, automatic *acmeDomainManager) {
 	if s.Protocol != expected {
 		log.Warn("relay opened stream with unexpected transport", "expected", expected, "received", s.Protocol)
 		_ = s.Close()
@@ -503,6 +553,14 @@ func handleIncoming(log *slog.Logger, s *tunnel.Stream, claim *protocol.Claim, u
 	}
 	if expected == protocol.TransportUDP {
 		handleUDPAssociation(log, s, upstream)
+		return
+	}
+	if automatic != nil {
+		if claim == nil || claim.Kind != protocol.ClaimRelay || automatic.domain != claim.Domain {
+			_ = s.Close()
+			return
+		}
+		automatic.handleStream(log, s, upstream)
 		return
 	}
 	selected, err := selectTCPUpstream(s.Destination, claim, upstream, httpChallengeUpstream)

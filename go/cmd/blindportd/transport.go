@@ -32,8 +32,14 @@ type contextErrorDialer struct {
 
 func (d contextErrorDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	conn, err := d.dialer.DialContext(ctx, network, address)
-	if err != nil && ctx.Err() != nil {
-		return nil, ctx.Err()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		deadline, hasDeadline := ctx.Deadline()
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() && hasDeadline && !time.Now().Before(deadline) {
+			return nil, context.DeadlineExceeded
+		}
 	}
 	return conn, err
 }

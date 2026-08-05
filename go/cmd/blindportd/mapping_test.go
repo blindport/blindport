@@ -65,7 +65,10 @@ func TestLoadStaticConfigRejectsInvalidDocuments(t *testing.T) {
 	tests := map[string]string{
 		"unknown top-level field": `{"version":1,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}],"extra":true}`,
 		"unknown mapping field":   `{"version":1,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","extra":true}]}`,
-		"unsupported version":     `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}]}`,
+		"unsupported version":     `{"version":3,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}]}`,
+		"v2 missing TLS mode":     `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}]}`,
+		"automatic without terms": `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"automatic"}]}`,
+		"ambiguous automatic":     `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"automatic","acme_terms_accepted":true,"http_challenge_upstream":"solver:80"}]}`,
 		"empty mappings":          `{"version":1,"mappings":[]}`,
 		"malformed ID":            `{"version":1,"mappings":[{"subscription_id":"1","upstream":"app:80"}]}`,
 		"noncanonical ID":         `{"version":1,"mappings":[{"subscription_id":"11111111-1111-4111-8111-11111111111A","upstream":"app:80"}]}`,
@@ -82,6 +85,20 @@ func TestLoadStaticConfigRejectsInvalidDocuments(t *testing.T) {
 				t.Fatal("loadStaticConfig() succeeded, want error")
 			}
 		})
+	}
+}
+
+func TestLoadStaticConfigVersion2TLSModes(t *testing.T) {
+	path := writeConfig(t, `{"version":2,"mappings":[
+{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"automatic","acme_terms_accepted":true},
+{"subscription_id":"22222222-2222-4222-8222-222222222222","upstream":"tls:443","tls_mode":"passthrough"}
+]}`, 0o600)
+	mappings, err := loadStaticConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mappings) != 2 || mappings[0].TLSMode != tlsModeAutomatic || !mappings[0].ACMETermsAccepted || mappings[1].TLSMode != tlsModePassthrough {
+		t.Fatalf("version 2 mappings = %+v", mappings)
 	}
 }
 

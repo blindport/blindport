@@ -2,12 +2,30 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
 )
+
+func TestAutomaticTLSWorkerFailsClosedWithoutManager(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		runWorker(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), workerPlan{
+			SubscriptionID: testSubscriptionID1, RelayAddr: "127.0.0.1:1", TLSMode: tlsModeAutomatic,
+		}, "token", &net.Dialer{}, nil, nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("automatic TLS worker attempted passthrough without a manager")
+	}
+}
 
 type workerEvent struct {
 	kind string

@@ -90,6 +90,21 @@ expire after the configured idle timeout. Association and tunnel receive queues
 each retain at most 512 KiB of payload. A saturated UDP queue drops that source's
 packet without terminating the association or control tunnel.
 
+For a Relay stream, destination metadata is authorization-sensitive. It is
+exactly `domain:<claimed-hostname>:443` for public TLS and
+`domain:<claimed-hostname>:80` for a relay-validated HTTP-01 request. In legacy
+and explicit passthrough mode, destination 443 remains opaque end-to-end TLS and
+destination 80 is accepted only when a separate challenge upstream is
+configured. In automatic mode, one per-hostname agent manager shared by every
+edge worker answers destination 80 directly, terminates destination 443 TLS with
+an ACME certificate authorized only for the exact claimed hostname, and forwards
+plaintext to the configured local upstream. No new frame type, capability, or
+protocol version is required; older agents retain passthrough behavior.
+The automatic manager starts issuance only after one edge tunnel completes
+HELLO. Agent-side TLS handshakes and HTTP-01 handling close their individual
+stream after a bounded timeout; this does not close sibling streams or the
+shared control tunnel.
+
 Before a Blindport Relay claim can become active, the control plane classifies its
 canonical hostname under one of three DNS models. Names strictly beneath a
 configured provider-managed wildcard suffix bypass customer proof. Non-apex,
@@ -159,8 +174,9 @@ successful authorization. The maximum must be at least one interval, and the
 backend resource reuse quarantine must be greater than the maximum plus one
 interval.
 The relay can observe endpoints, timing, byte counts, and Blindport Relay SNI. It does
-not terminate user TLS, but framed Blindport IP and Blindport Port can carry plaintext
-protocols if the user chooses them. This protocol provides no traffic padding,
+not terminate user TLS. An automatic-TLS agent terminates Relay TLS locally,
+while passthrough remains end to end to the origin. Framed Blindport IP and
+Blindport Port can carry plaintext protocols if the user chooses them. This protocol provides no traffic padding,
 anonymity, end-to-end payload encryption of its own, routed packets, stream
 priority, resume, or session migration between relays. UDP is carried over the
 reliable, ordered TCP control tunnel, so it can experience head-of-line blocking

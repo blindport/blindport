@@ -87,6 +87,8 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 		billingTerm   string
 		upstream      string
 		httpChallenge string
+		tlsMode       string
+		acmeTerms     string
 		hasSub        bool
 		hasProduct    bool
 		hasDomain     bool
@@ -124,6 +126,10 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 			pair.upstream, pair.hasUpstream = value, true
 		case "http_challenge_upstream":
 			pair.httpChallenge = value
+		case "tls_mode":
+			pair.tlsMode = value
+		case "acme_terms_accepted":
+			pair.acmeTerms = value
 		default:
 			return nil, fmt.Errorf("container %s has unknown Blindport mapping field %q", shortContainerID(containerID), field)
 		}
@@ -148,7 +154,16 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 			OrderKey:              name,
 			Upstream:              pair.upstream,
 			HTTPChallengeUpstream: pair.httpChallenge,
+			TLSMode:               pair.tlsMode,
 			Source:                fmt.Sprintf("container %s mapping %q", shortContainerID(containerID), name),
+		}
+		switch pair.acmeTerms {
+		case "":
+		case "true":
+			item.ACMETermsAccepted = true
+		case "false":
+		default:
+			return nil, fmt.Errorf("%s: acme_terms_accepted must be true or false", item.Source)
 		}
 		if pair.hasSub {
 			if pair.hasDomain || pair.hasTransport || pair.hasBilling {
@@ -222,6 +237,9 @@ func validateOrderDeclaration(item mapping) error {
 	if err := validateHostPort(item.Upstream); err != nil {
 		return fmt.Errorf("%s: invalid upstream: %w", item.Source, err)
 	}
+	if err := validateTLSMapping(item, item.Source); err != nil {
+		return err
+	}
 	switch item.Product {
 	case "relay":
 		if item.Domain == "" || item.Domain != strings.TrimSpace(item.Domain) {
@@ -231,6 +249,9 @@ func validateOrderDeclaration(item mapping) error {
 			return fmt.Errorf("%s: invalid relay domain: %w", item.Source, err)
 		}
 	case "port", "ip":
+		if item.TLSMode == tlsModeAutomatic {
+			return fmt.Errorf("%s: automatic TLS is only valid for relay", item.Source)
+		}
 		if item.Domain != "" {
 			return fmt.Errorf("%s: domain is only valid for relay", item.Source)
 		}
@@ -260,7 +281,8 @@ func validateOrderDeclaration(item mapping) error {
 func sameOrderDeclaration(a, b mapping) bool {
 	return a.OrderKey == b.OrderKey && a.Product == b.Product && a.Domain == b.Domain &&
 		a.Transport == b.Transport && a.BillingTerm == b.BillingTerm && a.Upstream == b.Upstream &&
-		a.HTTPChallengeUpstream == b.HTTPChallengeUpstream
+		a.HTTPChallengeUpstream == b.HTTPChallengeUpstream && a.TLSMode == b.TLSMode &&
+		a.ACMETermsAccepted == b.ACMETermsAccepted
 }
 
 func validateDockerSnapshot(static, docker []mapping) error {

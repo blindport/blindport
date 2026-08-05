@@ -127,6 +127,22 @@ jobs:
         run: go build ./...
       - name: Test with race detector
         run: go test -race ./...
+      - name: Test ACME interoperability with Pebble
+        run: |
+          docker run -d --rm --name blindport-pebble \
+            -e PEBBLE_VA_ALWAYS_VALID=1 \
+            -e PEBBLE_VA_NOSLEEP=1 \
+            -e PEBBLE_WFE_NONCEREJECT=0 \
+            -p 14000:14000 \
+            ghcr.io/letsencrypt/pebble@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199
+          trap 'docker stop blindport-pebble' EXIT
+          for attempt in $(seq 1 30); do
+            curl -kfsS https://127.0.0.1:14000/dir >/dev/null && break
+            sleep 1
+          done
+          curl -kfsS https://127.0.0.1:14000/dir >/dev/null
+          BLINDPORT_PEBBLE_DIRECTORY_URL=https://127.0.0.1:14000/dir \
+            go test -race ./cmd/blindportd -run TestPebbleAutomaticTLSIntegration -count=1
 
   deployment:
     runs-on: ubuntu-latest

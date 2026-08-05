@@ -120,7 +120,7 @@ func (s *workerSupervisor) Shutdown() {
 
 func sameWorkerPlan(a, b workerPlan) bool {
 	if a.SubscriptionID != b.SubscriptionID || a.RelayAddr != b.RelayAddr || a.Upstream != b.Upstream ||
-		a.HTTPChallengeUpstream != b.HTTPChallengeUpstream || (a.Claim == nil) != (b.Claim == nil) {
+		a.HTTPChallengeUpstream != b.HTTPChallengeUpstream || a.TLSMode != b.TLSMode || (a.Claim == nil) != (b.Claim == nil) {
 		return false
 	}
 	return a.Claim == nil || *a.Claim == *b.Claim
@@ -160,10 +160,14 @@ func (m *tlsMaterial) configForEndpoint(endpoint, serverNameOverride string) (*t
 	return config, nil
 }
 
-func runWorker(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config) {
+func runWorker(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config, automatic *acmeDomainManager) {
+	if plan.TLSMode == tlsModeAutomatic && automatic == nil {
+		log.Error("automatic TLS manager unavailable", "subscription_id", plan.SubscriptionID, "relay", plan.RelayAddr)
+		return
+	}
 	backoff := time.Second
 	for ctx.Err() == nil {
-		sessionDuration, err := runOnce(ctx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig)
+		sessionDuration, err := runOnceManaged(ctx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic)
 		if ctx.Err() != nil {
 			return
 		}

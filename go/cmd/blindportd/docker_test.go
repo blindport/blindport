@@ -132,6 +132,22 @@ func TestParseDockerOrderLabelsDefaultsAndFields(t *testing.T) {
 	}
 }
 
+func TestParseDockerAutomaticTLSLabels(t *testing.T) {
+	mappings, err := parseDockerLabels("container-id", map[string]string{
+		dockerMappingPrefix + "web.product":             "relay",
+		dockerMappingPrefix + "web.domain":              "web.example",
+		dockerMappingPrefix + "web.upstream":            "web:8080",
+		dockerMappingPrefix + "web.tls_mode":            "automatic",
+		dockerMappingPrefix + "web.acme_terms_accepted": "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mappings) != 1 || mappings[0].TLSMode != tlsModeAutomatic || !mappings[0].ACMETermsAccepted {
+		t.Fatalf("automatic TLS labels = %+v", mappings)
+	}
+}
+
 func TestParseDockerLabelsRejectsIncompleteUnsafeAndUnknownLabels(t *testing.T) {
 	tests := map[string]map[string]string{
 		"incomplete": {
@@ -201,6 +217,12 @@ func TestParseDockerLabelsRejectsIncompleteUnsafeAndUnknownLabels(t *testing.T) 
 			"tech.blindport.mapping.web.product":                 "ip",
 			"tech.blindport.mapping.web.upstream":                "web:443",
 			"tech.blindport.mapping.web.http_challenge_upstream": "solver:80",
+		},
+		"automatic TLS on port": {
+			"tech.blindport.mapping.web.product":             "port",
+			"tech.blindport.mapping.web.upstream":            "web:8080",
+			"tech.blindport.mapping.web.tls_mode":            "automatic",
+			"tech.blindport.mapping.web.acme_terms_accepted": "true",
 		},
 	}
 	for name, labels := range tests {
