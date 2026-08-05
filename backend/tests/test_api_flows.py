@@ -47,6 +47,20 @@ def test_v1_account_contract_retains_legacy_integer_identity(app_client) -> None
     assert me.json()["user_id"] == signup.json()["user_id"]
 
 
+def test_client_version_is_authenticated_and_operator_configured(app_client, monkeypatch) -> None:
+    from blindport.config import settings
+
+    client, _ = app_client
+    assert client.get("/api/v1/client/version").status_code == 401
+    token = client.post("/api/v2/signup").json()["token"]
+    monkeypatch.setattr(settings, "BLINDPORTD_VERSION", "abc1234")
+
+    response = client.get("/api/v1/client/version", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json() == {"version": "abc1234"}
+
+
 def test_subscription_public_ids_hide_internal_keys_and_enforce_ownership(app_client) -> None:
     client, _ = app_client
     owner = client.post("/api/v1/signup").json()["token"]

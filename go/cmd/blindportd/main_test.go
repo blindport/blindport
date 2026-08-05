@@ -319,6 +319,48 @@ func TestExchangeHelloNegotiatesTCPHalfClose(t *testing.T) {
 	}
 }
 
+func TestNotifyAgentUpdateLogsInstallerCommand(t *testing.T) {
+	oldVersion := version
+	version = "abc1234"
+	t.Cleanup(func() { version = oldVersion })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/client/version" {
+			t.Errorf("version path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		_, _ = io.WriteString(w, `{"version":"def5678"}`)
+	}))
+	defer server.Close()
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+
+	notifyAgentUpdate(context.Background(), logger, server.Client(), server.URL, "secret")
+
+	logged := output.String()
+	for _, expected := range []string{
+		"blindportd update available",
+		"current_version=abc1234",
+		"latest_version=def5678",
+		"curl -fsSL " + server.URL + "/downloads/install.sh | sh",
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Errorf("update log missing %q: %s", expected, logged)
+		}
+	}
+}
+
+func TestFetchLatestAgentVersionAllowsOlderBackendWithoutEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+
+	latest, err := fetchLatestAgentVersion(context.Background(), server.Client(), server.URL, "secret")
+	if err != nil || latest != "" {
+		t.Fatalf("latest version = %q, %v", latest, err)
+	}
+}
+
 func TestHandleTCPStreamPropagatesRequestFINAndLargeResponse(t *testing.T) {
 	upstream := listenLocal(t)
 	upstreamDone := make(chan error, 1)

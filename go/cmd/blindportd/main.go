@@ -45,6 +45,10 @@ type provisioning struct {
 	SubscriptionID string   `json:"subscription_id"`
 }
 
+type agentVersionResponse struct {
+	Version string `json:"version"`
+}
+
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	installUserServiceFlag := flag.Bool("install-user-service", false, "install and start the native user systemd service")
@@ -117,6 +121,7 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+	notifyAgentUpdate(ctx, logger, outbound.httpClient, *backendURL, token)
 
 	if *wireguardMode {
 		if *insecureSkipTLS {
@@ -607,6 +612,53 @@ func fetchConfigWithClient(ctx context.Context, client *http.Client, backend, to
 		seen[row.SubscriptionID] = struct{}{}
 	}
 	return cfg, nil
+}
+
+func notifyAgentUpdate(ctx context.Context, logger *slog.Logger, client *http.Client, backend, token string) {
+	if version == "" || version == "dev" {
+		return
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	latest, err := fetchLatestAgentVersion(checkCtx, client, backend, token)
+	if err != nil {
+		logger.Debug("check for agent update", "err", err)
+		return
+	}
+	if latest == "" || latest == "dev" || latest == version {
+		return
+	}
+	downloadURL := strings.TrimRight(backend, "/") + "/downloads/install.sh"
+	logger.Warn(
+		"blindportd update available",
+		"current_version", version,
+		"latest_version", latest,
+		"install_command", "curl -fsSL "+downloadURL+" | sh",
+	)
+}
+
+func fetchLatestAgentVersion(ctx context.Context, client *http.Client, backend, token string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(backend, "/")+"/api/v1/client/version", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("version status %d", resp.StatusCode)
+	}
+	var result agentVersionResponse
+	if err := decodeBoundedJSON(resp.Body, 1024, &result); err != nil {
+		return "", fmt.Errorf("decode version: %w", err)
+	}
+	return result.Version, nil
 }
 
 func envDefault(key, def string) string {

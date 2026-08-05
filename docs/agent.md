@@ -75,6 +75,12 @@ Foreground agents use the new binary on their next manual restart. Keep the
 existing config, token, and state directories so the enrolled identity is not
 replaced.
 
+At startup, release builds ask the authenticated backend for its configured
+agent revision. When it differs, the agent logs a warning with the exact
+installer command. An unavailable or older backend silently skips this advisory
+check and never blocks tunnel startup. Blindport does not replace or restart the
+binary automatically.
+
 ## Client identity
 
 The agent generates one Ed25519 key locally and enrolls only its signed CSR at

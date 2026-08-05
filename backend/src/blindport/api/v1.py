@@ -38,6 +38,7 @@ from ..core.schemas import (
     CashuQuoteResponse,
     CatalogResponse,
     ClientCertResponse,
+    ClientVersionResponse,
     CreatePaymentRequest,
     CreateSubscriptionRequest,
     DomainVerificationResponse,
@@ -896,6 +897,12 @@ def cashu_mint_and_redeem(
 
 
 # ---- client provisioning --------------------------------------------------
+
+
+@router.get("/client/version", response_model=ClientVersionResponse)
+def client_version(_: User = Depends(current_user)) -> ClientVersionResponse:
+    """Return the operator-configured agent release for update notifications."""
+    return ClientVersionResponse(version=settings.BLINDPORTD_VERSION)
 
 
 @router.get("/client/config", response_model=list[RelayProvisioningResponse])

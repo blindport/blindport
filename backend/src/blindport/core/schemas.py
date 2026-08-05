@@ -318,6 +318,10 @@ class RelayProvisioningResponse(BaseModel):
     subscription_id: UUID
 
 
+class ClientVersionResponse(BaseModel):
+    version: str
+
+
 class ClientCertResponse(BaseModel):
     """Issued mTLS material for the client<->relay tunnel.
 
