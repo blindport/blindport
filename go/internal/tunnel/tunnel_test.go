@@ -283,6 +283,41 @@ func TestCloseWriteUsesLegacyCloseWithoutNegotiation(t *testing.T) {
 	}
 }
 
+func TestStreamCloseReleasesLocalStateBeforeWaitingForWriter(t *testing.T) {
+	raw := &bufferConn{}
+	connection := New(raw, nil)
+	stream := newStream(connection, 1)
+	if err := connection.addStream(stream); err != nil {
+		t.Fatal(err)
+	}
+
+	stream.txMu.Lock()
+	closeDone := make(chan struct{})
+	go func() {
+		_ = stream.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-stream.doneCh:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not release local stream state while a writer held the mutex")
+	}
+	if _, ok := connection.getStream(stream.ID); ok {
+		t.Fatal("closed stream remained registered while waiting for the writer")
+	}
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before the writer mutex was released")
+	default:
+	}
+	stream.txMu.Unlock()
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after the writer mutex was released")
+	}
+}
+
 func TestRunRejectsUnnegotiatedCloseWrite(t *testing.T) {
 	err := runTunnelFrames(t, func(*Stream) {}, []*protocol.Frame{
 		{Type: protocol.TypeOpen, Stream: 1},

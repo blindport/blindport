@@ -2,8 +2,10 @@ package tcpproxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -58,6 +60,58 @@ func TestProxyPropagatesBothTCPHalfCloses(t *testing.T) {
 	if result.LeftToRight != int64(len(request)) || result.RightToLeft != int64(len(response)) {
 		t.Fatalf("proxy result = %+v", result)
 	}
+	if result.LeftToRightErr != nil || result.RightToLeftErr != nil {
+		t.Fatalf("clean half-close errors = %v, %v", result.LeftToRightErr, result.RightToLeftErr)
+	}
+}
+
+func TestProxyAbortsBothEndpointsAfterCopyError(t *testing.T) {
+	wantErr := errors.New("reset")
+	left := &errorEndpoint{readErr: wantErr, closed: make(chan struct{})}
+	right := &errorEndpoint{blockRead: true, closed: make(chan struct{})}
+	done := make(chan Result, 1)
+	go func() { done <- Proxy(left, right) }()
+
+	select {
+	case result := <-done:
+		if !errors.Is(result.LeftToRightErr, wantErr) {
+			t.Fatalf("left-to-right error = %v, want %v", result.LeftToRightErr, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not abort the opposite blocked copy after an error")
+	}
+	select {
+	case <-left.closed:
+	default:
+		t.Fatal("left endpoint was not closed")
+	}
+	select {
+	case <-right.closed:
+	default:
+		t.Fatal("right endpoint was not closed")
+	}
+}
+
+type errorEndpoint struct {
+	readErr   error
+	blockRead bool
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+func (e *errorEndpoint) Read([]byte) (int, error) {
+	if e.blockRead {
+		<-e.closed
+		return 0, io.EOF
+	}
+	return 0, e.readErr
+}
+
+func (e *errorEndpoint) Write(payload []byte) (int, error) { return len(payload), nil }
+
+func (e *errorEndpoint) Close() error {
+	e.closeOnce.Do(func() { close(e.closed) })
+	return nil
 }
 
 func tcpPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {

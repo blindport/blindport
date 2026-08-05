@@ -253,6 +253,14 @@ func (c *Conn) removeStream(id uint32) (*Stream, bool) {
 	return s, ok
 }
 
+// ActiveStreamCount returns the number of streams currently registered on the
+// multiplexed connection.
+func (c *Conn) ActiveStreamCount() int {
+	c.streamsMu.Lock()
+	defer c.streamsMu.Unlock()
+	return len(c.streams)
+}
+
 // Stream is one logical bidirectional connection within a tunnel.
 type Stream struct {
 	conn        *Conn
@@ -388,6 +396,9 @@ func (s *Stream) Write(p []byte) (int, error) {
 	}
 	written := 0
 	for len(p) > 0 {
+		if s.txClosed.Load() {
+			return written, io.ErrClosedPipe
+		}
 		n := min(len(p), protocol.MaxDataPayloadSize)
 		if err := s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeData, Stream: s.ID, Data: p[:n]}); err != nil {
 			return written, err
@@ -453,8 +464,21 @@ func (s *Stream) WriteDatagram(p []byte) (int, error) {
 
 // Close signals the peer to close the stream and tears down local state.
 func (s *Stream) Close() error {
+	if !s.closeLocal() {
+		return nil
+	}
 	s.txMu.Lock()
 	defer s.txMu.Unlock()
+	_ = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeClose, Stream: s.ID})
+	return nil
+}
+
+// closeRX closes the receive channel (called when peer sends CLOSE or tunnel dies).
+func (s *Stream) closeRX() {
+	s.closeLocal()
+}
+
+func (s *Stream) closeLocal() bool {
 	closed := false
 	s.closeOnce.Do(func() {
 		s.conn.removeStream(s.ID)
@@ -463,20 +487,7 @@ func (s *Stream) Close() error {
 		s.closeRead()
 		closed = true
 	})
-	if closed {
-		_ = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeClose, Stream: s.ID})
-	}
-	return nil
-}
-
-// closeRX closes the receive channel (called when peer sends CLOSE or tunnel dies).
-func (s *Stream) closeRX() {
-	s.closeOnce.Do(func() {
-		s.conn.removeStream(s.ID)
-		s.txClosed.Store(true)
-		close(s.doneCh)
-		s.closeRead()
-	})
+	return closed
 }
 
 func (s *Stream) closeRead() {
