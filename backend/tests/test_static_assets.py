@@ -585,7 +585,10 @@ def test_onion_requests_use_host_appropriate_cookie_and_hsts_policy(
     monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
 
     onion_landing = client.get("/", headers={"Host": onion})
-    clearnet_landing = client.get("/", headers={"Host": "blindport.test"})
+    clearnet_landing = client.get(
+        "/?return=%2Fdashboard&mode=compact", headers={"Host": "blindport.test"}
+    )
+    clearnet_api = client.get("/api/v1/catalog", headers={"Host": "blindport.test"})
     onion_login = client.post(
         "/admin/login",
         headers={"Host": onion},
@@ -599,10 +602,53 @@ def test_onion_requests_use_host_appropriate_cookie_and_hsts_policy(
         f'<meta property="og:image" content="http://{onion}/static/brand-social.png">'
     ) in onion_landing.text
     assert "Strict-Transport-Security" not in onion_landing.headers
+    assert "Onion-Location" not in onion_landing.headers
     assert 'data-cookie-secure="true"' in clearnet_landing.text
     assert '<meta property="og:url" content="https://blindport.test/">' in clearnet_landing.text
     assert "Strict-Transport-Security" in clearnet_landing.headers
+    assert clearnet_landing.headers["Onion-Location"] == (
+        f"http://{onion}/?return=%2Fdashboard&mode=compact"
+    )
+    assert "Onion-Location" not in clearnet_api.headers
+    assert ">Onion</a>" not in clearnet_landing.text
+    assert "Onion service:" not in clearnet_landing.text
     assert "Secure" not in onion_login.headers["Set-Cookie"]
     assert "Path=/admin" in onion_login.headers["Set-Cookie"]
     assert "SameSite=strict" in onion_login.headers["Set-Cookie"]
     assert "Max-Age=900" in onion_login.headers["Set-Cookie"]
+
+
+def test_dashboard_nwc_setup_is_inline_without_rendering_wallet_secret(
+    app_client,
+) -> None:
+    client, _ = app_client
+    signup = client.post("/api/v2/signup").json()
+    headers = {"Authorization": f"Bearer {signup['token']}"}
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "port", "transport": "tcp"},
+        headers=headers,
+    ).json()
+    client.cookies.set("blindport_token", signup["token"])
+
+    disconnected = client.get("/dashboard")
+
+    assert disconnected.status_code == 200
+    assert f'data-sub-id="{subscription["id"]}"' in disconnected.text
+    assert "inline-nwc-form" in disconnected.text
+    assert "Connect and pay" in disconnected.text
+    assert "Automatic renewal stays off." in disconnected.text
+    assert "autoRenewToggle" not in disconnected.text
+
+    secret = "nostr+walletconnect://backend-secret"
+    connected = client.post(
+        "/api/v1/me/nwc",
+        json={"nwc_uri": secret},
+        headers=headers,
+    )
+    assert connected.status_code == 200
+    rendered = client.get("/dashboard")
+    assert secret not in rendered.text
+    assert "inline-nwc-form" not in rendered.text
+    assert "Pay with connected wallet" in rendered.text
+    assert "autoRenewToggle" not in rendered.text

@@ -95,6 +95,9 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
 
     assert "Framed tunnel" in dashboard
     assert "Generated multi-endpoint config" in dashboard
+    assert 'class="disclosure-summary"' in dashboard
+    assert "Copy JSON config" in dashboard
+    assert "Copy install command" in dashboard
     assert f"<dt>Subscription ID</dt><dd><code>{public_id}</code></dd>" in dashboard
     assert "first run asks for your account token" in dashboard
     assert "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in run_command

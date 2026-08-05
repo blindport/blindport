@@ -107,6 +107,16 @@
                 {% if nwc_enabled and user.has_nwc and s.status.value in ("pending", "expired", "active") %}
                   <button type="button" class="nwcPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Pay with connected wallet</button>
                 {% endif %}
+                {% if nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") %}
+                  <form class="inline-nwc-form" data-sub-id="{{ s.public_id }}">
+                    <label for="inlineNwcUri-{{ s.public_id }}">Pay with Nostr Wallet Connect</label>
+                    <p class="field-help">Connect a wallet for this payment. Automatic renewal stays off.</p>
+                    <div class="inline-nwc-controls">
+                      <input id="inlineNwcUri-{{ s.public_id }}" class="inlineNwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required>
+                      <button type="submit" class="inlineNwcPayBtn" data-sub-id="{{ s.public_id }}">Connect and pay</button>
+                    </div>
+                  </form>
+                {% endif %}
                 {% if s.status.value == "pending" %}<button type="button" class="cancelSubBtn button-secondary button-danger" data-sub-id="{{ s.public_id }}">Cancel order</button>{% endif %}
                 <p class="cardStatus field-help" role="status" aria-live="polite"></p>
               </div>
@@ -216,15 +226,17 @@
             <div class="quick-command"><code id="framedRunCommand">curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL={{ request.url.scheme }}://{{ request.url.netloc }}/downloads BLINDPORT_INSTALL_DIR="$HOME/.local/bin" sh &amp;&amp; "$HOME/.local/bin/blindportd" -backend={{ request.url.scheme }}://{{ request.url.netloc }} -config="$HOME/.config/blindport/config.json"</code><button type="button" class="copyCommandBtn" data-copy-target="framedRunCommand">Copy command</button></div>
           {% endif %}
           <details class="advanced-config">
-            <summary>Generated multi-endpoint config</summary>
+            <summary class="disclosure-summary"><span>Generated multi-endpoint config</span><span class="disclosure-icon" aria-hidden="true"></span></summary>
+            <div class="config-heading"><strong>Configuration file</strong><button type="button" class="copyCommandBtn button-secondary" data-copy-target="generatedClientConfig">Copy JSON config</button></div>
             <pre><code id="generatedClientConfig">{{ client_config_json }}</code></pre>
+            <div class="config-heading"><strong>Secure install command</strong></div>
             <code id="framedConfigInstallCommand">install -d -m 700 "$HOME/.config/blindport" &amp;&amp;
 rm -f -- "$HOME/.config/blindport/config.json" &amp;&amp;
 install -m 600 /dev/null "$HOME/.config/blindport/config.json" &amp;&amp;
 cat &gt; "$HOME/.config/blindport/config.json" &lt;&lt;'BLINDPORT_CONFIG'
 {{ client_config_json }}
 BLINDPORT_CONFIG</code>
-            <button type="button" class="copyCommandBtn button-secondary" data-copy-target="framedConfigInstallCommand">Copy config command</button>
+            <button type="button" class="copyCommandBtn button-secondary" data-copy-target="framedConfigInstallCommand">Copy install command</button>
           </details>
         {% elif subscriptions %}
           <p class="muted">The connection command appears after payment activates an endpoint.</p>
@@ -238,7 +250,7 @@ BLINDPORT_CONFIG</code>
     </main>
 
     <aside class="dashboard-sidebar" aria-label="Account settings">
-      <details class="sidebar-section">
+      <details class="sidebar-section account-token-section">
         <summary>Account token</summary>
         <p class="field-help">Required to sign in and connect the agent. Blindport cannot recover it.</p>
         <div class="account-token-controls">

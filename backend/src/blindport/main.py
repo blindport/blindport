@@ -88,6 +88,15 @@ def create_app() -> FastAPI:
             settings.ONION_HOST and request.url.hostname == settings.ONION_HOST
         ):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        if (
+            settings.ONION_HOST
+            and request.url.hostname != settings.ONION_HOST
+            and response.headers.get("content-type", "").lower().startswith("text/html")
+        ):
+            path_and_query = request.url.path
+            if request.url.query:
+                path_and_query += f"?{request.url.query}"
+            response.headers["Onion-Location"] = f"http://{settings.ONION_HOST}{path_and_query}"
         return response
 
     pkg_dir = Path(__file__).parent

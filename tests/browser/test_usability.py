@@ -58,11 +58,13 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "CA_DIR": str(state_dir / "ca"),
             "SECRET_KEY": "browser-ci-secret",
             "ADMIN_TOKEN": "BROWSERCIADMIN0000",
-            "PAYMENT_ENABLED_METHODS": "lightning,stablecoin_swap",
+            "PAYMENT_ENABLED_METHODS": "lightning,nwc,stablecoin_swap",
             "STABLECOIN_PAYMENTS_ENABLED": "true",
             "STABLECOIN_SWAP_MARKUP_BPS": "1000",
             "BOLTZ_WEB_URL": "https://boltz.example",
             "PAYMENT_LIGHTNING_ADAPTER": "mock",
+            "PAYMENT_NWC_ADAPTER": "mock",
+            "CREDENTIAL_ENCRYPTION_KEY": "cd" * 32,
             "PAYMENT_RECONCILIATION_ENABLED": "true",
             "BILLING_YEARLY_ENABLED": "true",
             "RELAY_SHARED_IPS": "203.0.113.20",
@@ -206,7 +208,8 @@ def test_landing_explanation_has_no_horizontal_overflow(
             assert brand_mark.evaluate(
                 "image => image.complete && image.naturalWidth === 512"
             )
-            assert ONION_HOST in page.locator(".site-footer").inner_text()
+            assert ONION_HOST not in page.locator(".site-footer").inner_text()
+            assert page.get_by_role("link", name="Onion", exact=True).count() == 0
             page.get_by_role("link", name="Choose Relay").click()
             assert page.locator(
                 'input[name="orderProduct"][value="relay"]'
@@ -380,7 +383,7 @@ def test_regular_admin_login_never_enters_customer_browser_storage(
         try:
             suspended = request.get(
                 "/api/v2/me",
-                headers={"Authorization": f'Bearer {account["token"]}'},
+                headers={"Authorization": f"Bearer {account['token']}"},
             )
             assert suspended.status == 403
         finally:
@@ -523,8 +526,10 @@ def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
         with (
             page.expect_popup() as popup_info,
             page.expect_response(
-                lambda payment: payment.url.endswith("/api/v1/payments")
-                and payment.request.method == "POST"
+                lambda payment: (
+                    payment.url.endswith("/api/v1/payments")
+                    and payment.request.method == "POST"
+                )
             ) as payment_response_info,
         ):
             page.locator(
@@ -629,13 +634,180 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
             assert "-upstream=127.0.0.1:443" in quick_command
             page.get_by_role("button", name="Copy command", exact=True).click()
             assert page.evaluate("navigator.clipboard.readText()") == quick_command
-            page.get_by_text("Generated multi-endpoint config", exact=True).click()
+            disclosure = page.locator(".advanced-config").filter(
+                has_text="Generated multi-endpoint config"
+            )
+            summary = disclosure.locator("summary")
+            assert summary.get_attribute("class") == "disclosure-summary"
+            assert (
+                summary.evaluate("element => getComputedStyle(element).cursor")
+                == "pointer"
+            )
+            assert disclosure.locator(".disclosure-icon").evaluate(
+                "element => ({width: getComputedStyle(element).width, "
+                "height: getComputedStyle(element).height})"
+            ) == {"width": "10px", "height": "10px"}
+            summary.click()
             command = page.locator("#framedConfigInstallCommand").text_content()
             assert subscription["id"] in command
             assert '"upstream": "127.0.0.1:443"' in command
             assert 'cat > "$HOME/.config/blindport/config.json"' in command
-            page.get_by_role("button", name="Copy config command").click()
+            page.get_by_role("button", name="Copy install command").click()
             assert page.evaluate("navigator.clipboard.readText()") == command
+            page.get_by_role("button", name="Copy JSON config").click()
+            assert subscription["id"] in page.evaluate("navigator.clipboard.readText()")
+            symbol = page.locator(".drawer-symbol")
+            center_offsets = symbol.evaluate(
+                """element => {
+                  const before = getComputedStyle(element, "::before");
+                  const after = getComputedStyle(element, "::after");
+                  return {beforeTop: before.top, afterTop: after.top,
+                          beforeLeft: before.left, afterLeft: after.left};
+                }"""
+            )
+            assert center_offsets == {
+                "beforeTop": "15px",
+                "afterTop": "15px",
+                "beforeLeft": "8px",
+                "afterLeft": "8px",
+            }
             _assert_layout(page)
+    finally:
+        context.close()
+
+
+def test_inline_nwc_connects_pays_recovers_and_never_renders_secret(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        response = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"product": "port", "transport": "tcp"},
+        )
+        assert response.ok, response.text()
+        subscription = response.json()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(error.stack or str(error)))
+    secret = "nostr+walletconnect://browser-inline-secret"
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        form = card.locator(".inline-nwc-form")
+        assert form.is_visible()
+        assert "Automatic renewal stays off." in form.inner_text()
+        form.locator(".inlineNwcUri").fill(secret)
+        with (
+            page.expect_response(
+                lambda response: (
+                    response.url.endswith("/api/v1/me/nwc")
+                    and response.request.method == "POST"
+                )
+            ) as nwc_response_info,
+            page.expect_response(
+                lambda response: (
+                    response.url.endswith("/api/v1/payments")
+                    and response.request.method == "POST"
+                )
+            ) as payment_response_info,
+        ):
+            form.get_by_role("button", name="Connect and pay").click()
+        assert nwc_response_info.value.ok
+        assert payment_response_info.value.ok
+        payment = payment_response_info.value.json()
+        assert payment["method"] == "nwc"
+        assert form.locator(".inlineNwcUri").input_value() == ""
+        assert secret not in page.locator("body").inner_html()
+        assert page.locator(".autoRenewToggle").count() == 0
+
+        page.reload(wait_until="networkidle")
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        assert card.locator(".cardStatus").text_content() == (
+            "Connected wallet payment is still pending."
+        )
+        assert secret not in page.locator("body").inner_html()
+        assert page.locator(".autoRenewToggle").count() == 0
+        _assert_layout(page)
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_inline_nwc_handles_existing_manual_payment_conflict(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    headers = {"Authorization": f"Bearer {account['token']}"}
+    try:
+        subscription_response = request.post(
+            "/api/v1/subscriptions",
+            headers=headers,
+            data={"product": "ip"},
+        )
+        assert subscription_response.ok
+        subscription = subscription_response.json()
+        payment_response = request.post(
+            "/api/v1/payments",
+            headers=headers,
+            data={"subscription_id": subscription["id"], "method": "lightning"},
+        )
+        assert payment_response.ok
+        existing = payment_response.json()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        form = card.locator(".inline-nwc-form")
+        form.locator(".inlineNwcUri").fill("nostr+walletconnect://conflict-secret")
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v1/payments")
+                and response.request.method == "POST"
+            )
+        ) as conflict_info:
+            form.get_by_role("button", name="Connect and pay").click()
+        conflict = conflict_info.value
+        assert conflict.status == 409
+        assert conflict.json()["existing_payment"]["id"] == existing["id"]
+        assert page.locator("#payBolt11").text_content() == existing["invoice"]
+        assert page.locator("#payPanel").is_visible()
+        assert "conflict-secret" not in page.locator("body").inner_html()
+        _assert_layout(page)
     finally:
         context.close()

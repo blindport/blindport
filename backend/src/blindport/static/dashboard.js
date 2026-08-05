@@ -377,7 +377,21 @@ async function startNwcFlow(subId, term, trigger) {
     const paid = await pollPayment(payment, status);
     if (paid) return;
   } catch (error) {
-    status.textContent = `Wallet payment error: ${error.message}`;
+    const existing = error.status === 409 ? error.payload?.existing_payment : null;
+    if (existing) {
+      status.textContent = `${error.message}. Resuming the open payment.`;
+      if (["lightning", "stablecoin_swap"].includes(existing.method)) {
+        try {
+          renderManualPayment(existing, document.getElementById("payStatus"));
+        } catch (renderError) {
+          status.textContent = `Could not restore payment: ${renderError.message}`;
+        }
+      }
+      const paid = await pollPayment(existing, status);
+      if (paid) return;
+    } else {
+      status.textContent = `Wallet payment error: ${error.message}`;
+    }
   }
   trigger.disabled = false;
   trigger.textContent = originalText;
@@ -427,6 +441,34 @@ document.querySelectorAll(".nwcPayBtn").forEach((button) => {
   });
 });
 
+document.querySelectorAll(".inline-nwc-form").forEach((form) => {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector(".inlineNwcPayBtn");
+    const input = form.querySelector(".inlineNwcUri");
+    const card = form.closest(".subscription-card");
+    const status = card.querySelector(".cardStatus");
+    button.disabled = true;
+    button.textContent = "Connecting wallet...";
+    status.textContent = "Validating wallet connection.";
+    try {
+      await jsonFetch("/api/v1/me/nwc", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ nwc_uri: input.value }),
+      });
+      input.value = "";
+      status.textContent = "Wallet connected. Sending the initial payment.";
+      await startNwcFlow(form.dataset.subId, selectedPaymentTerm(card), button);
+    } catch (error) {
+      input.value = "";
+      status.textContent = `Wallet connection error: ${error.message}`;
+      button.disabled = false;
+      button.textContent = "Connect and pay";
+    }
+  });
+});
+
 document.querySelectorAll(".cancelSubBtn").forEach((button) => {
   button.addEventListener("click", async () => {
     if (!window.confirm("Cancel this unpaid order?")) return;
@@ -456,17 +498,24 @@ async function resumeOpenPayment() {
     return;
   }
   const payment = payments.find((item) =>
-    ["lightning", "stablecoin_swap"].includes(item.method) && item.status === "pending"
+    ["lightning", "stablecoin_swap", "nwc"].includes(item.method) &&
+      ["pending", "processing"].includes(item.status)
   );
   if (!payment) return;
   const card = document.querySelector(
     `.subscription-card[data-sub-id="${CSS.escape(payment.subscription_id)}"]`,
   );
-  const status = document.getElementById("payStatus");
+  const status = payment.method === "nwc" && card
+    ? card.querySelector(".cardStatus")
+    : document.getElementById("payStatus");
   if (card) setCardPaymentButtonsDisabled(card, true);
   try {
-    renderManualPayment(payment, status);
-    status.textContent = "Payment still pending. Continue with this invoice.";
+    if (payment.method === "nwc") {
+      status.textContent = "Connected wallet payment is still pending.";
+    } else {
+      renderManualPayment(payment, status);
+      status.textContent = "Payment still pending. Continue with this invoice.";
+    }
     const paid = await pollPayment(payment, status);
     if (!paid && card) setCardPaymentButtonsDisabled(card, false);
   } catch (error) {

@@ -43,7 +43,6 @@
       <nav aria-label="Primary navigation">
         <a href="/#order">Pricing</a>
         <a href="/guide">Guide</a>
-        {% if onion_host %}<a href="http://{{ onion_host }}">Onion</a>{% endif %}
         <a class="nav-dashboard" href="/dashboard">Dashboard</a>
       </nav>
     </div>
@@ -65,7 +64,6 @@
       </nav>
     </div>
     <p>{{ brand_name }} forwards traffic. For TLS services, your origin keeps the private key and terminates TLS.</p>
-    {% if onion_host %}<p>Onion service: <a href="http://{{ onion_host }}">{{ onion_host }}</a></p>{% endif %}
   </footer>
 </body>
 </html>
