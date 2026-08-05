@@ -128,15 +128,25 @@ func TestDatagramStreamPreservesPacketBoundaries(t *testing.T) {
 
 func TestStreamDrainsQueuedPayloadAfterPeerClose(t *testing.T) {
 	t.Run("TCP", func(t *testing.T) {
+		tunnelSide, peer := net.Pipe()
 		opened := make(chan *Stream, 1)
+		connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+		runDone := make(chan error, 1)
+		go func() { runDone <- connection.Run() }()
 		frames := []*protocol.Frame{
 			{Type: protocol.TypeOpen, Stream: 1, Proto: "tcp"},
 			{Type: protocol.TypeData, Stream: 1, Data: []byte("response ")},
 			{Type: protocol.TypeData, Stream: 1, Data: []byte("body")},
 			{Type: protocol.TypeClose, Stream: 1},
+			{Type: protocol.TypePing},
 		}
-		if err := runTunnelFrames(t, func(stream *Stream) { opened <- stream }, frames); err != nil {
-			t.Fatal(err)
+		for _, frame := range frames {
+			if err := protocol.WriteFrame(peer, frame); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if frame, err := protocol.ReadFrame(peer); err != nil || frame.Type != protocol.TypePong {
+			t.Fatalf("close synchronization = %+v, %v", frame, err)
 		}
 		stream := <-opened
 
@@ -147,18 +157,34 @@ func TestStreamDrainsQueuedPayloadAfterPeerClose(t *testing.T) {
 		if string(got) != "response body" {
 			t.Fatalf("drained payload = %q", got)
 		}
+		assertReceiveAccounting(t, stream.conn, 0, 0)
+		_ = stream.Close()
+		_ = peer.Close()
+		if err := <-runDone; err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("UDP", func(t *testing.T) {
+		tunnelSide, peer := net.Pipe()
 		opened := make(chan *Stream, 1)
+		connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+		runDone := make(chan error, 1)
+		go func() { runDone <- connection.Run() }()
 		frames := []*protocol.Frame{
 			{Type: protocol.TypeOpen, Stream: 1, Proto: "udp"},
 			{Type: protocol.TypeDatagram, Stream: 1, Data: []byte("first")},
 			{Type: protocol.TypeDatagram, Stream: 1, Data: []byte("second")},
 			{Type: protocol.TypeClose, Stream: 1},
+			{Type: protocol.TypePing},
 		}
-		if err := runTunnelFrames(t, func(stream *Stream) { opened <- stream }, frames); err != nil {
-			t.Fatal(err)
+		for _, frame := range frames {
+			if err := protocol.WriteFrame(peer, frame); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if frame, err := protocol.ReadFrame(peer); err != nil || frame.Type != protocol.TypePong {
+			t.Fatalf("close synchronization = %+v, %v", frame, err)
 		}
 		stream := <-opened
 
@@ -175,10 +201,17 @@ func TestStreamDrainsQueuedPayloadAfterPeerClose(t *testing.T) {
 		if _, err := stream.ReadDatagram(buffer); !errors.Is(err, io.EOF) {
 			t.Fatalf("final read error = %v, want EOF", err)
 		}
+		assertReceiveAccounting(t, stream.conn, 0, 0)
+		_ = stream.Close()
+		_ = peer.Close()
+		if err := <-runDone; err != nil {
+			t.Fatal(err)
+		}
 	})
 }
 
 func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
+	const responseFrameCount = 48
 	a, b := net.Pipe()
 	requestRead := make(chan []byte, 1)
 	serverDone := make(chan error, 1)
@@ -190,7 +223,7 @@ func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
 			return
 		}
 		requestRead <- request
-		response := append(bytes.Repeat([]byte("r"), (streamReceiveQueueSize+8)*protocol.MaxDataPayloadSize), []byte("final reverse response")...)
+		response := append(bytes.Repeat([]byte("r"), responseFrameCount*protocol.MaxDataPayloadSize), []byte("final reverse response")...)
 		if _, err := stream.Write(response); err != nil {
 			serverDone <- err
 			return
@@ -222,7 +255,7 @@ func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
 		t.Fatalf("request = %q, want %q", got, request)
 	}
 
-	wantSize := (streamReceiveQueueSize+8)*protocol.MaxDataPayloadSize + len("final reverse response")
+	wantSize := responseFrameCount*protocol.MaxDataPayloadSize + len("final reverse response")
 	response, err := io.ReadAll(stream)
 	if err != nil {
 		t.Fatal(err)
@@ -230,6 +263,10 @@ func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
 	if len(response) != wantSize || !bytes.HasSuffix(response, []byte("final reverse response")) {
 		t.Fatalf("response length = %d, suffix = %q", len(response), response[max(0, len(response)-22):])
 	}
+	if wantSize <= 512<<10 {
+		t.Fatal("test response no longer exceeds the legacy receive queue")
+	}
+	assertReceiveAccounting(t, client, 0, 0)
 	if err := <-serverDone; err != nil {
 		t.Fatal(err)
 	}
@@ -316,6 +353,69 @@ func TestStreamCloseReleasesLocalStateBeforeWaitingForWriter(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Close did not finish after the writer mutex was released")
 	}
+}
+
+func TestReceiveAccountingTracksPartialReadAndFullClose(t *testing.T) {
+	connection := New(&bufferConn{}, nil)
+	stream := newStream(connection, 1)
+	if err := connection.addStream(stream); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("x"), 100)
+	if !stream.queueTCPPayload(payload) {
+		t.Fatal("queue payload")
+	}
+	assertReceiveAccounting(t, connection, 100, 1)
+	buffer := make([]byte, 10)
+	if n, err := stream.Read(buffer); err != nil || n != len(buffer) {
+		t.Fatalf("partial read = %d, %v", n, err)
+	}
+	// A slice into the frame retains its full allocation until the frame drains.
+	assertReceiveAccounting(t, connection, 100, 1)
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertReceiveAccounting(t, connection, 0, 0)
+}
+
+func TestCloseWriteKeepsPayloadAccountedUntilDrain(t *testing.T) {
+	connection := New(&bufferConn{}, nil)
+	stream := newStream(connection, 1)
+	if err := connection.addStream(stream); err != nil {
+		t.Fatal(err)
+	}
+	payload := bytes.Repeat([]byte("f"), 2*protocol.MaxDataPayloadSize)
+	if !stream.queueTCPPayload(payload[:protocol.MaxDataPayloadSize]) || !stream.queueTCPPayload(payload[protocol.MaxDataPayloadSize:]) {
+		t.Fatal("queue payload")
+	}
+	stream.closeRead(false)
+	assertReceiveAccounting(t, connection, int64(len(payload)), 2)
+
+	got, err := io.ReadAll(stream)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("drained payload = %d bytes, %v", len(got), err)
+	}
+	assertReceiveAccounting(t, connection, 0, 0)
+	_ = stream.Close()
+}
+
+func TestTunnelCloseReleasesPeerClosedUndrainedPayload(t *testing.T) {
+	local, peer := net.Pipe()
+	connection := New(local, nil)
+	stream := newStream(connection, 1)
+	if err := connection.addStream(stream); err != nil {
+		t.Fatal(err)
+	}
+	if !stream.queueTCPPayload(bytes.Repeat([]byte("z"), protocol.MaxDataPayloadSize)) {
+		t.Fatal("queue payload")
+	}
+	stream.closeRX()
+	assertReceiveAccounting(t, connection, protocol.MaxDataPayloadSize, 1)
+	if err := connection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertReceiveAccounting(t, connection, 0, 0)
+	_ = peer.Close()
 }
 
 func TestRunRejectsUnnegotiatedCloseWrite(t *testing.T) {
@@ -471,19 +571,20 @@ func TestRunIgnoresDataForUnknownStream(t *testing.T) {
 	}
 }
 
-func TestRunBackpressuresSaturatedTCPStreamWithoutLosingData(t *testing.T) {
+func TestSaturatedTCPStreamDoesNotBlockSiblingControlStream(t *testing.T) {
 	tunnelSide, peer := net.Pipe()
-	opened := make(chan *Stream, 1)
+	opened := make(chan *Stream, 2)
 	c := New(tunnelSide, func(stream *Stream) { opened <- stream })
+	c.EnableTCPHalfClose()
 	runDone := make(chan error, 1)
 	go func() { runDone <- c.Run() }()
 
 	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeOpen, Stream: 1}); err != nil {
 		t.Fatalf("open saturated stream: %v", err)
 	}
-	stream := <-opened
+	bulk := <-opened
 	payload := bytes.Repeat([]byte("q"), protocol.MaxDataPayloadSize)
-	frameCount := streamReceiveQueueSize + 16
+	frameCount := tcpStreamReceiveQueueByteSize/protocol.MaxDataPayloadSize + 1
 	writeDone := make(chan error, 1)
 	go func() {
 		for range frameCount {
@@ -492,32 +593,37 @@ func TestRunBackpressuresSaturatedTCPStreamWithoutLosingData(t *testing.T) {
 				return
 			}
 		}
-		writeDone <- protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypePing})
+		for _, frame := range []*protocol.Frame{
+			{Type: protocol.TypeOpen, Stream: 2, Proto: "tcp"},
+			{Type: protocol.TypeData, Stream: 2, Data: []byte("control result")},
+			{Type: protocol.TypeCloseWrite, Stream: 2},
+		} {
+			if err := protocol.WriteFrame(peer, frame); err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- nil
 	}()
-
-	select {
-	case err := <-writeDone:
-		t.Fatalf("producer did not encounter backpressure: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	got, err := io.ReadAll(io.LimitReader(stream, int64(frameCount*len(payload))))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != frameCount*len(payload) || !bytes.Equal(got, bytes.Repeat(payload, frameCount)) {
-		t.Fatalf("received %d bytes after backpressure, want %d", len(got), frameCount*len(payload))
-	}
 	if err := <-writeDone; err != nil {
 		t.Fatalf("finish producer: %v", err)
 	}
-	reply, err := protocol.ReadFrame(peer)
-	if err != nil || reply.Type != protocol.TypePong {
-		t.Fatalf("post-backpressure reply = %+v, %v", reply, err)
+	control := <-opened
+	if control.ID != 2 {
+		t.Fatalf("sibling stream ID = %d", control.ID)
 	}
-	if _, ok := c.getStream(stream.ID); !ok {
-		t.Fatal("TCP receive backpressure closed the stream")
+	result, err := io.ReadAll(control)
+	if err != nil || string(result) != "control result" {
+		t.Fatalf("control response = %q, %v", result, err)
 	}
+	closeFrame, err := protocol.ReadFrame(peer)
+	if err != nil || closeFrame.Type != protocol.TypeClose || closeFrame.Stream != bulk.ID {
+		t.Fatalf("overflow response = %+v, %v", closeFrame, err)
+	}
+	if _, ok := c.getStream(bulk.ID); ok {
+		t.Fatal("overflowing bulk stream remained registered")
+	}
+	assertReceiveAccounting(t, c, 0, 0)
 
 	_ = peer.Close()
 	if err := <-runDone; err != nil {
@@ -538,7 +644,7 @@ func TestSaturatedTCPQueueUnblocksWhenTunnelCloses(t *testing.T) {
 	<-opened
 	writeDone := make(chan error, 1)
 	go func() {
-		for range streamReceiveQueueSize + 2 {
+		for range 48 {
 			if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeData, Stream: 1, Data: []byte("blocked")}); err != nil {
 				writeDone <- err
 				return
@@ -548,6 +654,9 @@ func TestSaturatedTCPQueueUnblocksWhenTunnelCloses(t *testing.T) {
 	}()
 
 	time.Sleep(25 * time.Millisecond)
+	if queuedBytes(c) == 0 {
+		t.Fatal("test did not queue TCP payload before tunnel shutdown")
+	}
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -556,11 +665,74 @@ func TestSaturatedTCPQueueUnblocksWhenTunnelCloses(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("tunnel reader remained blocked on a saturated TCP queue")
 	}
+	assertReceiveAccounting(t, c, 0, 0)
 	_ = peer.Close()
 	select {
 	case <-writeDone:
 	case <-time.After(time.Second):
 		t.Fatal("peer writer remained blocked after tunnel close")
+	}
+}
+
+func TestGlobalTCPReceiveBudgetAbortsOnlyOffendingStream(t *testing.T) {
+	tunnelSide, peer := net.Pipe()
+	opened := make(chan *Stream, 2)
+	connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+	connection.rxByteLimit = 2 * protocol.MaxDataPayloadSize
+	connection.rxFrameLimit = 8
+	runDone := make(chan error, 1)
+	go func() { runDone <- connection.Run() }()
+	payload := bytes.Repeat([]byte("g"), protocol.MaxDataPayloadSize)
+
+	for _, frame := range []*protocol.Frame{
+		{Type: protocol.TypeOpen, Stream: 1, Proto: "tcp"},
+		{Type: protocol.TypeData, Stream: 1, Data: payload},
+		{Type: protocol.TypeData, Stream: 1, Data: payload},
+		{Type: protocol.TypeOpen, Stream: 2, Proto: "tcp"},
+		{Type: protocol.TypeData, Stream: 2, Data: payload},
+		{Type: protocol.TypePing},
+	} {
+		if err := protocol.WriteFrame(peer, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, second := <-opened, <-opened
+	if first.ID != 1 || second.ID != 2 {
+		t.Fatalf("opened streams = %d, %d", first.ID, second.ID)
+	}
+
+	seenClose, seenPong := false, false
+	for range 2 {
+		frame, err := protocol.ReadFrame(peer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seenClose = seenClose || (frame.Type == protocol.TypeClose && frame.Stream == second.ID)
+		seenPong = seenPong || frame.Type == protocol.TypePong
+	}
+	if !seenClose || !seenPong {
+		t.Fatalf("overflow replies: close=%t pong=%t", seenClose, seenPong)
+	}
+	if _, ok := connection.getStream(first.ID); !ok {
+		t.Fatal("stream within the global budget was aborted")
+	}
+	if _, ok := connection.getStream(second.ID); ok {
+		t.Fatal("stream exceeding the global budget remained registered")
+	}
+	assertReceiveAccounting(t, connection, int64(2*len(payload)), 2)
+
+	got := make([]byte, 2*len(payload))
+	if _, err := io.ReadFull(first, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, bytes.Repeat(payload, 2)) {
+		t.Fatal("retained stream payload lost ordering")
+	}
+	assertReceiveAccounting(t, connection, 0, 0)
+
+	_ = peer.Close()
+	if err := <-runDone; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
 	}
 }
 
@@ -578,7 +750,7 @@ func TestRunDropsUDPDatagramBeyondReceiveByteLimit(t *testing.T) {
 	}
 	stream := <-opened
 	packet := bytes.Repeat([]byte("u"), protocol.MaxDatagramPayloadSize)
-	queuedPackets := streamReceiveQueueByteSize / len(packet)
+	queuedPackets := udpStreamReceiveQueueByteSize / len(packet)
 	for range queuedPackets + 1 {
 		if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeDatagram, Stream: 1, Data: packet}); err != nil {
 			t.Fatal(err)
@@ -671,3 +843,21 @@ type testAddr string
 
 func (a testAddr) Network() string { return "test" }
 func (a testAddr) String() string  { return string(a) }
+
+func queuedBytes(connection *Conn) int64 {
+	connection.receiveMu.Lock()
+	defer connection.receiveMu.Unlock()
+	return connection.rxBytes
+}
+
+func assertReceiveAccounting(t *testing.T, connection *Conn, wantBytes int64, wantFrames int) {
+	t.Helper()
+	connection.receiveMu.Lock()
+	defer connection.receiveMu.Unlock()
+	if connection.rxBytes != wantBytes || connection.rxFrames != wantFrames {
+		t.Fatalf(
+			"receive accounting = %d bytes, %d frames, want %d bytes, %d frames",
+			connection.rxBytes, connection.rxFrames, wantBytes, wantFrames,
+		)
+	}
+}

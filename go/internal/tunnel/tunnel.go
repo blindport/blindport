@@ -17,34 +17,41 @@ import (
 
 // Conn is a single multiplexed tunnel over an underlying net.Conn.
 type Conn struct {
-	raw        net.Conn
-	writeMu    sync.Mutex
-	streamsMu  sync.Mutex
-	streams    map[uint32]*Stream
-	nextID     atomic.Uint32
-	closed     atomic.Bool
-	maxStreams int
-	onOpen     func(stream *Stream) // server-side handler
-	onUDPDrop  func()
-	onClose    func()
-	halfClose  bool
+	raw          net.Conn
+	writeMu      sync.Mutex
+	streamsMu    sync.Mutex
+	streams      map[uint32]*Stream
+	receiveMu    sync.Mutex
+	rxBytes      int64
+	rxFrames     int
+	nextID       atomic.Uint32
+	closed       atomic.Bool
+	maxStreams   int
+	onOpen       func(stream *Stream) // server-side handler
+	onUDPDrop    func()
+	onClose      func()
+	halfClose    bool
+	rxByteLimit  int64
+	rxFrameLimit int
 }
 
 // MaxConcurrentStreams bounds resources allocated to one tunnel.
 const MaxConcurrentStreams = 1024
 
-const streamReceiveQueueSize = 32
-
-// Keep UDP's larger frames from retaining more payload memory per stream than
-// the existing TCP receive queue could retain at capacity.
-const streamReceiveQueueByteSize = streamReceiveQueueSize * protocol.MaxDataPayloadSize
+const (
+	tcpStreamReceiveQueueByteSize  = 4 << 20
+	tcpStreamReceiveQueueFrameSize = 512
+	udpStreamReceiveQueueByteSize  = 512 << 10
+	udpStreamReceiveQueueFrameSize = 32
+	connReceiveQueueByteSize       = 64 << 20
+	connReceiveQueueFrameSize      = 4096
+)
 
 const frameWriteTimeout = 10 * time.Second
 
 // New wraps a raw connection.
 func New(raw net.Conn, onOpen func(*Stream)) *Conn {
-	c := &Conn{raw: raw, streams: make(map[uint32]*Stream), onOpen: onOpen, maxStreams: MaxConcurrentStreams}
-	return c
+	return newConn(raw, onOpen, MaxConcurrentStreams)
 }
 
 // NewWithStreamLimit wraps a raw connection with a lower per-connection stream cap.
@@ -52,7 +59,14 @@ func NewWithStreamLimit(raw net.Conn, onOpen func(*Stream), maxStreams int) (*Co
 	if maxStreams <= 0 || maxStreams > MaxConcurrentStreams {
 		return nil, fmt.Errorf("stream limit must be within 1-%d", MaxConcurrentStreams)
 	}
-	return &Conn{raw: raw, streams: make(map[uint32]*Stream), onOpen: onOpen, maxStreams: maxStreams}, nil
+	return newConn(raw, onOpen, maxStreams), nil
+}
+
+func newConn(raw net.Conn, onOpen func(*Stream), maxStreams int) *Conn {
+	return &Conn{
+		raw: raw, streams: make(map[uint32]*Stream), onOpen: onOpen, maxStreams: maxStreams,
+		rxByteLimit: connReceiveQueueByteSize, rxFrameLimit: connReceiveQueueFrameSize,
+	}
 }
 
 // SetUDPDropHandler installs an observer for UDP datagrams discarded by the
@@ -144,19 +158,18 @@ func (c *Conn) Run() error {
 			}
 			if (f.Type == protocol.TypeData && s.Protocol != protocol.TransportTCP) ||
 				(f.Type == protocol.TypeDatagram && s.Protocol != protocol.TransportUDP) {
-				_ = s.Close()
+				s.abort()
 				continue
 			}
 			if s.Protocol == protocol.TransportTCP {
 				if s.rxClosed.Load() {
 					// DATA after CLOSE_WRITE violates the ordered TCP FIN boundary.
-					_ = s.Close()
+					s.abort()
 					continue
 				}
-				// Blocking this tunnel's reader propagates bounded TCP backpressure to
-				// the peer. Dropping or closing here corrupts otherwise healthy streams
-				// whenever their public-facing socket is temporarily slower.
-				s.queueTCPPayload(f.Data)
+				if !s.queueTCPPayload(f.Data) {
+					s.abort()
+				}
 				continue
 			}
 			if s.queueUDPPayload(f.Data) {
@@ -169,7 +182,7 @@ func (c *Conn) Run() error {
 			if f.Stream == 0 {
 				return fmt.Errorf("CLOSE with zero stream ID")
 			}
-			if s, ok := c.removeStream(f.Stream); ok {
+			if s, ok := c.getStream(f.Stream); ok {
 				s.closeRX()
 			}
 		case protocol.TypeCloseWrite:
@@ -186,7 +199,7 @@ func (c *Conn) Run() error {
 			if s.Protocol != protocol.TransportTCP {
 				return fmt.Errorf("CLOSE_WRITE for non-TCP stream %d", f.Stream)
 			}
-			s.closeRead()
+			s.closeRead(false)
 		case protocol.TypePing:
 			_ = c.WriteFrame(&protocol.Frame{Type: protocol.TypePong})
 		case protocol.TypePong:
@@ -221,7 +234,7 @@ func (c *Conn) closeStreams() {
 	c.streams = make(map[uint32]*Stream)
 	c.streamsMu.Unlock()
 	for _, s := range streams {
-		s.closeRX()
+		s.closeTunnel()
 	}
 }
 
@@ -273,13 +286,15 @@ type Stream struct {
 	Protocol    protocol.Transport
 	Source      string
 	Destination string
+	rxMu        sync.Mutex
 	rxBuf       []byte
-	rxCh        chan []byte
-	rxQueued    atomic.Int64
+	rxBufSize   int64
+	rxQueue     [][]byte
+	rxQueued    int64
+	rxFrames    int
+	rxNotify    chan struct{}
 	doneCh      chan struct{}
-	rxDoneCh    chan struct{}
 	closeOnce   sync.Once
-	rxCloseOnce sync.Once
 	rxClosed    atomic.Bool
 	txCloseOnce sync.Once
 	txClosed    atomic.Bool
@@ -291,9 +306,8 @@ func newStream(c *Conn, id uint32) *Stream {
 		conn:     c,
 		ID:       id,
 		Protocol: protocol.TransportTCP,
-		rxCh:     make(chan []byte, streamReceiveQueueSize),
+		rxNotify: make(chan struct{}, 1),
 		doneCh:   make(chan struct{}),
-		rxDoneCh: make(chan struct{}),
 	}
 }
 
@@ -308,68 +322,52 @@ func normalizeProtocol(value string) (protocol.Transport, error) {
 	}
 }
 
-func (s *Stream) queueTCPPayload(payload []byte) {
-	size := int64(len(payload))
-	s.rxQueued.Add(size)
-	select {
-	case s.rxCh <- payload:
-	case <-s.rxDoneCh:
-		s.rxQueued.Add(-size)
-	}
+func (s *Stream) queueTCPPayload(payload []byte) bool {
+	return s.queuePayload(payload, tcpStreamReceiveQueueByteSize, tcpStreamReceiveQueueFrameSize)
 }
 
 func (s *Stream) queueUDPPayload(payload []byte) bool {
-	size := int64(len(payload))
-	for {
-		queued := s.rxQueued.Load()
-		if size > int64(streamReceiveQueueByteSize)-queued {
-			return false
-		}
-		if s.rxQueued.CompareAndSwap(queued, queued+size) {
-			break
-		}
-	}
-	release := func() { s.rxQueued.Add(-size) }
-	select {
-	case <-s.rxDoneCh:
-		release()
-		return false
-	default:
-	}
-	select {
-	case s.rxCh <- payload:
-		return true
-	case <-s.doneCh:
-		release()
-		return false
-	default:
-		release()
-		return false
-	}
+	return s.queuePayload(payload, udpStreamReceiveQueueByteSize, udpStreamReceiveQueueFrameSize)
 }
 
-func (s *Stream) dequeuePayload() ([]byte, bool) {
-	consume := func(payload []byte) ([]byte, bool) {
-		s.rxQueued.Add(-int64(len(payload)))
-		return payload, true
+func (s *Stream) queuePayload(payload []byte, byteLimit int64, frameLimit int) bool {
+	s.rxMu.Lock()
+	defer s.rxMu.Unlock()
+	if s.rxClosed.Load() || int64(len(payload)) > byteLimit-s.rxQueued || s.rxFrames >= frameLimit {
+		return false
 	}
+	if !s.conn.reserveReceive(int64(len(payload))) {
+		return false
+	}
+	s.rxQueue = append(s.rxQueue, payload)
+	s.rxQueued += int64(len(payload))
+	s.rxFrames++
+	s.notifyRead()
+	return true
+}
+
+func (c *Conn) reserveReceive(size int64) bool {
+	c.receiveMu.Lock()
+	defer c.receiveMu.Unlock()
+	if size > c.rxByteLimit-c.rxBytes || c.rxFrames >= c.rxFrameLimit {
+		return false
+	}
+	c.rxBytes += size
+	c.rxFrames++
+	return true
+}
+
+func (c *Conn) releaseReceive(size int64, frames int) {
+	c.receiveMu.Lock()
+	c.rxBytes -= size
+	c.rxFrames -= frames
+	c.receiveMu.Unlock()
+}
+
+func (s *Stream) notifyRead() {
 	select {
-	case payload := <-s.rxCh:
-		return consume(payload)
+	case s.rxNotify <- struct{}{}:
 	default:
-	}
-	select {
-	case payload := <-s.rxCh:
-		return consume(payload)
-	case <-s.rxDoneCh:
-		// DATA frames queued before CLOSE or CLOSE_WRITE must remain readable. Recheck after
-		// observing closure so a simultaneously ready payload wins deterministically.
-		select {
-		case payload := <-s.rxCh:
-			return consume(payload)
-		default:
-			return nil, false
-		}
 	}
 }
 
@@ -378,16 +376,48 @@ func (s *Stream) Read(p []byte) (int, error) {
 	if s.Protocol != protocol.TransportTCP {
 		return 0, errors.New("byte-stream read is unavailable for UDP")
 	}
-	if len(s.rxBuf) == 0 {
-		payload, ok := s.dequeuePayload()
-		if !ok {
+	for {
+		s.rxMu.Lock()
+		for len(s.rxBuf) == 0 && len(s.rxQueue) > 0 {
+			s.rxBuf = s.rxQueue[0]
+			s.rxBufSize = int64(len(s.rxBuf))
+			s.rxQueue[0] = nil
+			s.rxQueue = s.rxQueue[1:]
+			if len(s.rxQueue) == 0 {
+				s.rxQueue = nil
+			}
+			if len(s.rxBuf) == 0 {
+				s.rxBufSize = 0
+				s.rxFrames--
+				s.conn.releaseReceive(0, 1)
+			}
+		}
+		if len(s.rxBuf) > 0 {
+			n := copy(p, s.rxBuf)
+			s.rxBuf = s.rxBuf[n:]
+			released := int64(0)
+			frames := 0
+			if len(s.rxBuf) == 0 {
+				s.rxBuf = nil
+				released = s.rxBufSize
+				s.rxBufSize = 0
+				s.rxQueued -= released
+				s.rxFrames--
+				frames = 1
+			}
+			if frames > 0 {
+				s.conn.releaseReceive(released, frames)
+			}
+			s.rxMu.Unlock()
+			return n, nil
+		}
+		closed := s.rxClosed.Load()
+		s.rxMu.Unlock()
+		if closed {
 			return 0, io.EOF
 		}
-		s.rxBuf = payload
+		<-s.rxNotify
 	}
-	n := copy(p, s.rxBuf)
-	s.rxBuf = s.rxBuf[n:]
-	return n, nil
 }
 
 // Write sends data over the stream.
@@ -444,14 +474,31 @@ func (s *Stream) ReadDatagram(p []byte) (int, error) {
 	if s.Protocol != protocol.TransportUDP {
 		return 0, errors.New("datagram read is unavailable for TCP")
 	}
-	payload, ok := s.dequeuePayload()
-	if !ok {
-		return 0, io.EOF
+	for {
+		s.rxMu.Lock()
+		if len(s.rxQueue) > 0 {
+			payload := s.rxQueue[0]
+			s.rxQueue[0] = nil
+			s.rxQueue = s.rxQueue[1:]
+			if len(s.rxQueue) == 0 {
+				s.rxQueue = nil
+			}
+			s.rxQueued -= int64(len(payload))
+			s.rxFrames--
+			s.conn.releaseReceive(int64(len(payload)), 1)
+			s.rxMu.Unlock()
+			if len(payload) > len(p) {
+				return 0, io.ErrShortBuffer
+			}
+			return copy(p, payload), nil
+		}
+		closed := s.rxClosed.Load()
+		s.rxMu.Unlock()
+		if closed {
+			return 0, io.EOF
+		}
+		<-s.rxNotify
 	}
-	if len(payload) > len(p) {
-		return 0, io.ErrShortBuffer
-	}
-	return copy(p, payload), nil
 }
 
 // WriteDatagram sends one complete UDP datagram in one protocol frame.
@@ -471,34 +518,70 @@ func (s *Stream) WriteDatagram(p []byte) (int, error) {
 // Close signals the peer to close the stream and tears down local state.
 func (s *Stream) Close() error {
 	if !s.closeLocal() {
+		s.conn.removeStream(s.ID)
+		s.closeRead(true)
 		return nil
 	}
-	s.txMu.Lock()
-	defer s.txMu.Unlock()
-	_ = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeClose, Stream: s.ID})
+	s.sendClose()
 	return nil
 }
 
 // closeRX closes the receive channel (called when peer sends CLOSE or tunnel dies).
 func (s *Stream) closeRX() {
-	s.closeLocal()
+	s.markClosed(false, false)
 }
 
 func (s *Stream) closeLocal() bool {
+	return s.markClosed(true, true)
+}
+
+func (s *Stream) closeTunnel() {
+	s.markClosed(true, true)
+	s.conn.removeStream(s.ID)
+	s.closeRead(true)
+}
+
+func (s *Stream) markClosed(discard, remove bool) bool {
 	closed := false
 	s.closeOnce.Do(func() {
-		s.conn.removeStream(s.ID)
+		if remove {
+			s.conn.removeStream(s.ID)
+		}
 		s.txClosed.Store(true)
 		close(s.doneCh)
-		s.closeRead()
+		s.closeRead(discard)
 		closed = true
 	})
 	return closed
 }
 
-func (s *Stream) closeRead() {
-	s.rxCloseOnce.Do(func() {
-		s.rxClosed.Store(true)
-		close(s.rxDoneCh)
-	})
+func (s *Stream) closeRead(discard bool) {
+	s.rxMu.Lock()
+	s.rxClosed.Store(true)
+	if discard && s.rxFrames > 0 {
+		s.conn.releaseReceive(s.rxQueued, s.rxFrames)
+		s.rxBuf = nil
+		s.rxBufSize = 0
+		for i := range s.rxQueue {
+			s.rxQueue[i] = nil
+		}
+		s.rxQueue = nil
+		s.rxQueued = 0
+		s.rxFrames = 0
+	}
+	s.notifyRead()
+	s.rxMu.Unlock()
+}
+
+func (s *Stream) abort() {
+	if !s.closeLocal() {
+		return
+	}
+	go s.sendClose()
+}
+
+func (s *Stream) sendClose() {
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	_ = s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeClose, Stream: s.ID})
 }

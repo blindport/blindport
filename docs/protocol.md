@@ -33,13 +33,17 @@ list selects no extensions. After `hello_ok`, the relay sends
 receives `pong`. TCP streams use `data` frames with at most 16 KiB. UDP
 associations use one `datagram` frame per complete packet with at most 65,507
 bytes, including a valid zero-length datagram. Stream IDs are nonzero unsigned
-32-bit integers. One
-tunnel permits a configured number of concurrent streams (256 by default, with
-a hard maximum of 1024), and each stream has a 32-item, 512 KiB receive queue.
-When a TCP queue is full, the tunnel reader waits and propagates backpressure to
-the sender; TCP bytes are never dropped and temporary saturation does not close
-the stream. Queued TCP payload remains readable before EOF after either `close`
-or negotiated `close_write`. UDP retains the nonblocking drop policy described below.
+32-bit integers. One tunnel permits a configured number of concurrent streams
+(256 by default, with a hard maximum of 1024). A TCP stream can queue at most 4
+MiB or 512 frames, while all streams on one tunnel share a strict 64 MiB and
+4,096-frame receive budget. The frame caps also bound queue metadata when peers
+send unusually small frames. Enqueue never waits for an application socket, so
+one stalled data stream cannot block control or sibling frames in the multiplexed
+reader. A TCP stream exceeding either its own limit or the shared limit is closed
+without closing the tunnel; queued payload for that offending stream is discarded.
+Payload ordered before a peer `close` or negotiated `close_write` remains readable
+before EOF. Local abort, local full close, and tunnel shutdown release any unread
+queue immediately. UDP retains the nonblocking drop policy described below.
 Serialized frame writes have a 10-second deadline; a peer that stops reading
 loses that tunnel instead of holding its write mutex and ingress handlers
 indefinitely.
@@ -88,7 +92,8 @@ to the mapping's upstream, preserving response association. Relay associations
 share global and per-source ingress limits, have a bounded 32-packet queue, and
 expire after the configured idle timeout. Association and tunnel receive queues
 each retain at most 512 KiB of payload. A saturated UDP queue drops that source's
-packet without terminating the association or control tunnel.
+packet without terminating the association or control tunnel. Tunnel UDP queues
+also count against the shared 64 MiB and 4,096-frame receive budget.
 
 For a Relay stream, destination metadata is authorization-sensitive. It is
 exactly `domain:<claimed-hostname>:443` for public TLS and
