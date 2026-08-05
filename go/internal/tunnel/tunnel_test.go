@@ -328,6 +328,41 @@ func TestRunRejectsUnnegotiatedCloseWrite(t *testing.T) {
 	}
 }
 
+func TestRunClosesStreamReceivingDataAfterCloseWrite(t *testing.T) {
+	tunnelSide, peer := net.Pipe()
+	opened := make(chan *Stream, 1)
+	connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+	connection.EnableTCPHalfClose()
+	runDone := make(chan error, 1)
+	go func() { runDone <- connection.Run() }()
+	defer connection.Close()
+
+	for _, frame := range []*protocol.Frame{
+		{Type: protocol.TypeOpen, Stream: 1, Proto: "tcp"},
+		{Type: protocol.TypeCloseWrite, Stream: 1},
+		{Type: protocol.TypeData, Stream: 1, Data: []byte("after FIN")},
+	} {
+		if err := protocol.WriteFrame(peer, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stream := <-opened
+	closeFrame, err := protocol.ReadFrame(peer)
+	if err != nil || closeFrame.Type != protocol.TypeClose || closeFrame.Stream != stream.ID {
+		t.Fatalf("post-FIN response = %+v, %v", closeFrame, err)
+	}
+	if payload, err := io.ReadAll(stream); err != nil || len(payload) != 0 {
+		t.Fatalf("post-FIN read = %q, %v", payload, err)
+	}
+	if _, ok := connection.getStream(stream.ID); ok {
+		t.Fatal("stream receiving DATA after CLOSE_WRITE remained open")
+	}
+	_ = peer.Close()
+	if err := <-runDone; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+}
+
 func TestStreamAPIsRejectWrongTransport(t *testing.T) {
 	c := New(&bufferConn{}, nil)
 	tcp := newStream(c, 1)

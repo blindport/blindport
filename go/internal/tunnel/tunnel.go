@@ -148,6 +148,11 @@ func (c *Conn) Run() error {
 				continue
 			}
 			if s.Protocol == protocol.TransportTCP {
+				if s.rxClosed.Load() {
+					// DATA after CLOSE_WRITE violates the ordered TCP FIN boundary.
+					_ = s.Close()
+					continue
+				}
 				// Blocking this tunnel's reader propagates bounded TCP backpressure to
 				// the peer. Dropping or closing here corrupts otherwise healthy streams
 				// whenever their public-facing socket is temporarily slower.
@@ -275,6 +280,7 @@ type Stream struct {
 	rxDoneCh    chan struct{}
 	closeOnce   sync.Once
 	rxCloseOnce sync.Once
+	rxClosed    atomic.Bool
 	txCloseOnce sync.Once
 	txClosed    atomic.Bool
 	txMu        sync.Mutex
@@ -491,5 +497,8 @@ func (s *Stream) closeLocal() bool {
 }
 
 func (s *Stream) closeRead() {
-	s.rxCloseOnce.Do(func() { close(s.rxDoneCh) })
+	s.rxCloseOnce.Do(func() {
+		s.rxClosed.Store(true)
+		close(s.rxDoneCh)
+	})
 }
