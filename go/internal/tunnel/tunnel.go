@@ -4,6 +4,7 @@
 package tunnel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -31,6 +32,7 @@ type Conn struct {
 	onUDPDrop    func()
 	onClose      func()
 	halfClose    bool
+	flowControl  bool
 	rxByteLimit  int64
 	rxFrameLimit int
 }
@@ -41,10 +43,16 @@ const MaxConcurrentStreams = 1024
 const (
 	tcpStreamReceiveQueueByteSize  = 4 << 20
 	tcpStreamReceiveQueueFrameSize = 512
+	legacyTCPReceiveQueueByteSize  = 32 << 20
+	legacyTCPReceiveQueueFrameSize = 4096
 	udpStreamReceiveQueueByteSize  = 512 << 10
 	udpStreamReceiveQueueFrameSize = 32
 	connReceiveQueueByteSize       = 64 << 20
 	connReceiveQueueFrameSize      = 4096
+	connReceiveControlReserve      = 4 << 20
+	connReceiveFrameReserve        = 256
+	controlStreamByteThreshold     = 64 << 10
+	controlStreamFrameThreshold    = 8
 )
 
 const frameWriteTimeout = 10 * time.Second
@@ -81,6 +89,12 @@ func (c *Conn) EnableTCPHalfClose() {
 	c.halfClose = true
 }
 
+// EnableStreamFlowControl enables the negotiated per-stream credit extension.
+// It must only be called when both peers selected protocol.CapabilityStreamFlowControl.
+func (c *Conn) EnableStreamFlowControl() {
+	c.flowControl = true
+}
+
 // WriteFrame sends a frame with write-mutex protection.
 func (c *Conn) WriteFrame(f *protocol.Frame) error {
 	c.writeMu.Lock()
@@ -106,7 +120,7 @@ func (c *Conn) OpenStream(proto, src, dst string) (*Stream, error) {
 	}
 	id := c.nextID.Add(1)
 	s := newStream(c, id)
-	s.Protocol = transport
+	s.configureTransport(transport)
 	s.Source = src
 	s.Destination = dst
 	if err := c.addStream(s); err != nil {
@@ -141,7 +155,7 @@ func (c *Conn) Run() error {
 			if err != nil {
 				return fmt.Errorf("invalid OPEN: %w", err)
 			}
-			s.Protocol = transport
+			s.configureTransport(transport)
 			s.Source = f.Src
 			s.Destination = f.Dst
 			if err := c.addStream(s); err != nil {
@@ -175,6 +189,9 @@ func (c *Conn) Run() error {
 			if s.queueUDPPayload(f.Data) {
 				continue
 			}
+			// A dropped datagram no longer consumes receiver memory. Return its
+			// negotiated credit so transient UDP saturation cannot stall the sender.
+			s.returnCredit(uint32(len(f.Data)))
 			if c.onUDPDrop != nil {
 				c.onUDPDrop()
 			}
@@ -200,6 +217,20 @@ func (c *Conn) Run() error {
 				return fmt.Errorf("CLOSE_WRITE for non-TCP stream %d", f.Stream)
 			}
 			s.closeRead(false)
+		case protocol.TypeWindowUpdate:
+			if !c.flowControl {
+				return fmt.Errorf("unexpected WINDOW_UPDATE without negotiated capability")
+			}
+			if f.Stream == 0 {
+				return fmt.Errorf("WINDOW_UPDATE with zero stream ID")
+			}
+			s, ok := c.getStream(f.Stream)
+			if !ok {
+				continue
+			}
+			if f.Credit == 0 || f.Credit > protocol.MaxWindowUpdate || !s.addSendCredit(f.Credit) {
+				s.abort()
+			}
 		case protocol.TypePing:
 			_ = c.WriteFrame(&protocol.Frame{Type: protocol.TypePong})
 		case protocol.TypePong:
@@ -281,34 +312,58 @@ func (c *Conn) ActiveStreamCount() int {
 
 // Stream is one logical bidirectional connection within a tunnel.
 type Stream struct {
-	conn        *Conn
-	ID          uint32
-	Protocol    protocol.Transport
-	Source      string
-	Destination string
-	rxMu        sync.Mutex
-	rxBuf       []byte
-	rxBufSize   int64
-	rxQueue     [][]byte
-	rxQueued    int64
-	rxFrames    int
-	rxNotify    chan struct{}
-	doneCh      chan struct{}
-	closeOnce   sync.Once
-	rxClosed    atomic.Bool
-	txCloseOnce sync.Once
-	txClosed    atomic.Bool
-	txMu        sync.Mutex
+	conn          *Conn
+	ID            uint32
+	Protocol      protocol.Transport
+	Source        string
+	Destination   string
+	rxMu          sync.Mutex
+	rxBuf         []byte
+	rxBufSize     int64
+	rxQueue       [][]byte
+	rxQueued      int64
+	rxFrames      int
+	rxNotify      chan struct{}
+	doneCh        chan struct{}
+	closeOnce     sync.Once
+	rxClosed      atomic.Bool
+	txCloseOnce   sync.Once
+	txClosed      atomic.Bool
+	txMu          sync.Mutex
+	creditMu      sync.Mutex
+	txCredit      int64
+	txCreditCap   int64
+	creditNotify  chan struct{}
+	windowMu      sync.Mutex
+	windowPending uint32
+	windowSending bool
 }
 
 func newStream(c *Conn, id uint32) *Stream {
-	return &Stream{
-		conn:     c,
-		ID:       id,
-		Protocol: protocol.TransportTCP,
-		rxNotify: make(chan struct{}, 1),
-		doneCh:   make(chan struct{}),
+	s := &Stream{
+		conn:         c,
+		ID:           id,
+		rxNotify:     make(chan struct{}, 1),
+		doneCh:       make(chan struct{}),
+		creditNotify: make(chan struct{}, 1),
 	}
+	s.configureTransport(protocol.TransportTCP)
+	return s
+}
+
+func (s *Stream) configureTransport(transport protocol.Transport) {
+	s.Protocol = transport
+	if !s.conn.flowControl {
+		return
+	}
+	credit := int64(tcpStreamReceiveQueueByteSize)
+	if transport == protocol.TransportUDP {
+		credit = udpStreamReceiveQueueByteSize
+	}
+	s.creditMu.Lock()
+	s.txCredit = credit
+	s.txCreditCap = credit
+	s.creditMu.Unlock()
 }
 
 func normalizeProtocol(value string) (protocol.Transport, error) {
@@ -323,7 +378,11 @@ func normalizeProtocol(value string) (protocol.Transport, error) {
 }
 
 func (s *Stream) queueTCPPayload(payload []byte) bool {
-	return s.queuePayload(payload, tcpStreamReceiveQueueByteSize, tcpStreamReceiveQueueFrameSize)
+	byteLimit, frameLimit := int64(tcpStreamReceiveQueueByteSize), tcpStreamReceiveQueueFrameSize
+	if !s.conn.flowControl {
+		byteLimit, frameLimit = legacyTCPReceiveQueueByteSize, legacyTCPReceiveQueueFrameSize
+	}
+	return s.queuePayload(payload, byteLimit, frameLimit)
 }
 
 func (s *Stream) queueUDPPayload(payload []byte) bool {
@@ -336,7 +395,7 @@ func (s *Stream) queuePayload(payload []byte, byteLimit int64, frameLimit int) b
 	if s.rxClosed.Load() || int64(len(payload)) > byteLimit-s.rxQueued || s.rxFrames >= frameLimit {
 		return false
 	}
-	if !s.conn.reserveReceive(int64(len(payload))) {
+	if !s.conn.reserveReceive(int64(len(payload)), s.rxQueued+int64(len(payload)), s.rxFrames+1) {
 		return false
 	}
 	s.rxQueue = append(s.rxQueue, payload)
@@ -346,10 +405,18 @@ func (s *Stream) queuePayload(payload []byte, byteLimit int64, frameLimit int) b
 	return true
 }
 
-func (c *Conn) reserveReceive(size int64) bool {
+func (c *Conn) reserveReceive(size, streamBytes int64, streamFrames int) bool {
 	c.receiveMu.Lock()
 	defer c.receiveMu.Unlock()
 	if size > c.rxByteLimit-c.rxBytes || c.rxFrames >= c.rxFrameLimit {
+		return false
+	}
+	bulkByteLimit := c.rxByteLimit - min(int64(connReceiveControlReserve), c.rxByteLimit)
+	if streamBytes > controlStreamByteThreshold && size > bulkByteLimit-c.rxBytes {
+		return false
+	}
+	bulkFrameLimit := c.rxFrameLimit - min(connReceiveFrameReserve, c.rxFrameLimit)
+	if streamFrames > controlStreamFrameThreshold && c.rxFrames >= bulkFrameLimit {
 		return false
 	}
 	c.rxBytes += size
@@ -407,6 +474,7 @@ func (s *Stream) Read(p []byte) (int, error) {
 			}
 			if frames > 0 {
 				s.conn.releaseReceive(released, frames)
+				s.returnCredit(uint32(released))
 			}
 			s.rxMu.Unlock()
 			return n, nil
@@ -422,6 +490,11 @@ func (s *Stream) Read(p []byte) (int, error) {
 
 // Write sends data over the stream.
 func (s *Stream) Write(p []byte) (int, error) {
+	return s.WriteContext(context.Background(), p)
+}
+
+// WriteContext sends TCP data, waiting for negotiated stream credit or context cancellation.
+func (s *Stream) WriteContext(ctx context.Context, p []byte) (int, error) {
 	if s.Protocol != protocol.TransportTCP {
 		return 0, errors.New("byte-stream write is unavailable for UDP")
 	}
@@ -436,6 +509,13 @@ func (s *Stream) Write(p []byte) (int, error) {
 			return written, io.ErrClosedPipe
 		}
 		n := min(len(p), protocol.MaxDataPayloadSize)
+		if s.conn.flowControl {
+			var err error
+			n, err = s.takeSendCredit(ctx, n, false)
+			if err != nil {
+				return written, err
+			}
+		}
 		if err := s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeData, Stream: s.ID, Data: p[:n]}); err != nil {
 			return written, err
 		}
@@ -443,6 +523,47 @@ func (s *Stream) Write(p []byte) (int, error) {
 		p = p[n:]
 	}
 	return written, nil
+}
+
+func (s *Stream) takeSendCredit(ctx context.Context, want int, exact bool) (int, error) {
+	for {
+		s.creditMu.Lock()
+		available := s.txCredit
+		if available > 0 && (!exact || available >= int64(want)) {
+			n := want
+			if int64(n) > available {
+				n = int(available)
+			}
+			s.txCredit -= int64(n)
+			s.creditMu.Unlock()
+			return n, nil
+		}
+		s.creditMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-s.doneCh:
+			return 0, io.ErrClosedPipe
+		case <-s.creditNotify:
+		}
+	}
+}
+
+func (s *Stream) addSendCredit(credit uint32) bool {
+	if s.txClosed.Load() {
+		return true
+	}
+	s.creditMu.Lock()
+	defer s.creditMu.Unlock()
+	if int64(credit) > s.txCreditCap-s.txCredit {
+		return false
+	}
+	s.txCredit += int64(credit)
+	select {
+	case s.creditNotify <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 // CloseWrite signals EOF to the peer while keeping the receive direction open.
@@ -486,6 +607,7 @@ func (s *Stream) ReadDatagram(p []byte) (int, error) {
 			s.rxQueued -= int64(len(payload))
 			s.rxFrames--
 			s.conn.releaseReceive(int64(len(payload)), 1)
+			s.returnCredit(uint32(len(payload)))
 			s.rxMu.Unlock()
 			if len(payload) > len(p) {
 				return 0, io.ErrShortBuffer
@@ -503,16 +625,63 @@ func (s *Stream) ReadDatagram(p []byte) (int, error) {
 
 // WriteDatagram sends one complete UDP datagram in one protocol frame.
 func (s *Stream) WriteDatagram(p []byte) (int, error) {
+	return s.WriteDatagramContext(context.Background(), p)
+}
+
+// WriteDatagramContext sends one UDP datagram after waiting for stream credit.
+func (s *Stream) WriteDatagramContext(ctx context.Context, p []byte) (int, error) {
 	if s.Protocol != protocol.TransportUDP {
 		return 0, errors.New("datagram write is unavailable for TCP")
 	}
 	if len(p) > protocol.MaxDatagramPayloadSize {
 		return 0, fmt.Errorf("datagram payload too large: %d > %d", len(p), protocol.MaxDatagramPayloadSize)
 	}
+	if s.conn.flowControl {
+		if _, err := s.takeSendCredit(ctx, len(p), true); err != nil {
+			return 0, err
+		}
+	}
 	if err := s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeDatagram, Stream: s.ID, Data: p}); err != nil {
 		return 0, err
 	}
 	return len(p), nil
+}
+
+func (s *Stream) returnCredit(credit uint32) {
+	if !s.conn.flowControl || credit == 0 {
+		return
+	}
+	select {
+	case <-s.doneCh:
+		return
+	default:
+	}
+	s.windowMu.Lock()
+	s.windowPending += credit
+	if s.windowSending {
+		s.windowMu.Unlock()
+		return
+	}
+	s.windowSending = true
+	s.windowMu.Unlock()
+	go s.flushWindowUpdates()
+}
+
+func (s *Stream) flushWindowUpdates() {
+	for {
+		s.windowMu.Lock()
+		credit := s.windowPending
+		s.windowPending = 0
+		if credit == 0 {
+			s.windowSending = false
+			s.windowMu.Unlock()
+			return
+		}
+		s.windowMu.Unlock()
+		if err := s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeWindowUpdate, Stream: s.ID, Credit: credit}); err != nil {
+			return
+		}
+	}
 }
 
 // Close signals the peer to close the stream and tears down local state.

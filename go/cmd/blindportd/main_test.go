@@ -263,12 +263,12 @@ func TestExchangeHelloClearsDeadlineAfterHelloOK(t *testing.T) {
 		_ = protocol.WriteFrame(server, &protocol.Frame{Type: protocol.TypePing})
 	}()
 	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "hello.example"}
-	halfClose, err := exchangeHello(client, "token", claim, 20*time.Millisecond)
+	capabilities, err := exchangeHello(client, "token", claim, 20*time.Millisecond)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if halfClose {
-		t.Fatal("legacy relay unexpectedly negotiated TCP half-close")
+	if capabilities.halfClose || capabilities.flowControl {
+		t.Fatalf("legacy relay unexpectedly negotiated capabilities %+v", capabilities)
 	}
 	if _, err := protocol.ReadFrame(client); err != nil {
 		t.Fatalf("post-HELLO read failed after deadline should be cleared: %v", err)
@@ -304,18 +304,42 @@ func TestExchangeHelloNegotiatesTCPHalfClose(t *testing.T) {
 		if !hello.HasCapability(protocol.CapabilityTCPHalfClose) {
 			t.Error("HELLO did not advertise TCP half-close")
 		}
+		if !hello.HasCapability(protocol.CapabilityStreamFlowControl) {
+			t.Error("HELLO did not advertise stream flow control")
+		}
 		_ = protocol.WriteFrame(server, &protocol.Frame{
 			Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion,
-			Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose},
+			Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose, protocol.CapabilityStreamFlowControl},
 		})
 	}()
 	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "hello.example"}
-	halfClose, err := exchangeHello(client, "token", claim, time.Second)
+	capabilities, err := exchangeHello(client, "token", claim, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !halfClose {
-		t.Fatal("TCP half-close was not negotiated")
+	if !capabilities.halfClose || !capabilities.flowControl {
+		t.Fatalf("negotiated capabilities = %+v", capabilities)
+	}
+}
+
+func TestExchangeHelloRejectsFlowControlWithoutHalfClose(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		_, _ = protocol.ReadFrame(server)
+		_ = protocol.WriteFrame(server, &protocol.Frame{
+			Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion,
+			Capabilities: []protocol.Capability{protocol.CapabilityStreamFlowControl},
+		})
+	}()
+	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "hello.example"}
+	capabilities, err := exchangeHello(client, "token", claim, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.halfClose || capabilities.flowControl {
+		t.Fatalf("invalid capability selection accepted: %+v", capabilities)
 	}
 }
 

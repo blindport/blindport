@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -211,7 +212,7 @@ func TestStreamDrainsQueuedPayloadAfterPeerClose(t *testing.T) {
 }
 
 func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
-	const responseFrameCount = 48
+	const responseFrameCount = 320
 	a, b := net.Pipe()
 	requestRead := make(chan []byte, 1)
 	serverDone := make(chan error, 1)
@@ -233,6 +234,8 @@ func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
 	client := New(b, nil)
 	server.EnableTCPHalfClose()
 	client.EnableTCPHalfClose()
+	server.EnableStreamFlowControl()
+	client.EnableStreamFlowControl()
 	serverRun := make(chan error, 1)
 	clientRun := make(chan error, 1)
 	go func() { serverRun <- server.Run() }()
@@ -299,6 +302,309 @@ func TestTCPHalfCloseDrainsLargeReverseResponseAndCleansUp(t *testing.T) {
 	if err := <-serverRun; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("server Run error = %v", err)
 	}
+}
+
+func TestStreamFlowControlBlocksBulkAndAllowsSiblingTraffic(t *testing.T) {
+	receiverRaw, senderRaw := net.Pipe()
+	opened := make(chan *Stream, 2)
+	receiver := New(receiverRaw, func(stream *Stream) { opened <- stream })
+	sender := New(senderRaw, nil)
+	for _, connection := range []*Conn{receiver, sender} {
+		connection.EnableTCPHalfClose()
+		connection.EnableStreamFlowControl()
+	}
+	receiverRun := make(chan error, 1)
+	senderRun := make(chan error, 1)
+	go func() { receiverRun <- receiver.Run() }()
+	go func() { senderRun <- sender.Run() }()
+	defer receiver.Close()
+	defer sender.Close()
+
+	bulk, err := sender.OpenStream("tcp", "bulk-src", "bulk-dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bulkPeer := <-opened
+	payload := bytes.Repeat([]byte("b"), tcpStreamReceiveQueueByteSize+2*protocol.MaxDataPayloadSize)
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := bulk.Write(payload)
+		if err == nil {
+			err = bulk.CloseWrite()
+		}
+		writeDone <- err
+	}()
+	waitForReceiveAccounting(
+		t, receiver, tcpStreamReceiveQueueByteSize,
+		tcpStreamReceiveQueueByteSize/protocol.MaxDataPayloadSize,
+	)
+	select {
+	case err := <-writeDone:
+		t.Fatalf("bulk writer did not wait for credit: %v", err)
+	default:
+	}
+
+	control, err := sender.OpenStream("tcp", "control-src", "control-dst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.Write([]byte("control result")); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	controlPeer := <-opened
+	if controlPeer.ID != control.ID {
+		t.Fatalf("control peer ID = %d, want %d", controlPeer.ID, control.ID)
+	}
+	controlResult, err := io.ReadAll(controlPeer)
+	if err != nil || string(controlResult) != "control result" {
+		t.Fatalf("control response = %q, %v", controlResult, err)
+	}
+
+	got, err := io.ReadAll(bulkPeer)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("bulk response = %d bytes, %v", len(got), err)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
+	assertReceiveAccounting(t, receiver, 0, 0)
+	_ = bulk.Close()
+	_ = bulkPeer.Close()
+	_ = control.Close()
+	_ = controlPeer.Close()
+	_ = sender.Close()
+	_ = receiver.Close()
+	for name, done := range map[string]<-chan error{"sender": senderRun, "receiver": receiverRun} {
+		if err := <-done; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("%s Run error = %v", name, err)
+		}
+	}
+}
+
+func TestStreamFlowControlInitialCreditIsTransportBounded(t *testing.T) {
+	connection := New(&bufferConn{}, nil)
+	connection.EnableStreamFlowControl()
+	tcp := newStream(connection, 1)
+	udp := newStream(connection, 2)
+	udp.configureTransport(protocol.TransportUDP)
+	if tcp.txCredit != tcpStreamReceiveQueueByteSize || tcp.txCreditCap != tcpStreamReceiveQueueByteSize {
+		t.Fatalf("TCP credit = %d/%d", tcp.txCredit, tcp.txCreditCap)
+	}
+	if udp.txCredit != udpStreamReceiveQueueByteSize || udp.txCreditCap != udpStreamReceiveQueueByteSize {
+		t.Fatalf("UDP credit = %d/%d", udp.txCredit, udp.txCreditCap)
+	}
+}
+
+func TestFlowControlledWriteUnblocksOnContextAndClose(t *testing.T) {
+	t.Run("context", func(t *testing.T) {
+		connection := New(&bufferConn{}, nil)
+		connection.EnableStreamFlowControl()
+		stream := newStream(connection, 1)
+		stream.creditMu.Lock()
+		stream.txCredit = 0
+		stream.creditMu.Unlock()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := stream.WriteContext(ctx, []byte("blocked")); !errors.Is(err, context.Canceled) {
+			t.Fatalf("WriteContext error = %v", err)
+		}
+	})
+
+	t.Run("close", func(t *testing.T) {
+		connection := New(&bufferConn{}, nil)
+		connection.EnableStreamFlowControl()
+		stream := newStream(connection, 1)
+		if err := connection.addStream(stream); err != nil {
+			t.Fatal(err)
+		}
+		stream.creditMu.Lock()
+		stream.txCredit = 0
+		stream.creditMu.Unlock()
+		done := make(chan error, 1)
+		go func() {
+			_, err := stream.Write([]byte("blocked"))
+			done <- err
+		}()
+		time.Sleep(10 * time.Millisecond)
+		if err := stream.Close(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			if !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("blocked Write error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("blocked Write did not stop after stream close")
+		}
+	})
+
+	t.Run("tunnel close", func(t *testing.T) {
+		local, peer := net.Pipe()
+		connection := New(local, nil)
+		connection.EnableStreamFlowControl()
+		stream := newStream(connection, 1)
+		if err := connection.addStream(stream); err != nil {
+			t.Fatal(err)
+		}
+		stream.creditMu.Lock()
+		stream.txCredit = 0
+		stream.creditMu.Unlock()
+		done := make(chan error, 1)
+		go func() {
+			_, err := stream.Write([]byte("blocked"))
+			done <- err
+		}()
+		time.Sleep(10 * time.Millisecond)
+		if err := connection.Close(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-done:
+			if !errors.Is(err, io.ErrClosedPipe) {
+				t.Fatalf("blocked Write error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("blocked Write did not stop after tunnel close")
+		}
+		_ = peer.Close()
+	})
+}
+
+func TestWindowUpdateValidationIsStreamLocal(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		credit uint32
+	}{
+		{name: "zero", credit: 0},
+		{name: "oversized", credit: protocol.MaxWindowUpdate + 1},
+		{name: "inflates window", credit: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tunnelSide, peer := net.Pipe()
+			opened := make(chan *Stream, 1)
+			connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+			connection.EnableStreamFlowControl()
+			runDone := make(chan error, 1)
+			go func() { runDone <- connection.Run() }()
+			if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeOpen, Stream: 1, Proto: "tcp"}); err != nil {
+				t.Fatal(err)
+			}
+			stream := <-opened
+			if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeWindowUpdate, Stream: stream.ID, Credit: test.credit}); err != nil {
+				t.Fatal(err)
+			}
+			if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypePing}); err != nil {
+				t.Fatal(err)
+			}
+			seenClose, seenPong := false, false
+			for range 2 {
+				frame, err := protocol.ReadFrame(peer)
+				if err != nil {
+					t.Fatal(err)
+				}
+				seenClose = seenClose || (frame.Type == protocol.TypeClose && frame.Stream == stream.ID)
+				seenPong = seenPong || frame.Type == protocol.TypePong
+			}
+			if !seenClose || !seenPong {
+				t.Fatalf("validation replies: close=%t pong=%t", seenClose, seenPong)
+			}
+			_ = peer.Close()
+			if err := <-runDone; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestWindowUpdateRequiresNegotiationAndNonzeroStream(t *testing.T) {
+	err := runTunnelFrames(t, func(*Stream) {}, []*protocol.Frame{{Type: protocol.TypeWindowUpdate, Stream: 1, Credit: 1}})
+	if err == nil || !strings.Contains(err.Error(), "without negotiated capability") {
+		t.Fatalf("unnegotiated WINDOW_UPDATE error = %v", err)
+	}
+
+	tunnelSide, peer := net.Pipe()
+	connection := New(tunnelSide, func(*Stream) {})
+	connection.EnableStreamFlowControl()
+	runDone := make(chan error, 1)
+	go func() { runDone <- connection.Run() }()
+	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeWindowUpdate, Credit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-runDone; err == nil || !strings.Contains(err.Error(), "zero stream ID") {
+		t.Fatalf("zero-ID WINDOW_UPDATE error = %v", err)
+	}
+	_ = peer.Close()
+}
+
+func TestWindowUpdateForClosedStreamIsIgnored(t *testing.T) {
+	tunnelSide, peer := net.Pipe()
+	connection := New(tunnelSide, func(*Stream) {})
+	connection.EnableStreamFlowControl()
+	runDone := make(chan error, 1)
+	go func() { runDone <- connection.Run() }()
+	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeWindowUpdate, Stream: 99, Credit: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypePing}); err != nil {
+		t.Fatal(err)
+	}
+	if frame, err := protocol.ReadFrame(peer); err != nil || frame.Type != protocol.TypePong {
+		t.Fatalf("late update reply = %+v, %v", frame, err)
+	}
+	_ = peer.Close()
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadDatagramReturnsFlowControlCredit(t *testing.T) {
+	tunnelSide, peer := net.Pipe()
+	opened := make(chan *Stream, 1)
+	connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+	connection.EnableStreamFlowControl()
+	runDone := make(chan error, 1)
+	go func() { runDone <- connection.Run() }()
+	payload := []byte("datagram credit")
+	for _, frame := range []*protocol.Frame{
+		{Type: protocol.TypeOpen, Stream: 1, Proto: "udp"},
+		{Type: protocol.TypeDatagram, Stream: 1, Data: payload},
+	} {
+		if err := protocol.WriteFrame(peer, frame); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stream := <-opened
+	buffer := make([]byte, 64)
+	if n, err := stream.ReadDatagram(buffer); err != nil || !bytes.Equal(buffer[:n], payload) {
+		t.Fatalf("ReadDatagram = %q, %v", buffer[:n], err)
+	}
+	update, err := protocol.ReadFrame(peer)
+	if err != nil || update.Type != protocol.TypeWindowUpdate || update.Stream != stream.ID || update.Credit != uint32(len(payload)) {
+		t.Fatalf("WINDOW_UPDATE = %+v, %v", update, err)
+	}
+	_ = peer.Close()
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyTCPBacklogExceedsFlowControlWindow(t *testing.T) {
+	connection := New(&bufferConn{}, nil)
+	stream := newStream(connection, 1)
+	payload := bytes.Repeat([]byte("l"), protocol.MaxDataPayloadSize)
+	frames := 8 << 20 / protocol.MaxDataPayloadSize
+	for range frames {
+		if !stream.queueTCPPayload(payload) {
+			t.Fatalf("legacy queue rejected payload at %d bytes", stream.rxQueued)
+		}
+	}
+	assertReceiveAccounting(t, connection, 8<<20, frames)
+	stream.closeRead(true)
+	assertReceiveAccounting(t, connection, 0, 0)
 }
 
 func TestCloseWriteUsesLegacyCloseWithoutNegotiation(t *testing.T) {
@@ -576,6 +882,7 @@ func TestSaturatedTCPStreamDoesNotBlockSiblingControlStream(t *testing.T) {
 	opened := make(chan *Stream, 2)
 	c := New(tunnelSide, func(stream *Stream) { opened <- stream })
 	c.EnableTCPHalfClose()
+	c.EnableStreamFlowControl()
 	runDone := make(chan error, 1)
 	go func() { runDone <- c.Run() }()
 
@@ -736,6 +1043,30 @@ func TestGlobalTCPReceiveBudgetAbortsOnlyOffendingStream(t *testing.T) {
 	}
 }
 
+func TestConnectionBudgetReservesCapacityForSmallControlStream(t *testing.T) {
+	connection := New(&bufferConn{}, nil)
+	connection.rxByteLimit = 128 << 10
+	connection.rxFrameLimit = 32
+	bulk := newStream(connection, 1)
+	control := newStream(connection, 2)
+	payload := bytes.Repeat([]byte("r"), protocol.MaxDataPayloadSize)
+	for range controlStreamByteThreshold / protocol.MaxDataPayloadSize {
+		if !bulk.queueTCPPayload(payload) {
+			t.Fatal("bulk stream could not use its control-sized allowance")
+		}
+	}
+	if bulk.queueTCPPayload(payload) {
+		t.Fatal("bulk stream consumed receive capacity reserved for control streams")
+	}
+	if !control.queueTCPPayload(payload) {
+		t.Fatal("small control stream could not use reserved receive capacity")
+	}
+	assertReceiveAccounting(t, connection, controlStreamByteThreshold+protocol.MaxDataPayloadSize, 5)
+	bulk.closeRead(true)
+	control.closeRead(true)
+	assertReceiveAccounting(t, connection, 0, 0)
+}
+
 func TestRunDropsUDPDatagramBeyondReceiveByteLimit(t *testing.T) {
 	tunnelSide, peer := net.Pipe()
 	opened := make(chan *Stream, 1)
@@ -781,6 +1112,36 @@ func TestRunDropsUDPDatagramBeyondReceiveByteLimit(t *testing.T) {
 	}
 	if n, err := stream.ReadDatagram(buffer); err != nil || !bytes.Equal(buffer[:n], marker) {
 		t.Fatalf("read after dropped datagram = %q, %v", buffer[:n], err)
+	}
+
+	_ = peer.Close()
+	if err := <-runDone; err != nil {
+		t.Fatalf("Run error = %v, want nil", err)
+	}
+}
+
+func TestFlowControlledUDPDropReturnsSenderCredit(t *testing.T) {
+	tunnelSide, peer := net.Pipe()
+	opened := make(chan *Stream, 1)
+	connection := New(tunnelSide, func(stream *Stream) { opened <- stream })
+	connection.EnableStreamFlowControl()
+	runDone := make(chan error, 1)
+	go func() { runDone <- connection.Run() }()
+
+	if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeOpen, Stream: 1, Proto: "udp"}); err != nil {
+		t.Fatal(err)
+	}
+	<-opened
+	packet := bytes.Repeat([]byte("u"), protocol.MaxDatagramPayloadSize)
+	queuedPackets := udpStreamReceiveQueueByteSize / len(packet)
+	for range queuedPackets + 1 {
+		if err := protocol.WriteFrame(peer, &protocol.Frame{Type: protocol.TypeDatagram, Stream: 1, Data: packet}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	update, err := protocol.ReadFrame(peer)
+	if err != nil || update.Type != protocol.TypeWindowUpdate || update.Stream != 1 || update.Credit != uint32(len(packet)) {
+		t.Fatalf("dropped datagram credit = %+v, %v", update, err)
 	}
 
 	_ = peer.Close()
@@ -860,4 +1221,19 @@ func assertReceiveAccounting(t *testing.T, connection *Conn, wantBytes int64, wa
 			connection.rxBytes, connection.rxFrames, wantBytes, wantFrames,
 		)
 	}
+}
+
+func waitForReceiveAccounting(t *testing.T, connection *Conn, wantBytes int64, wantFrames int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		connection.receiveMu.Lock()
+		matched := connection.rxBytes == wantBytes && connection.rxFrames == wantFrames
+		connection.receiveMu.Unlock()
+		if matched {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	assertReceiveAccounting(t, connection, wantBytes, wantFrames)
 }

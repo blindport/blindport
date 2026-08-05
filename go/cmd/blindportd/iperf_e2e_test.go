@@ -44,6 +44,8 @@ func TestIperf3ThroughMultiplexedTunnel(t *testing.T) {
 	relay := tunnel.New(relayRaw, nil)
 	agent.EnableTCPHalfClose()
 	relay.EnableTCPHalfClose()
+	agent.EnableStreamFlowControl()
+	relay.EnableStreamFlowControl()
 	agentRun := make(chan error, 1)
 	relayRun := make(chan error, 1)
 	go func() { agentRun <- agent.Run() }()

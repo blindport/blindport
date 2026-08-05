@@ -392,9 +392,13 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 	halfClose := hello.HasCapability(protocol.CapabilityTCPHalfClose)
+	flowControl := halfClose && hello.HasCapability(protocol.CapabilityStreamFlowControl)
 	reply := &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion}
 	if halfClose {
 		reply.Capabilities = []protocol.Capability{protocol.CapabilityTCPHalfClose}
+	}
+	if flowControl {
+		reply.Capabilities = append(reply.Capabilities, protocol.CapabilityStreamFlowControl)
 	}
 	if err := protocol.WriteFrame(conn, reply); err != nil {
 		r.metrics.control[controlWriteError].Add(1)
@@ -409,6 +413,9 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 	t.SetUDPDropHandler(func() { r.metrics.udp.dropped.Add(1) })
 	if halfClose {
 		t.EnableTCPHalfClose()
+	}
+	if flowControl {
+		t.EnableStreamFlowControl()
 	}
 	handshakeComplete()
 	r.registerTunnel(key, hello.Claim.Kind, t)

@@ -26,16 +26,17 @@ import (
 type FrameType string
 
 const (
-	TypeHello      FrameType = "hello"
-	TypeHelloOK    FrameType = "hello_ok"
-	TypeHelloErr   FrameType = "hello_err"
-	TypeOpen       FrameType = "open"
-	TypeData       FrameType = "data"
-	TypeDatagram   FrameType = "datagram"
-	TypeCloseWrite FrameType = "close_write"
-	TypeClose      FrameType = "close"
-	TypePing       FrameType = "ping"
-	TypePong       FrameType = "pong"
+	TypeHello        FrameType = "hello"
+	TypeHelloOK      FrameType = "hello_ok"
+	TypeHelloErr     FrameType = "hello_err"
+	TypeOpen         FrameType = "open"
+	TypeData         FrameType = "data"
+	TypeDatagram     FrameType = "datagram"
+	TypeWindowUpdate FrameType = "window_update"
+	TypeCloseWrite   FrameType = "close_write"
+	TypeClose        FrameType = "close"
+	TypePing         FrameType = "ping"
+	TypePong         FrameType = "pong"
 )
 
 // Capability identifies an independently negotiated protocol extension.
@@ -44,6 +45,8 @@ type Capability string
 const (
 	// CapabilityTCPHalfClose permits CLOSE_WRITE frames on TCP streams.
 	CapabilityTCPHalfClose Capability = "tcp_half_close"
+	// CapabilityStreamFlowControl permits per-stream WINDOW_UPDATE credit.
+	CapabilityStreamFlowControl Capability = "stream_flow_control"
 )
 
 // ClaimKind identifies which product the client is claiming on this tunnel.
@@ -124,6 +127,7 @@ type Frame struct {
 	Src          string       `json:"src,omitempty"`
 	Dst          string       `json:"dst,omitempty"`
 	Data         []byte       `json:"data,omitempty"`
+	Credit       uint32       `json:"credit,omitempty"`
 	Capabilities []Capability `json:"capabilities,omitempty"`
 }
 
@@ -148,6 +152,8 @@ const (
 	MaxDataPayloadSize = 16 << 10
 	// MaxDatagramPayloadSize is the largest valid IPv4 UDP payload.
 	MaxDatagramPayloadSize = 65507
+	// MaxWindowUpdate is the largest credit increment accepted in one frame.
+	MaxWindowUpdate = 4 << 20
 )
 
 // ValidateVersion permits unversioned legacy TCP sessions and requires the

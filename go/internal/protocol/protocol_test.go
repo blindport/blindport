@@ -15,9 +15,10 @@ func TestFrameRoundtrip(t *testing.T) {
 		{Type: TypeOpen, Stream: 7, Proto: "tcp", Src: "9.9.9.9:1", Dst: "1.2.3.4:443"},
 		{Type: TypeData, Stream: 7, Data: []byte("hello world")},
 		{Type: TypeDatagram, Stream: 8, Data: []byte("one packet")},
+		{Type: TypeWindowUpdate, Stream: 7, Credit: 4096},
 		{Type: TypeCloseWrite, Stream: 7},
 		{Type: TypeClose, Stream: 7},
-		{Type: TypeHelloOK, Capabilities: []Capability{CapabilityTCPHalfClose}},
+		{Type: TypeHelloOK, Capabilities: []Capability{CapabilityTCPHalfClose, CapabilityStreamFlowControl}},
 	}
 	for _, f := range cases {
 		var buf bytes.Buffer
@@ -28,7 +29,7 @@ func TestFrameRoundtrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		if got.Type != f.Type || got.Stream != f.Stream || got.Token != f.Token {
+		if got.Type != f.Type || got.Stream != f.Stream || got.Token != f.Token || got.Credit != f.Credit {
 			t.Errorf("mismatch: %+v vs %+v", got, f)
 		}
 		if !bytes.Equal(got.Data, f.Data) {
@@ -38,12 +39,15 @@ func TestFrameRoundtrip(t *testing.T) {
 }
 
 func TestFrameCapabilities(t *testing.T) {
-	frame := &Frame{Capabilities: []Capability{"future", CapabilityTCPHalfClose}}
+	frame := &Frame{Capabilities: []Capability{"future", CapabilityTCPHalfClose, CapabilityStreamFlowControl}}
 	if !frame.HasCapability(CapabilityTCPHalfClose) {
 		t.Fatal("advertised TCP half-close capability not found")
 	}
 	if frame.HasCapability("missing") {
 		t.Fatal("unadvertised capability found")
+	}
+	if !frame.HasCapability(CapabilityStreamFlowControl) {
+		t.Fatal("advertised stream flow-control capability not found")
 	}
 }
 

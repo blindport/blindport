@@ -302,7 +302,7 @@ func TestControlAdmissionIsReleasedAfterHello(t *testing.T) {
 	claim := &protocol.Claim{Kind: protocol.ClaimIP, IP: "203.0.113.10"}
 	if err := protocol.WriteFrame(client, &protocol.Frame{
 		Type: protocol.TypeHello, Token: "token", Claim: claim,
-		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose},
+		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose, protocol.CapabilityStreamFlowControl},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -312,6 +312,9 @@ func TestControlAdmissionIsReleasedAfterHello(t *testing.T) {
 	}
 	if !reply.HasCapability(protocol.CapabilityTCPHalfClose) {
 		t.Fatal("relay did not select offered TCP half-close capability")
+	}
+	if !reply.HasCapability(protocol.CapabilityStreamFlowControl) {
+		t.Fatal("relay did not select offered stream flow-control capability")
 	}
 	select {
 	case <-released:

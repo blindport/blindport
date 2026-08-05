@@ -470,7 +470,7 @@ func runOnceManaged(ctx context.Context, log *slog.Logger, relayAddr, token stri
 	defer conn.Close()
 	stopCancellation := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopCancellation()
-	halfClose, err := exchangeHello(conn, token, claim, timeout)
+	capabilities, err := exchangeHello(conn, token, claim, timeout)
 	if err != nil {
 		return 0, err
 	}
@@ -480,8 +480,11 @@ func runOnceManaged(ctx context.Context, log *slog.Logger, relayAddr, token stri
 	t := tunnel.New(conn, func(s *tunnel.Stream) {
 		handleIncomingManaged(log, s, claim, upstream, httpChallengeUpstream, expectedTransport, automatic)
 	})
-	if halfClose {
+	if capabilities.halfClose {
 		t.EnableTCPHalfClose()
+	}
+	if capabilities.flowControl {
+		t.EnableStreamFlowControl()
 	}
 	if automatic != nil {
 		automatic.edgeReady()
@@ -509,31 +512,40 @@ func dialRelay(ctx context.Context, dialer contextDialer, relayAddr string, tlsC
 	return tlsConn, nil
 }
 
-func exchangeHello(conn net.Conn, token string, claim *protocol.Claim, timeout time.Duration) (bool, error) {
+type tunnelCapabilities struct {
+	halfClose   bool
+	flowControl bool
+}
+
+func exchangeHello(conn net.Conn, token string, claim *protocol.Claim, timeout time.Duration) (tunnelCapabilities, error) {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return false, fmt.Errorf("set hello deadline: %w", err)
+		return tunnelCapabilities{}, fmt.Errorf("set hello deadline: %w", err)
 	}
 	hello := &protocol.Frame{
 		Type: protocol.TypeHello, Version: protocol.CurrentVersion, Token: token, Claim: claim,
-		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose},
+		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose, protocol.CapabilityStreamFlowControl},
 	}
 	if err := protocol.WriteFrame(conn, hello); err != nil {
-		return false, fmt.Errorf("send hello: %w", err)
+		return tunnelCapabilities{}, fmt.Errorf("send hello: %w", err)
 	}
 	reply, err := protocol.ReadFrame(conn)
 	if err != nil {
-		return false, fmt.Errorf("read hello reply: %w", err)
+		return tunnelCapabilities{}, fmt.Errorf("read hello reply: %w", err)
 	}
 	if reply.Type != protocol.TypeHelloOK {
-		return false, fmt.Errorf("hello rejected: %s", reply.Msg)
+		return tunnelCapabilities{}, fmt.Errorf("hello rejected: %s", reply.Msg)
 	}
 	if err := protocol.ValidateVersion(reply.Version, claim); err != nil {
-		return false, fmt.Errorf("hello version: %w", err)
+		return tunnelCapabilities{}, fmt.Errorf("hello version: %w", err)
 	}
 	if err := conn.SetDeadline(time.Time{}); err != nil {
-		return false, fmt.Errorf("clear hello deadline: %w", err)
+		return tunnelCapabilities{}, fmt.Errorf("clear hello deadline: %w", err)
 	}
-	return reply.HasCapability(protocol.CapabilityTCPHalfClose), nil
+	halfClose := reply.HasCapability(protocol.CapabilityTCPHalfClose)
+	return tunnelCapabilities{
+		halfClose:   halfClose,
+		flowControl: halfClose && reply.HasCapability(protocol.CapabilityStreamFlowControl),
+	}, nil
 }
 
 func claimTransportForTunnel(claim *protocol.Claim) protocol.Transport {

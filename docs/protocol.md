@@ -23,24 +23,28 @@ Current clients send protocol version `1` and advertise independently optional
 capabilities:
 
 ```json
-{"type":"hello","version":1,"token":"...","claim":{"kind":"port","ip":"203.0.113.20","port":10000,"transport":"udp"},"capabilities":["tcp_half_close"]}
+{"type":"hello","version":1,"token":"...","claim":{"kind":"port","ip":"203.0.113.20","port":10000,"transport":"udp"},"capabilities":["tcp_half_close","stream_flow_control"]}
 ```
 
 The relay returns `hello_ok` or `hello_err`. A `hello_ok` echoes only capabilities
 offered by the client and supported by the relay. An absent or empty capability
 list selects no extensions. After `hello_ok`, the relay sends
-`open` frames and both sides exchange `data`, `datagram`, and `close`; `ping`
-receives `pong`. TCP streams use `data` frames with at most 16 KiB. UDP
+`open` frames and both sides exchange `data`, `datagram`, and `close`; negotiated
+peers also exchange `close_write` and `window_update`; `ping` receives `pong`.
+TCP streams use `data` frames with at most 16 KiB. UDP
 associations use one `datagram` frame per complete packet with at most 65,507
 bytes, including a valid zero-length datagram. Stream IDs are nonzero unsigned
 32-bit integers. One tunnel permits a configured number of concurrent streams
-(256 by default, with a hard maximum of 1024). A TCP stream can queue at most 4
-MiB or 512 frames, while all streams on one tunnel share a strict 64 MiB and
-4,096-frame receive budget. The frame caps also bound queue metadata when peers
+(256 by default, with a hard maximum of 1024). A flow-controlled TCP stream can
+queue at most 4 MiB or 512 frames, while all streams on one tunnel share a strict
+64 MiB and 4,096-frame receive budget. The frame caps also bound queue metadata when peers
 send unusually small frames. Enqueue never waits for an application socket, so
 one stalled data stream cannot block control or sibling frames in the multiplexed
-reader. A TCP stream exceeding either its own limit or the shared limit is closed
-without closing the tunnel; queued payload for that offending stream is discarded.
+reader. The final 4 MiB and 256 frame slots are unavailable to a stream already
+holding more than 64 KiB or eight frames, reserving shared capacity for concurrent
+control streams. A TCP stream exceeding either its own limit or the shared limit
+is closed without closing the tunnel; queued payload for that offending stream
+is discarded.
 Payload ordered before a peer `close` or negotiated `close_write` remains readable
 before EOF. Local abort, local full close, and tunnel shutdown release any unread
 queue immediately. UDP retains the nonblocking drop policy described below.
@@ -80,6 +84,26 @@ observes EOF while retaining the ability to send reverse-direction data. A
 the selected capability, peers never send `close_write` and preserve the legacy
 behavior where the first completed copy closes the full stream. `close_write` is
 invalid for UDP streams.
+
+`stream_flow_control` is selected only when the client also offered
+`tcp_half_close`. Each new TCP stream starts with 4 MiB of send credit; each UDP
+stream starts with 512 KiB. Sending `data` or `datagram` consumes payload-sized
+credit before taking the tunnel write mutex. A sender with no credit waits only
+on that stream, and stream or tunnel close wakes it. When application reads fully
+consume a queued frame, the receiver returns exactly those bytes with
+`{"type":"window_update","stream":7,"credit":16384}`. Increments must be
+positive and at most 4 MiB, and total available credit can never exceed the
+stream's initial window. Invalid or inflationary updates close that stream;
+updates for already removed streams are ignored as late control traffic. An
+unnegotiated update or zero stream ID is a tunnel protocol error.
+
+A peer that did not select `stream_flow_control` never receives or sends
+`window_update`. New receivers give such legacy TCP streams a 32 MiB or 4,096-frame
+compatibility backlog under the same 64 MiB tunnel budget. This larger bounded
+fallback absorbs normal long reverse-test jitter without restoring an unbounded
+queue, but sustained legacy senders can still have only their offending stream
+closed when they exceed that limit. Negotiated flow control is therefore required
+for indefinite backpressure without stream abort.
 
 The backend resolution response contains dedicated IP strings, relay domain
 strings, and structured Blindport Port leases. Authorization compares the complete
