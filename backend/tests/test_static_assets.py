@@ -619,6 +619,8 @@ def test_onion_requests_use_host_appropriate_cookie_and_hsts_policy(
     assert "Onion-Location" not in clearnet_api.headers
     assert ">Onion</a>" not in clearnet_landing.text
     assert "Onion service:" not in clearnet_landing.text
+    assert "framed tunnel control are also reachable" not in clearnet_landing.text
+    assert f">{onion}</a>" not in clearnet_landing.text
     assert "Secure" not in onion_login.headers["Set-Cookie"]
     assert "Path=/admin" in onion_login.headers["Set-Cookie"]
     assert "SameSite=strict" in onion_login.headers["Set-Cookie"]
