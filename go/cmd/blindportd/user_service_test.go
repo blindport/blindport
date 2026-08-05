@@ -17,12 +17,12 @@ func TestInstallUserServiceWithFakeSystemctlAndHome(t *testing.T) {
 
 	var output strings.Builder
 	options := userServiceOptions{
-		tokenPath:  tokenPath,
-		stateDir:   filepath.Join(home, ".local", "state", "blindport"),
-		input:      nil,
-		output:     &output,
-		executable: executable,
-		systemctl:  systemctl,
+		tokenPath: tokenPath, stateDir: filepath.Join(home, ".local", "state", "blindport"),
+		backendURL: "https://control.example", relayOverride: "relay.example:5443",
+		serverName: "mtls.example", socks5Address: "127.0.0.1:9050",
+		acmeEmail: "owner@example.com", acmeDirectory: "https://acme.example/directory",
+		insecureSkipTLS: true, input: nil, output: &output,
+		executable: executable, systemctl: systemctl,
 	}
 	if err := installUserService(options); err != nil {
 		t.Fatal(err)
@@ -49,6 +49,13 @@ func TestInstallUserServiceWithFakeSystemctlAndHome(t *testing.T) {
 		`"-config=` + configPath + `"`,
 		`"-token-file=` + tokenPath + `"`,
 		`"-state-dir=` + filepath.Join(home, ".local", "state", "blindport") + `"`,
+		`"-backend=https://control.example"`,
+		`"-relay=relay.example:5443"`,
+		`"-server-name=mtls.example"`,
+		`"-socks5=127.0.0.1:9050"`,
+		`"-acme-email=owner@example.com"`,
+		`"-acme-directory=https://acme.example/directory"`,
+		`"-insecure-skip-tls"`,
 	} {
 		if !strings.Contains(text, expected) {
 			t.Errorf("unit missing %q:\n%s", expected, text)

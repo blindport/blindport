@@ -632,7 +632,8 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
             quick_command = page.locator("#framedRunCommand").text_content()
             assert (
                 quick_command == 'export PATH="$HOME/.local/bin:$PATH" && '
-                'blindportd -config="$HOME/.config/blindport/config.json"'
+                f"blindportd -backend={browser_server.base_url} "
+                '-config="$HOME/.config/blindport/config.json"'
             )
             assert page.locator("#framedRunCommand + button").is_disabled()
             assert page.locator("#installServiceCommand + button").is_disabled()

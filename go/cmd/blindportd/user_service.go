@@ -15,15 +15,22 @@ import (
 const userServiceName = "blindportd.service"
 
 type userServiceOptions struct {
-	configPath string
-	tokenPath  string
-	stateDir   string
-	wireguard  bool
-	docker     bool
-	input      *os.File
-	output     io.Writer
-	executable string
-	systemctl  string
+	configPath      string
+	tokenPath       string
+	stateDir        string
+	backendURL      string
+	relayOverride   string
+	serverName      string
+	socks5Address   string
+	acmeEmail       string
+	acmeDirectory   string
+	insecureSkipTLS bool
+	wireguard       bool
+	docker          bool
+	input           *os.File
+	output          io.Writer
+	executable      string
+	systemctl       string
 }
 
 func installUserService(options userServiceOptions) error {
@@ -105,7 +112,23 @@ func installUserService(options userServiceOptions) error {
 		return fmt.Errorf("prepare user systemd directory: %w", err)
 	}
 	unitPath := filepath.Join(unitDir, userServiceName)
-	unit, err := renderUserService(executable, configPath, tokenPath, stateDir)
+	runtimeArguments := make([]string, 0, 7)
+	for _, argument := range []string{
+		flagArgument("backend", options.backendURL),
+		flagArgument("relay", options.relayOverride),
+		flagArgument("server-name", options.serverName),
+		flagArgument("socks5", options.socks5Address),
+		flagArgument("acme-email", options.acmeEmail),
+		flagArgument("acme-directory", options.acmeDirectory),
+	} {
+		if argument != "" {
+			runtimeArguments = append(runtimeArguments, argument)
+		}
+	}
+	if options.insecureSkipTLS {
+		runtimeArguments = append(runtimeArguments, "-insecure-skip-tls")
+	}
+	unit, err := renderUserService(executable, configPath, tokenPath, stateDir, runtimeArguments...)
 	if err != nil {
 		return err
 	}
@@ -207,8 +230,16 @@ func prepareOwnerControlledDirectory(path string) error {
 	return nil
 }
 
-func renderUserService(executable, configPath, tokenPath, stateDir string) (string, error) {
+func flagArgument(name, value string) string {
+	if value == "" {
+		return ""
+	}
+	return "-" + name + "=" + value
+}
+
+func renderUserService(executable, configPath, tokenPath, stateDir string, runtimeArguments ...string) (string, error) {
 	arguments := []string{executable, "-config=" + configPath, "-token-file=" + tokenPath, "-state-dir=" + stateDir}
+	arguments = append(arguments, runtimeArguments...)
 	quoted := make([]string, len(arguments))
 	for i, argument := range arguments {
 		value, err := quoteSystemdArgument(argument)

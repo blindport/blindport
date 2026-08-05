@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
@@ -74,6 +75,12 @@ def _is_onion_request(request: Request) -> bool:
 
 
 def _ctx(request: Request, **extra) -> dict:
+    request_origin = f"{request.url.scheme}://{request.url.netloc}"
+    backend_flag_shell = (
+        ""
+        if request_origin == "https://blindport.com"
+        else f" -backend={shlex.quote(request_origin)}"
+    )
     public_origin = (
         f"http://{settings.ONION_HOST}" if _is_onion_request(request) else settings.PUBLIC_SITE_URL
     )
@@ -131,6 +138,10 @@ def _ctx(request: Request, **extra) -> dict:
         "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
         "stablecoin_enabled": settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP),
         "reminder_email_enabled": settings.REMINDER_EMAIL_ENABLED,
+        "request_origin_shell": shlex.quote(request_origin),
+        "request_origin_json": json.dumps(request_origin),
+        "backend_flag_shell": backend_flag_shell,
+        "install_script_url_shell": shlex.quote(f"{request_origin}/downloads/install.sh"),
     }
     base.update(extra)
     return base

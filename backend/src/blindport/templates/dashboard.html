@@ -216,7 +216,7 @@
           <ol class="origin-setup-steps">
             <li class="origin-setup-step">
               <div class="origin-step-heading"><span aria-hidden="true">1</span><div><h3>Install the agent</h3><p>Run as your normal Linux user.</p></div></div>
-              <div class="quick-command"><code id="installAgentCommand">curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh</code><button type="button" class="copyCommandBtn" data-copy-target="installAgentCommand">Copy</button></div>
+              <div class="quick-command"><code id="installAgentCommand">curl -fsSL {{ install_script_url_shell }} | sh</code><button type="button" class="copyCommandBtn" data-copy-target="installAgentCommand">Copy</button></div>
               <p class="field-help">The installer downloads and verifies the current release. It installs <code>blindportd</code> to <code>$HOME/.local/bin</code> for a normal user, or <code>/usr/local/bin</code> when run as root, and adds the user path to your shell profile when needed.</p>
             </li>
             <li class="origin-setup-step">
@@ -253,14 +253,14 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
             </li>
             <li class="origin-setup-step">
               <div class="origin-step-heading"><span aria-hidden="true">3</span><div><h3>Start the persistent service</h3><p>This prompts for your account token if it has not been stored, then starts the agent.</p></div></div>
-              <div class="quick-command"><code id="installServiceCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd -install-user-service</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="installServiceCommand" disabled>Copy</button></div>
+              <div class="quick-command"><code id="installServiceCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd -install-user-service{{ backend_flag_shell }}</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="installServiceCommand" disabled>Copy</button></div>
               <div class="service-commands"><code>systemctl --user status blindportd.service</code><code>journalctl --user -u blindportd.service -f</code></div>
               <p class="field-help">For startup before login, enable lingering with <code>loginctl enable-linger "$USER"</code>. Your administrator may need to approve it.</p>
-              <details class="service-update"><summary>Update later</summary><div class="service-commands"><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh</code><code>blindportd -version</code><code>systemctl --user restart blindportd.service</code></div></details>
+              <details class="service-update"><summary>Update later</summary><div class="service-commands"><code>curl -fsSL {{ install_script_url_shell }} | sh</code><code>blindportd -version</code><code>systemctl --user restart blindportd.service</code></div></details>
             </li>
             <li class="origin-setup-step">
               <div class="origin-step-heading"><span aria-hidden="true">4</span><div><h3>Or run in the foreground</h3><p>Use this instead of the persistent service for a temporary session.</p></div></div>
-              <div class="quick-command"><code id="framedRunCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd -config="$HOME/.config/blindport/config.json"</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="framedRunCommand" disabled>Copy</button></div>
+              <div class="quick-command"><code id="framedRunCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="framedRunCommand" disabled>Copy</button></div>
             </li>
           </ol>
         {% elif subscriptions %}
@@ -269,7 +269,7 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
           <p class="muted">Create and activate an endpoint first.</p>
         {% endif %}
         {% if active_wireguard_subscriptions %}
-          <details class="advanced-config"><summary>Routed WireGuard setup</summary><code id="wireGuardRunCommand">curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh &amp;&amp; sudo blindportd -wireguard -backend={{ request.url.scheme }}://{{ request.url.netloc }}</code><button type="button" class="copyCommandBtn button-secondary" data-copy-target="wireGuardRunCommand">Copy WireGuard command</button></details>
+          <details class="advanced-config"><summary>Routed WireGuard setup</summary><code id="wireGuardRunCommand">curl -fsSL {{ install_script_url_shell }} | sh &amp;&amp; sudo blindportd -wireguard{{ backend_flag_shell }}</code><button type="button" class="copyCommandBtn button-secondary" data-copy-target="wireGuardRunCommand">Copy WireGuard command</button></details>
         {% endif %}
       </section>
     </main>

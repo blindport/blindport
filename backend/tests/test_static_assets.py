@@ -213,7 +213,7 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
     assert 'id="stablecoinNotice"' in dashboard
     assert 'class="stablecoinPayBtn button-secondary"' in dashboard
-    assert "/downloads/install.sh | sh" in dashboard
+    assert "install_script_url_shell" in dashboard
     assert "BLINDPORT_DOWNLOAD_BASE_URL=" not in dashboard
     assert "BLINDPORT_INSTALL_DIR=" not in dashboard
     assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
@@ -308,7 +308,7 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "https://github.com/blindport/blindport/issues",
         '"upstream": "127.0.0.1:8080"',
         "blindportd -install-user-service",
-        "blindportd -socks5=127.0.0.1:9050 -config=",
+        "blindportd -socks5=127.0.0.1:9050{{ backend_flag_shell }} -config=",
         'BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"',
         "blindport-state:/var/lib/blindport",
         "GitHub Actions builds versioned static Linux binaries",

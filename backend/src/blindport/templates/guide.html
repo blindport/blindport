@@ -26,7 +26,7 @@
     <section id="install">
       <h2>Install</h2>
       <p>On Linux amd64, arm64, or armv7, install the current agent with one command:</p>
-       <pre><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh</code></pre>
+       <pre><code>curl -fsSL {{ install_script_url_shell }} | sh</code></pre>
        <p>The installer detects your Linux architecture, downloads the current binary and checksum from this site, and verifies SHA-256. As a normal user it installs <code>blindportd</code> to <code>$HOME/.local/bin</code> and adds that directory to your shell profile when needed. When run as root, it installs to <code>/usr/local/bin</code>.</p>
       <details><summary>Manual download and trust details</summary>
       <p>GitHub Actions builds versioned static Linux binaries and publishes them through <a href="https://github.com/blindport/blindport/releases">GitHub Releases</a>. The hosted copies are:</p>
@@ -79,14 +79,14 @@ sudo install -m 0755 blindportd /usr/local/bin/blindportd</code></pre>
       <h2>Start a persistent user service</h2>
       <p>After installing the config, run:</p>
       <pre><code>export PATH="$HOME/.local/bin:$PATH"
-blindportd -install-user-service</code></pre>
+blindportd -install-user-service{{ backend_flag_shell }}</code></pre>
       <p>The command asks for your account token without displaying it, stores it with owner-only permissions, validates the config, and enables and starts <code>blindportd.service</code> for your user.</p>
       <pre><code>systemctl --user status blindportd.service
 journalctl --user -u blindportd.service -f</code></pre>
       <p>To start the service at boot and keep it running while you are logged out, enable lingering. This policy may require administrator approval:</p>
       <pre><code>loginctl enable-linger "$USER"</code></pre>
       <h3>Update the agent</h3>
-      <pre><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh
+      <pre><code>curl -fsSL {{ install_script_url_shell }} | sh
 blindportd -version
 systemctl --user restart blindportd.service</code></pre>
       <p>The installer replaces only the binary. Keep the existing config, token, and <code>$HOME/.local/state/blindport</code> state directory so the client identity and certificates remain available.</p>
@@ -96,7 +96,7 @@ systemctl --user restart blindportd.service</code></pre>
       <h2>Run in the foreground</h2>
       <p>For a temporary session, use the same config without installing the user service:</p>
       <pre><code>export PATH="$HOME/.local/bin:$PATH"
-blindportd -config="$HOME/.config/blindport/config.json"</code></pre>
+blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"</code></pre>
       <p>The first run asks for the account token without echo. Stop the process with <code>Ctrl+C</code>. Restart it after changing the static config.</p>
     </section>
 
@@ -119,7 +119,7 @@ blindportd -config="$HOME/.config/blindport/config.json"</code></pre>
     command: ["--docker"]
     group_add: ["${DOCKER_GID}"]
     environment:
-      BLINDPORT_BACKEND_URL: "{{ request.url.scheme }}://{{ request.url.netloc }}"
+      BLINDPORT_BACKEND_URL: {{ request_origin_json }}
       BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"
       BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
@@ -164,14 +164,14 @@ tech.blindport.mapping.web.acme_terms_accepted: "true"</code></pre>
       <h2>Routed WireGuard mode</h2>
       <p>Prefer framed Relay or Port for a domain or individual TCP/UDP service because it does not require host network privileges. Choose WireGuard only when a Blindport IP workload needs the complete routed public /32, native UDP or ICMP semantics, arbitrary ports, or other IPv4 protocols. It is separate from framed mappings and Docker discovery.</p>
       <p>Run the agent with network administration privileges. Its first root run prompts for the token and creates private root-owned token and identity paths:</p>
-      <pre><code>sudo blindportd -wireguard -backend={{ request.url.scheme }}://{{ request.url.netloc }}</code></pre>
+      <pre><code>sudo blindportd -wireguard{{ backend_flag_shell }}</code></pre>
       <p>The host needs Linux kernel WireGuard and <code>CAP_NET_ADMIN</code> or equivalent privileges. The agent creates <code>bpwg0</code>, assigns the leased public /32, and installs source policy routing without replacing the host's main default route. TCP, UDP, ICMP, and other IPv4 packets route directly without framed stream or datagram encapsulation. Your application must listen on the assigned address or a wildcard socket; routed mode does not dial an upstream.</p>
     </section>
 
     <section id="tor">
       <h2>Tor SOCKS5 transport</h2>
       <p>Route the agent's framed backend and relay connections through a local Tor listener:</p>
-      <pre><code>blindportd -socks5=127.0.0.1:9050 -config="$HOME/.config/blindport/config.json"</code></pre>
+      <pre><code>blindportd -socks5=127.0.0.1:9050{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"</code></pre>
       <p>This mode fails closed if the proxy is unavailable and cannot be combined with WireGuard. It changes the agent's outbound network path; it does not make Blindport an anonymity service.</p>
     </section>
 

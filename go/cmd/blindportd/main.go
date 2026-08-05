@@ -87,7 +87,9 @@ func main() {
 	if *installUserServiceFlag {
 		if err := installUserService(userServiceOptions{
 			configPath: *configPath, tokenPath: *tokenFile, stateDir: *stateDir,
-			wireguard: *wireguardMode, docker: *dockerEnabled,
+			backendURL: *backendURL, relayOverride: *relayOverride, serverName: *serverName,
+			socks5Address: *socks5Address, acmeEmail: *acmeEmail, acmeDirectory: *acmeDirectory,
+			insecureSkipTLS: *insecureSkipTLS, wireguard: *wireguardMode, docker: *dockerEnabled,
 			input: os.Stdin, output: os.Stdout,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "blindportd: install user service: %v\n", err)

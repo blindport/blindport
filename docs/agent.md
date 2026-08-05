@@ -46,6 +46,9 @@ the executable, static config, token file, and existing default state directory,
 so the enrolled client identity remains stable. The bearer token itself is not
 placed in the unit or in systemctl command arguments. The command prints the
 corresponding `systemctl --user status` and `journalctl --user` commands.
+Backend, Relay override, server name, SOCKS5, insecure development TLS, and ACME
+settings supplied by flags or environment are persisted as quoted unit arguments.
+Rerun the installation command after changing one of those settings.
 Enable systemd lingering if the service must start at boot and remain active
 without an interactive login:
 

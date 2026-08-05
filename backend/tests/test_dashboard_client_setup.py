@@ -6,6 +6,7 @@ import html
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -108,7 +109,8 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert 'acmeTermsAccepted" type="checkbox" checked' not in dashboard
     assert run_command == (
         'export PATH="$HOME/.local/bin:$PATH" && '
-        'blindportd -config="$HOME/.config/blindport/config.json"'
+        "blindportd -backend=http://testserver "
+        '-config="$HOME/.config/blindport/config.json"'
     )
     assert "-token-file" not in run_command
     assert config == {
@@ -165,6 +167,30 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert stat.S_IMODE((config_dir / "config.json.backup").stat().st_mode) == 0o600
     assert stat.S_IMODE(installed.stat().st_mode) == 0o600
     assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
+
+
+def test_dashboard_shell_quotes_request_origin_in_commands(app_client) -> None:
+    client, _ = app_client
+    signup = client.post("/api/v2/signup").json()
+    public_id = _create_subscription(client, signup["token"], "port", transport="tcp")
+    _set_status(public_id, SubscriptionStatus.ACTIVE)
+    client.cookies.set("blindport_token", signup["token"])
+    host = "control.example;id"
+
+    response = client.get(f"http://{host}/dashboard")
+
+    assert response.status_code == 200
+    origin = f"http://{host}"
+    assert _element_text(response.text, "installAgentCommand") == (
+        f"curl -fsSL {shlex.quote(origin + '/downloads/install.sh')} | sh"
+    )
+    assert f"-backend={shlex.quote(origin)}" in _element_text(
+        response.text, "installServiceCommand"
+    )
+    guide = html.unescape(client.get(f"http://{host}/guide").text)
+    assert f"curl -fsSL {shlex.quote(origin + '/downloads/install.sh')} | sh" in guide
+    assert f"BLINDPORT_BACKEND_URL: {json.dumps(origin)}" in guide
+    assert f"sudo blindportd -wireguard -backend={shlex.quote(origin)}" in guide
 
 
 def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_client) -> None:
