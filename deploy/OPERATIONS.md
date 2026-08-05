@@ -110,11 +110,17 @@ Optional NWC enablement requires another owner-only secret file containing exact
 `CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key` and mount
 that file on backend and migration services, set `PAYMENT_NWC_ADAPTER=nwc`, then
 set `PAYMENT_ENABLED_METHODS=lightning,nwc`. Do this only after the `0010` rollout.
-Set `NWC_ALLOWED_RELAY_HOSTS` to the exact trusted `wss` relay hostnames; this is
-an egress boundary, uses only standard port 443, and must not contain wildcards.
+Choose exactly one NWC relay egress policy. Set `NWC_ALLOW_PUBLIC_RELAYS=true` to
+accept the relay embedded in each user's connection URI only when it uses `wss`
+port 443 and every DNS answer is globally routable. Alternatively, leave public
+mode false and set `NWC_ALLOWED_RELAY_HOSTS` to exact trusted hostnames without
+wildcards. The backend and helper perform independent policy prechecks. Public
+mode does not pin the SDK connection to a checked DNS answer, so enforce network
+egress rules outside the application if DNS rebinding must be excluded.
 The backend image already contains the architecture-native compiled helper, so no
-Node or Bun service runs in production. Wallet-side budgets and connection expiry
-remain operator/user policy and must cover the selected renewal term plus fees.
+Node or Bun service runs in production. Each user should create a dedicated wallet
+connection with a wallet-enforced budget and expiry that cover the selected renewal
+term plus fees.
 
 Optional stablecoin checkout requires no provider secret. Apply migration `0016`,
 then roll out the new application code to every API and reconciler replica while

@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A reusable Blindport logo system with profile, favicon, app icon, and social
   preview exports, plus Open Graph and large-card metadata for shared links.
 - A checksum-verifying Linux installer and an interactive first-run token prompt.
+- Per-account NWC connection setup with explicit automatic-renewal consent and a
+  public-relay egress policy for wallet-provided connection URIs.
 
 ### Changed
 

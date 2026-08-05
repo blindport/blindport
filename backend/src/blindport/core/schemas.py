@@ -283,6 +283,7 @@ class SetNwcRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nwc_uri: str
+    auto_renew_subscription_id: UUID | None = None
 
 
 class NwcStatusResponse(BaseModel):

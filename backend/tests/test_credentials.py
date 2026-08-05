@@ -98,7 +98,10 @@ def test_nwc_api_and_database_never_disclose_plaintext(app_client) -> None:
     }
     assert uri not in response.text
     assert "private-secret" not in response.text
-    assert uri not in client.get("/api/v1/me/nwc", headers=_auth(token)).text
+    assert response.headers["Cache-Control"] == "no-store"
+    status_response = client.get("/api/v1/me/nwc", headers=_auth(token))
+    assert status_response.headers["Cache-Control"] == "no-store"
+    assert uri not in status_response.text
     assert uri not in client.get("/api/v1/me", headers=_auth(token)).text
 
     from blindport.db import engine
@@ -124,8 +127,82 @@ def test_invalid_nwc_uri_is_not_reflected_by_api(app_client) -> None:
     response = client.post("/api/v1/me/nwc", json={"nwc_uri": oversized}, headers=_auth(token))
 
     assert response.status_code == 400
+    assert response.headers["Cache-Control"] == "no-store"
     assert oversized not in response.text
     assert "private-secret" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [
+        ('{"nwc_uri":', "application/json"),
+        ('{"nwc_uri":7}', "application/json"),
+        ('{"nwc_uri":"nostr+walletconnect://private","private-secret":true}', "application/json"),
+        ('{"nwc_uri":"nostr+walletconnect://private-secret"}', "text/plain"),
+    ],
+)
+def test_malformed_nwc_requests_are_bounded_non_cacheable_and_do_not_reflect_input(
+    app_client, content: str, content_type: str
+) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+
+    response = client.post(
+        "/api/v1/me/nwc",
+        content=content,
+        headers={**_auth(token), "Content-Type": content_type},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "private" not in response.text
+    assert content not in response.text
+
+
+def test_oversized_nwc_request_body_is_rejected_without_reflection(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    secret = "private-secret" * 2_000
+
+    response = client.post(
+        "/api/v1/me/nwc",
+        content=f'{{"nwc_uri":"{secret}"}}',
+        headers={**_auth(token), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.headers["Cache-Control"] == "no-store"
+    assert secret not in response.text
+
+
+def test_nwc_request_accepts_application_json_suffix_media_type(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+
+    response = client.post(
+        "/api/v1/me/nwc",
+        content='{"nwc_uri":"nostr+walletconnect://vendor-json"}',
+        headers={**_auth(token), "Content-Type": "application/vnd.blindport+json"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_nwc_rate_limit_response_is_not_cacheable(app_client, monkeypatch) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    from blindport.services import rate_limits
+
+    monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_PAYMENT_CREATE_REQUESTS", 1)
+    body = {"nwc_uri": "nostr+walletconnect://rate-limited"}
+
+    assert client.post("/api/v1/me/nwc", json=body, headers=_auth(token)).status_code == 200
+    limited = client.post("/api/v1/me/nwc", json=body, headers=_auth(token))
+
+    assert limited.status_code == 429
+    assert limited.headers["Cache-Control"] == "no-store"
+    assert "Retry-After" in limited.headers
 
 
 def test_nwc_delete_revokes_and_disables_auto_renew(app_client) -> None:
@@ -154,6 +231,7 @@ def test_nwc_delete_revokes_and_disables_auto_renew(app_client) -> None:
 
     revoked = client.delete("/api/v1/me/nwc", headers=_auth(token))
 
+    assert revoked.headers["Cache-Control"] == "no-store"
     assert revoked.json() == {
         "has_nwc": False,
         "capabilities": [],
@@ -161,6 +239,87 @@ def test_nwc_delete_revokes_and_disables_auto_renew(app_client) -> None:
     }
     current = client.get("/api/v1/me", headers=_auth(token)).json()
     assert current["subscriptions"][0]["auto_renew"] is False
+
+
+def test_nwc_setup_atomically_enables_automatic_renewal(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "port", "transport": "tcp"},
+        headers=_auth(token),
+    ).json()
+
+    connected = client.post(
+        "/api/v1/me/nwc",
+        json={
+            "nwc_uri": "nostr+walletconnect://automatic-renewal",
+            "auto_renew_subscription_id": subscription["id"],
+        },
+        headers=_auth(token),
+    )
+
+    assert connected.status_code == 200
+    current = client.get("/api/v1/me", headers=_auth(token)).json()
+    assert current["subscriptions"][0]["auto_renew"] is True
+
+
+def test_nwc_setup_rejects_another_accounts_subscription_without_storing_credential(
+    app_client,
+) -> None:
+    client, _ = app_client
+    first_token = client.post("/api/v1/signup").json()["token"]
+    second_token = client.post("/api/v1/signup").json()["token"]
+    second_subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "port", "transport": "tcp"},
+        headers=_auth(second_token),
+    ).json()
+
+    rejected = client.post(
+        "/api/v1/me/nwc",
+        json={
+            "nwc_uri": "nostr+walletconnect://must-not-be-stored",
+            "auto_renew_subscription_id": second_subscription["id"],
+        },
+        headers=_auth(first_token),
+    )
+
+    assert rejected.status_code == 404
+    assert rejected.headers["Cache-Control"] == "no-store"
+    assert client.get("/api/v1/me/nwc", headers=_auth(first_token)).json()["has_nwc"] is False
+
+
+def test_nwc_payments_use_each_accounts_own_decrypted_connection(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    adapter = factory.get_nwc_adapter()
+    original_pay_invoice = adapter.pay_invoice
+    observed_uris: list[str] = []
+
+    def capture_uri(nwc_uri: str, bolt11: str):
+        observed_uris.append(nwc_uri)
+        return original_pay_invoice(nwc_uri, bolt11)
+
+    monkeypatch.setattr(adapter, "pay_invoice", capture_uri)
+    expected: list[str] = []
+    for marker in ("first", "second"):
+        token = client.post("/api/v1/signup").json()["token"]
+        uri = f"nostr+walletconnect://{marker}-account"
+        expected.append(uri)
+        client.post("/api/v1/me/nwc", json={"nwc_uri": uri}, headers=_auth(token))
+        subscription = client.post(
+            "/api/v1/subscriptions",
+            json={"product": "port", "transport": "tcp"},
+            headers=_auth(token),
+        ).json()
+        payment = client.post(
+            "/api/v1/payments",
+            json={"subscription_id": subscription["id"], "method": "nwc"},
+            headers=_auth(token),
+        )
+        assert payment.status_code == 200
+
+    assert observed_uris == expected
 
 
 def test_nwc_rotation_and_deletion_are_blocked_during_open_payment(app_client) -> None:

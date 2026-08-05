@@ -753,7 +753,9 @@ def test_inline_nwc_connects_pays_recovers_and_never_renders_secret(
         card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
         form = card.locator(".inline-nwc-form")
         assert form.is_visible()
-        assert "Automatic renewal stays off." in form.inner_text()
+        auto_renew = form.locator(".inlineNwcAutoRenew")
+        assert auto_renew.is_checked() is False
+        auto_renew.check()
         form.locator(".inlineNwcUri").fill(secret)
         with (
             page.expect_response(
@@ -774,15 +776,21 @@ def test_inline_nwc_connects_pays_recovers_and_never_renders_secret(
         assert payment_response_info.value.ok
         payment = payment_response_info.value.json()
         assert payment["method"] == "nwc"
+        assert (
+            nwc_response_info.value.request.post_data_json["auto_renew_subscription_id"]
+            == (subscription["id"])
+        )
         assert form.locator(".inlineNwcUri").input_value() == ""
         assert secret not in page.locator("body").inner_html()
         assert page.locator(".autoRenewToggle").count() == 0
+        assert card.locator(".autoRenewStatus").text_content() == "On"
 
         page.reload(wait_until="networkidle")
         card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
         assert card.locator(".cardStatus").text_content() == (
             "Connected wallet payment is still pending."
         )
+        assert card.locator(".autoRenewStatus").text_content() == "On"
         assert secret not in page.locator("body").inner_html()
         assert page.locator(".autoRenewToggle").count() == 0
         _assert_layout(page)

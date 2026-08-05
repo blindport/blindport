@@ -646,7 +646,9 @@ def test_dashboard_nwc_setup_is_inline_without_rendering_wallet_secret(
     assert f'data-sub-id="{subscription["id"]}"' in disconnected.text
     assert "inline-nwc-form" in disconnected.text
     assert "Connect and pay" in disconnected.text
-    assert "Automatic renewal stays off." in disconnected.text
+    assert "inlineNwcAutoRenew" in disconnected.text
+    assert "Renew this endpoint automatically" in disconnected.text
+    assert "complete connection URI" in disconnected.text
     assert "autoRenewToggle" not in disconnected.text
 
     secret = "nostr+walletconnect://backend-secret"

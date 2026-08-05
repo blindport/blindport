@@ -54,7 +54,9 @@ The public `GET /api/v1/catalog` endpoint reports prices, sales state, and conse
 capacity. Direct Lightning remains mandatory in production. NWC can be enabled alongside it only
 with the compiled helper, the `nwc` adapter, payment reconciliation, and a dedicated credential
 encryption key. Checked-in production manifests keep NWC disabled until those secrets and user
-wallet connections are provisioned.
+wallet connections are provisioned. Each account submits its complete connection URI. Operators
+must choose either globally routable user-selected `wss:443` relays or a strict exact-host
+allowlist; the URI is encrypted after live capability validation and is never returned.
 
 Stablecoin checkout is separately gated by `STABLECOIN_PAYMENTS_ENABLED` and also requires
 `stablecoin_swap` in `PAYMENT_ENABLED_METHODS`. It creates a marked-up LND invoice, opens the

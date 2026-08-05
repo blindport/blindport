@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, 
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlmodel import Session, select
+from starlette.concurrency import run_in_threadpool
 
 from ..adapters.base import NwcAdapterError
 from ..adapters.factory import get_cashu_adapter, get_nwc_adapter
@@ -218,9 +219,16 @@ def _nwc_status(user: User) -> NwcStatusResponse:
     )
 
 
+_NWC_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
+
+
 def _locked_nwc_user(session: Session, user: User) -> User:
     if user.id is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "account is unavailable")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "account is unavailable",
+            headers=_NWC_RESPONSE_HEADERS,
+        )
     locked = session.exec(
         select(User)
         .where(User.id == user.id)
@@ -240,49 +248,111 @@ def _locked_nwc_user(session: Session, user: User) -> User:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "wallet connection cannot change while an NWC payment is open",
+            headers=_NWC_RESPONSE_HEADERS,
         )
     return locked
 
 
 @router.get("/me/nwc", response_model=NwcStatusResponse)
-def get_nwc_status(user: User = Depends(current_user)) -> NwcStatusResponse:
+def get_nwc_status(
+    response: Response,
+    user: User = Depends(current_user),
+) -> NwcStatusResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
     return _nwc_status(user)
 
 
 @router.post("/me/nwc", response_model=NwcStatusResponse)
-def set_nwc(
-    body: SetNwcRequest,
+async def set_nwc(
+    response: Response,
+    request: Request,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> NwcStatusResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
     try:
         payments_svc.require_payment_method_enabled(PaymentMethod.NWC)
     except payments_svc.DisabledPaymentMethodError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    _enforce_public_rate_limit(
-        session,
-        RateLimitScope.PAYMENT_CREATE,
-        account_identifier(user.id or 0),
-    )
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            str(e),
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from e
+    try:
+        _enforce_public_rate_limit(
+            session,
+            RateLimitScope.PAYMENT_CREATE,
+            account_identifier(user.id or 0),
+        )
+    except HTTPException as error:
+        error.headers = {**(error.headers or {}), **_NWC_RESPONSE_HEADERS}
+        raise
+    try:
+        content_type = request.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+        if content_type != "application/json" and not (
+            content_type.startswith("application/") and content_type.endswith("+json")
+        ):
+            raise ValueError("invalid content type")
+        encoded = bytearray()
+        async for chunk in request.stream():
+            if len(encoded) + len(chunk) > 16_384:
+                raise ValueError("request body is too large")
+            encoded.extend(chunk)
+        body = SetNwcRequest.model_validate(json.loads(encoded))
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError, ValidationError):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "wallet connection request is invalid",
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from None
     nwc_uri = body.nwc_uri.strip()
     if not nwc_uri or len(nwc_uri) > 4096:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "wallet connection URI is invalid")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "wallet connection URI is invalid",
+            headers=_NWC_RESPONSE_HEADERS,
+        )
     try:
-        validation = get_nwc_adapter().validate_connection(nwc_uri)
+        validation = await run_in_threadpool(get_nwc_adapter().validate_connection, nwc_uri)
     except NwcAdapterError as error:
         response_status = (
             status.HTTP_502_BAD_GATEWAY if error.retryable else status.HTTP_400_BAD_REQUEST
         )
-        raise HTTPException(response_status, str(error)) from error
+        raise HTTPException(
+            response_status,
+            str(error),
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
     user = _locked_nwc_user(session, user)
+    subscription = None
+    if body.auto_renew_subscription_id is not None:
+        subscription = session.exec(
+            select(Subscription)
+            .where(
+                Subscription.public_id == body.auto_renew_subscription_id,
+                Subscription.user_id == user.id,
+                Subscription.status != SubscriptionStatus.CANCELLED,
+            )
+            .with_for_update()
+        ).first()
+        if subscription is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "subscription not found",
+                headers=_NWC_RESPONSE_HEADERS,
+            )
     try:
         store_nwc_credential(user, nwc_uri, validation.capabilities)
     except ValueError as error:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "wallet credential encryption is unavailable",
+            headers=_NWC_RESPONSE_HEADERS,
         ) from error
     session.add(user)
+    if subscription is not None:
+        subscription.auto_renew = True
+        session.add(subscription)
     session.commit()
     session.refresh(user)
     return _nwc_status(user)
@@ -290,9 +360,11 @@ def set_nwc(
 
 @router.delete("/me/nwc", response_model=NwcStatusResponse)
 def clear_nwc(
+    response: Response,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> NwcStatusResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
     user = _locked_nwc_user(session, user)
     clear_nwc_credential(user)
     for subscription in session.exec(
@@ -589,11 +661,21 @@ def toggle_auto_renew(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> dict:
+    if user.id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "account is unavailable")
+    user = session.exec(
+        select(User)
+        .where(User.id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
     sub = session.exec(
-        select(Subscription).where(
+        select(Subscription)
+        .where(
             Subscription.public_id == public_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     ).first()
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "subscription not found")

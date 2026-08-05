@@ -600,17 +600,24 @@ comma-separated, distinct 32-byte keys encoded as 64 lowercase hexadecimal
 characters. The first key encrypts; key fingerprints select older keys for
 decryption. Keep old keys until all credentials have been rewritten under the
 new primary. Never reuse the invoice HMAC key or another application secret.
-Set `NWC_ALLOWED_RELAY_HOSTS` to an exact comma-separated list of trusted relay
-hostnames. Wildcards are not accepted. This bounds the helper's outbound WebSocket
-connections to standard `wss` port 443 and must include every relay used by customer
-NWC credentials.
+Choose exactly one relay egress policy. `NWC_ALLOW_PUBLIC_RELAYS=true` accepts the
+relay URLs embedded in account-provided connection URIs only on standard `wss`
+port 443. Both Python and the helper resolve every hostname before SDK use and
+reject empty answers or any private, loopback, link-local, reserved, or otherwise
+non-global unicast address. These are preflight checks: the SDK performs its own DNS
+resolution when connecting, so network-level egress controls remain necessary where
+DNS rebinding is in scope. For a narrower deployment, leave public mode false and set
+`NWC_ALLOWED_RELAY_HOSTS` to an exact comma-separated list of trusted hostnames;
+wildcards are not accepted. Configuring both policies is rejected.
 
 NWC credentials are AES-256-GCM encrypted with a random 96-bit nonce. The public
 account UUID and credential purpose are authenticated as AAD. Migration `0010`
 revokes all pre-production plaintext values, retains the legacy `nwc_uri` column
 only for rolling old-backend reads, and prevents old replicas from restoring a
 non-null value. API responses expose only connection status, capabilities, and
-last validation time.
+last validation time and are marked `Cache-Control: no-store`. Inline setup may
+atomically enable automatic renewal for one subscription owned by the account;
+the checkbox is never implicit and revoking the credential disables every renewal.
 Credential replacement and deletion are blocked while an NWC payment is open, because
 safe lookup must retain the same wallet connection generation used for the attempt.
 

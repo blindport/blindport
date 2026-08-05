@@ -123,6 +123,12 @@ rows snapshot the credential generation. A single-shot compiled Bun helper owns
 NIP-47 and NIP-44 handling and communicates with Python only through bounded JSON
 stdin/stdout. It validates wallet service metadata before every operation and
 rejects NIP-04 or missing pay/lookup capabilities.
+Each connection URI supplies its own relay URLs. Deployments either restrict those
+URLs to exact configured hostnames or admit only `wss:443` hostnames whose complete
+DNS result is globally routable; Python and the helper precheck the policy separately.
+The SDK resolves again when connecting, so these checks do not eliminate DNS rebinding;
+deployments requiring a hard boundary also enforce network-level egress policy.
+Credential setup can atomically record explicit per-subscription renewal consent.
 
 An NWC payment records its attempt before calling the wallet and claims a bounded
 database lease around lookup/send decisions. LND is checked first. Any previous

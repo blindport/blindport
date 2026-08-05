@@ -116,6 +116,33 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                     )
                     if not verification.verified:
                         continue
+                user = session.exec(
+                    select(User)
+                    .where(User.id == subscription.user_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).one_or_none()
+                session.refresh(subscription)
+                period_end = _aware(subscription.current_period_end)
+                if (
+                    user is None
+                    or not user.has_nwc
+                    or user.is_admin
+                    or user.is_suspended
+                    or not subscription.auto_renew
+                    or subscription.status != SubscriptionStatus.ACTIVE
+                    or period_end is None
+                    or period_end > due_before
+                ):
+                    continue
+                open_payment = session.exec(
+                    select(Payment.id).where(
+                        Payment.subscription_id == subscription.id,
+                        Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+                    )
+                ).first()
+                if open_payment is not None:
+                    continue
                 create_payment(
                     session,
                     subscription,

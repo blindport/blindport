@@ -446,6 +446,7 @@ document.querySelectorAll(".inline-nwc-form").forEach((form) => {
     event.preventDefault();
     const button = form.querySelector(".inlineNwcPayBtn");
     const input = form.querySelector(".inlineNwcUri");
+    const autoRenew = form.querySelector(".inlineNwcAutoRenew");
     const card = form.closest(".subscription-card");
     const status = card.querySelector(".cardStatus");
     button.disabled = true;
@@ -455,10 +456,18 @@ document.querySelectorAll(".inline-nwc-form").forEach((form) => {
       await jsonFetch("/api/v1/me/nwc", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ nwc_uri: input.value }),
+        body: JSON.stringify({
+          nwc_uri: input.value,
+          auto_renew_subscription_id: autoRenew.checked ? form.dataset.subId : null,
+        }),
       });
       input.value = "";
-      status.textContent = "Wallet connected. Sending the initial payment.";
+      if (autoRenew.checked) {
+        card.querySelector(".autoRenewStatus").textContent = "On";
+      }
+      status.textContent = autoRenew.checked
+        ? "Wallet connected. Automatic renewal enabled. Sending the initial payment."
+        : "Wallet connected. Sending the initial payment.";
       await startNwcFlow(form.dataset.subId, selectedPaymentTerm(card), button);
     } catch (error) {
       input.value = "";

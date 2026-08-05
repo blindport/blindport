@@ -590,3 +590,50 @@ def test_custom_domain_auto_renew_requires_fresh_cname(app_client, monkeypatch) 
     assert summary.auto_renewed == 0
     with Session(engine) as session:
         assert session.exec(select(Payment)).all() == []
+
+
+def test_auto_renew_rechecks_consent_after_domain_preflight(app_client, monkeypatch) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    client.post(
+        "/api/v1/me/nwc",
+        json={"nwc_uri": "nostr+walletconnect://revoked-during-preflight"},
+        headers=_auth(token),
+    )
+    subscription = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "relay", "domain": "consent-race.example"},
+        headers=_auth(token),
+    ).json()
+
+    from blindport.core.models import Payment, SubscriptionStatus
+    from blindport.db import engine
+    from blindport.services import payment_reconciliation
+    from blindport.services.domain_verification import DomainVerificationResult
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.status = SubscriptionStatus.ACTIVE
+        stored.domain_verified_at = datetime.now(UTC)
+        stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
+        stored.auto_renew = True
+        session.add(stored)
+        session.commit()
+
+    def revoke_consent(*args, **kwargs):
+        with Session(engine) as session:
+            stored = subscription_by_public_id(session, subscription["id"])
+            assert stored is not None
+            stored.auto_renew = False
+            session.add(stored)
+            session.commit()
+        return DomainVerificationResult(True, "CNAME target matched")
+
+    monkeypatch.setattr(payment_reconciliation, "verify_subscription_domain", revoke_consent)
+
+    summary = payment_reconciliation.reconcile_pending_payments_once()
+
+    assert summary.auto_renewed == 0
+    with Session(engine) as session:
+        assert session.exec(select(Payment)).all() == []
