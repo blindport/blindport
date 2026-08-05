@@ -27,7 +27,6 @@
 }
 
 {$API_DOMAIN} {
-	header Onion-Location "http://{$ONION_HOST}{uri}"
 	request_body {
 		max_size 1MB
 	}
