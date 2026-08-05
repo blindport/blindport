@@ -235,7 +235,10 @@ Routed Blindport IP has a separate packet path:
 
 ```text
 external IP packet -> provider route to relay -> authorized WireGuard peer
-                   -> customer Linux interface owning the leased /32
+                    -> customer Linux interface owning the leased /32
+
+customer packet sourced from leased /32 -> WireGuard peer -> relay policy
+                                         -> external IPv4 destination
 ```
 
 The relay installs each active `/32` as a link route to WireGuard and blackholes
@@ -243,10 +246,23 @@ inactive or unenrolled managed inventory. The agent installs the `/32` locally
 and uses a source rule plus a dedicated default-route table for replies. It does
 not replace the host default route. The relay performs no source or destination
 NAT, so the application observes the external peer and uses the leased address
-as its source. The route is layer 3 rather than a per-service tunnel, so it carries
+as its source. Applications can explicitly bind the leased address for new
+outbound connections; those packets use the same source rule and public identity.
+The route is layer 3 rather than a per-service tunnel, so it carries
 TCP, native UDP, ICMP, arbitrary ports, and other IPv4 protocol numbers without
 framed TCP head-of-line behavior. Current routed support is IPv4 `/32` only with
 MTU 1420 and requires Linux network administration capability at both endpoints.
+
+The relay reconciles an nftables policy in the dedicated `inet blindport` table
+before activating routes. Customer packets cannot target the relay host or
+non-global IPv4 ranges. New outbound TCP connections to port 25 are denied unless
+the current active IP lease has an operator-reviewed paid exception. The policy,
+peer set, and routes fail closed together when backend state becomes stale.
+
+Revision `0017` records every dedicated IP assignment episode independently of
+the compatibility assignment columns on `Subscription`. Reservation, activation,
+quarantine, release, SMTP review, and revocation remain available after an address
+is reassigned.
 
 ## Authentication and revocation
 

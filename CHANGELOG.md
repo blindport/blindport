@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Annual-only bidirectional routed Blindport IP, with durable assignment history,
+  reviewed paid TCP/25 exceptions, and fail-closed nftables policy reconciliation.
 - Optional stablecoin checkout through a prefilled external Boltz flow, with a
   configurable satoshi surcharge, dedicated kill switch, and LND-only settlement.
 - Approximate cached Bitcoin/USD price labels, bounded unpaid Relay name holds,

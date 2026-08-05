@@ -1,0 +1,26 @@
+services:
+  relay:
+    user: "0:0"
+    environment:
+      BLINDPORT_RELAY_WIREGUARD: "1"
+      BLINDPORT_RELAY_WIREGUARD_KEY_FILE: /run/secrets/wireguard-key
+      BLINDPORT_RELAY_WIREGUARD_PORT: ${WIREGUARD_PORT:-51820}
+      BLINDPORT_RELAY_WIREGUARD_MTU: ${WIREGUARD_MTU:-1420}
+      BLINDPORT_RELAY_WIREGUARD_INTERVAL: ${WIREGUARD_RECONCILE_INTERVAL:-10s}
+      BLINDPORT_RELAY_WIREGUARD_MAX_STALENESS: ${WIREGUARD_MAX_STALENESS:-90s}
+    secrets:
+      - source: relay-secret
+        target: relay-secret
+        uid: "0"
+        gid: "0"
+        mode: 0400
+      - source: wireguard-key
+        target: wireguard-key
+        uid: "0"
+        gid: "0"
+        mode: 0400
+    cap_add: [NET_ADMIN]
+
+secrets:
+  wireguard-key:
+    file: ${SECRETS_DIR:-./secrets}/wireguard-key

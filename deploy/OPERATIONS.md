@@ -62,6 +62,17 @@ connection. The checked-in Compose environments remain Lightning-only.
 Keep reminder email disabled until migration `0013` is applied and SMTP plus
 recipient-encryption settings are installed. Reminder delivery does not require
 customer NWC enablement.
+For routed-IP rollout, replace and verify every relay before deploying the new
+backend. The new relay safely falls back to the old v1 desired state with no
+TCP/25 exceptions. An old relay has no routed nftables policy, so never leave one
+serving routed traffic after the new backend or SMTP approvals are enabled.
+Drain every old API and reconciliation replica before applying migration `0017`,
+then deploy the annual routed-IP backend. The migration backfills one imported
+lease episode for each currently assigned dedicated IP. Do not run mixed old/new
+writers after the migration because old code does not write the lease audit table.
+The `0017` downgrade drops all lease and SMTP review history. For rollback to a
+pre-`0017` image, stop every writer and restore the matching pre-migration
+database backup instead of treating a downgrade as history-preserving.
 Migration `0013` permanently scrubs the retired paid-delivery fields. A rollback to
 an image built for the deployed pre-`0013` schema requires restoring the matching
 pre-migration database backup; the `0013` downgrade cannot reconstruct those fields.
@@ -91,8 +102,23 @@ install -o 10001 -g 10001 -m 0400 /path/to/tls.cert secrets/lnd-tls-cert
 install -o 10001 -g 10001 -m 0400 /path/to/invoice.macaroon secrets/lnd-invoice-macaroon
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/credential-encryption-key
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/smtp-password
+install -o 10001 -g 10001 -m 0400 /dev/null secrets/wireguard-key
 install -o root -g root -m 0400 /dev/null secrets/postgres-password
 ```
+
+When routed WireGuard is enabled, generate its key separately instead of leaving
+an empty placeholder:
+
+```sh
+temporary=$(mktemp)
+wg genkey > "$temporary"
+install -o 10001 -g 10001 -m 0400 "$temporary" secrets/wireguard-key
+rm -f "$temporary"
+wg pubkey < secrets/wireguard-key
+```
+
+Put the final command's output in `WIREGUARD_RELAY_PUBLIC_KEY`. Never copy the
+private key to the control host.
 
 Generate independent random values for the application secret, token-hash key, relay
 secret, admin token, database password, and 32-byte invoice HMAC key. The five Blindport
@@ -289,16 +315,40 @@ configured TCP/UDP Blindport Port. Relay admin remains on loopback
 `:9090`. Permit the relay host's private source address through the control Caddy
 allowlist and verify `BACKEND_INTERNAL_URL` resolves over that private route.
 
-No deployment sets framed `RELAY_PUBLIC_IPS`, `WIREGUARD_PUBLIC_IPS`, or WireGuard
-keys/endpoints. The relay has only `NET_BIND_SERVICE` for direct `:80/:443`; it never has
-`NET_ADMIN`. Add host firewall rules for `80/tcp`, `443/tcp`, `5443/tcp`, and the
+Framed `RELAY_PUBLIC_IPS` remains disabled in the checked-in split topology.
+Routed `WIREGUARD_PUBLIC_IPS` is optional and wired through both production
+topologies. Before applying the routed Compose overlay, arrange provider routes
+for every `/32`, persist `net.ipv4.ip_forward=1`, create the owner-only
+`secrets/wireguard-key`, set its public half and endpoint on the control host,
+and allow `51820/udp`. The relay receives `NET_ADMIN` for WireGuard, routes, and
+its dedicated nftables table. The routed overlay runs the process as UID 0 so
+that capability is effective, while retaining `cap_drop: ALL`, explicit
+capability additions, `no-new-privileges`, and a read-only root filesystem. Keep
+every other host firewall rule in operator tables. Add host rules for `80/tcp`,
+`443/tcp`, `5443/tcp`, `51820/udp`, and the
 configured TCP and UDP Blindport Port ranges. Do not expose `9090/tcp`.
+The base Compose files keep routed inventory hidden, keep WireGuard disabled,
+do not grant `NET_ADMIN`, and do not mount the key. Apply
+`compose.wireguard.yaml` on both the control and relay host. For the canary, the
+single overlay configures both services:
 
 ```sh
-docker compose --env-file .env -f compose.yaml pull
-docker compose --env-file .env -f compose.yaml up -d
-docker compose --env-file .env -f compose.yaml ps
+docker compose --env-file .env -f compose.yaml -f compose.wireguard.yaml up -d
 ```
+
+Run `nft list table inet blindport` after startup and verify the input, active
+source, non-global destination, and TCP/25 rules before activating sales. Test
+both directions from an external network and confirm the outbound observer sees
+the leased `/32`, not the relay's primary address. Readiness fails when peer,
+route, or nftables state cannot be reconciled.
+
+```sh
+docker compose --env-file .env -f compose.yaml -f compose.wireguard.yaml pull
+docker compose --env-file .env -f compose.yaml -f compose.wireguard.yaml up -d
+docker compose --env-file .env -f compose.yaml -f compose.wireguard.yaml ps
+```
+
+For a relay without routed inventory, omit `-f compose.wireguard.yaml`.
 
 ## Validation
 

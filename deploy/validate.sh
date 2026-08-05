@@ -72,6 +72,95 @@ for name, service in services.items():
 '
 }
 
+wireguard_production_policy_check() {
+    control_directory="$1"
+    relay_directory="$2"
+    docker compose \
+        --env-file "$root/$control_directory/.env.example" \
+        -f "$root/$control_directory/compose.yaml" \
+        -f "$root/$control_directory/compose.wireguard.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+backend = json.load(sys.stdin)["services"]["backend"]
+environment = backend["environment"]
+assert "WIREGUARD_PUBLIC_IPS" in environment
+assert "WIREGUARD_RELAY_PUBLIC_KEY" in environment
+assert environment["WIREGUARD_ENDPOINT"].endswith(":51820")
+assert int(environment["WIREGUARD_SMTP_EGRESS_FEE_SATS"]) > 0
+'
+
+    docker compose \
+        --env-file "$root/$control_directory/.env.example" \
+        -f "$root/$control_directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+environment = json.load(sys.stdin)["services"]["backend"]["environment"]
+assert environment["WIREGUARD_PUBLIC_IPS"] == ""
+assert environment["WIREGUARD_RELAY_PUBLIC_KEY"] == ""
+assert environment["WIREGUARD_ENDPOINT"] == ""
+'
+
+    docker compose \
+        --env-file "$root/$relay_directory/.env.example" \
+        -f "$root/$relay_directory/compose.yaml" \
+        -f "$root/$relay_directory/compose.wireguard.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+relay = json.load(sys.stdin)["services"]["relay"]
+environment = relay["environment"]
+assert relay["network_mode"] == "host"
+assert "NET_ADMIN" in relay["cap_add"]
+assert relay["user"] == "0:0"
+assert relay["read_only"] is True
+assert environment["BLINDPORT_RELAY_WIREGUARD"] == "1"
+assert environment["BLINDPORT_RELAY_WIREGUARD_KEY_FILE"] == "/run/secrets/wireguard-key"
+assert int(environment["BLINDPORT_RELAY_WIREGUARD_PORT"]) == 51820
+assert "BLINDPORT_RELAY_WIREGUARD_ALLOW_PRIVATE_DESTINATIONS" not in environment
+secret_names = {
+    item if isinstance(item, str) else item.get("source")
+    for item in relay["secrets"]
+}
+assert "wireguard-key" in secret_names
+for name in ("relay-secret", "wireguard-key"):
+    mounted = next(
+        item for item in relay["secrets"]
+        if isinstance(item, dict) and item.get("source") == name
+    )
+    assert mounted["uid"] == "0"
+    assert mounted["gid"] == "0"
+'
+
+    docker compose \
+        --env-file "$root/$relay_directory/.env.example" \
+        -f "$root/$relay_directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+relay = json.load(sys.stdin)["services"]["relay"]
+environment = relay["environment"]
+assert environment["BLINDPORT_RELAY_WIREGUARD"] == "0"
+assert "NET_ADMIN" not in relay.get("cap_add", [])
+assert relay.get("user", "10001:10001") != "0:0"
+assert "BLINDPORT_RELAY_WIREGUARD_KEY_FILE" not in environment
+secret_names = {
+    item if isinstance(item, str) else item.get("source")
+    for item in relay.get("secrets", [])
+}
+assert "wireguard-key" not in secret_names
+'
+}
+
 address_log_policy_check() {
     python3 - \
         "$root/deploy/journald-blindport.conf" \
@@ -347,6 +436,8 @@ smtp_secret_scope_check deploy/split/control
 logging_policy_check deploy/canary
 logging_policy_check deploy/split/control
 logging_policy_check deploy/split/relay
+wireguard_production_policy_check deploy/canary deploy/canary
+wireguard_production_policy_check deploy/split/control deploy/split/relay
 address_log_policy_check
 caddy_check deploy/canary
 caddy_check deploy/canary Caddyfile.internal

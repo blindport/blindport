@@ -3,8 +3,9 @@
 Blindport is an experimental Bitcoin-paid reachability service for self-hosted
 origins. Framed delivery uses an authenticated outbound tunnel to multiplex TCP
 streams or UDP datagrams to configured local upstreams. Routed Blindport IP delivery
-uses WireGuard to assign a provider-routed public IPv4 `/32` directly to the
-customer host without NAT.
+uses WireGuard to assign a static provider-routed public IPv4 `/32` directly to
+the customer host without NAT. The same address receives inbound traffic and
+sources outbound traffic sent through the interface.
 
 Use framed Relay or Port delivery by default for domains and individual services:
 it needs no network-administration capability and works with ordinary relay ingress
@@ -29,8 +30,10 @@ The three products use distinct ingress identities:
 
 - **Blindport IP** leases one dedicated public IP. `framed` delivery forwards
   selected TCP listeners without host network privileges; `wireguard` delivery
-  routes the full IPv4 `/32`, including UDP, ICMP, and arbitrary ports, to a
-  privileged Linux customer host.
+  is an annual-only lease that routes the full IPv4 `/32`, including TCP, UDP,
+  ICMP, arbitrary ports, and outbound traffic, to a privileged Linux customer
+  host. New outbound TCP connections to port 25 are blocked unless the operator
+  approves a paid exception for the current lease.
 - **Blindport Port** leases exactly one `(shared public IP, port, TCP or UDP)` socket.
   Shared addresses are separate inventory from dedicated Blindport IP addresses.
 - **Blindport Relay** leases one hostname. By default, `blindportd` obtains and

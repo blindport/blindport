@@ -336,9 +336,24 @@ routed `/32`, and configures the backend-provided relay peer, endpoint, MTU, and
 persistent keepalive. Change the interface with
 `BLINDPORT_WIREGUARD_INTERFACE`. The interface uses `AllowedIPs=0.0.0.0/0`, but
 the host main default route is unchanged. Only packets sourced from an assigned
-`/32` use policy table `51820` and rule priorities starting at `51820`; override
+`/32` use policy table `51820` and rule priorities starting at `10000`, ahead of
+Linux's main-table rule at `32766`; override
 these with `BLINDPORT_WIREGUARD_ROUTE_TABLE` and
 `BLINDPORT_WIREGUARD_RULE_PRIORITY` when they conflict with local routing policy.
+
+The public `/32` is bidirectional. An application listening on that address or a
+wildcard socket receives any protocol and port allowed by the customer firewall.
+An application that binds the `/32` as its outbound source uses the WireGuard
+policy table and appears to remote systems from the same static public address.
+Unbound host traffic continues to use the normal host default route. A dedicated
+container or network namespace may make `bpwg0` its default route when all of that
+namespace's IPv4 traffic should use the leased address. Blindport does not change
+the host-wide default route or configure DNS.
+
+Outbound TCP port 25 is denied at the relay by default. A manually reviewed paid
+exception is attached to one active lease and does not carry over if the address
+is released or reassigned. Authenticated submission ports 465 and 587 are not
+part of this default block.
 
 The agent generates a separate WireGuard key and atomically persists it as
 owner-only `wireguard.json` under `BLINDPORT_STATE_DIR`. It signs public-key

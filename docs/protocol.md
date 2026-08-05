@@ -9,6 +9,12 @@ This protocol applies only to `framed` delivery. Routed WireGuard Blindport IP u
 standard WireGuard transport and the HTTP enrollment and desired-state APIs; it
 does not encapsulate packets in these JSON frames.
 
+The routed relay requests `/internal/v2/wireguard/peers`, which extends the v1
+peer snapshot with `smtp_allowed_prefixes`. Relays fall back to v1 during rolling
+deployment, treating the absent list as empty so outbound TCP/25 remains denied.
+The backend revision digest covers peers, managed inventory, and that exception
+set. Firewall policy is applied before newly authorized routes are activated.
+
 ## Transport and framing
 
 Each `blindportd` worker opens one TCP connection to one relay control listener.

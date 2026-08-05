@@ -194,6 +194,50 @@ relay installs active `/32` link routes and blackholes all other managed
 inventory. Do not add SNAT or DNAT; preserving both endpoint addresses is part
 of the routed product contract.
 
+Routed Blindport IP is annual-only. Keep `BILLING_YEARLY_ENABLED=true` whenever
+new routed inventory is offered. Existing monthly payment snapshots remain
+settleable during rollout, but all new orders and renewals use 365 service days.
+
+The relay image includes nftables and owns only the `inet blindport` table. It
+atomically replaces that table during desired-state reconciliation. Do not create
+an operator table with the same family and name. Keep the host's independent
+INPUT, FORWARD, and OUTPUT policy in separate tables; Blindport policy does not
+replace later operator policy. It blocks customer access to the relay host,
+non-global IPv4 destinations, invalid leased sources, and outbound TCP port 25
+without an approved exception. Return traffic for established inbound sessions
+remains allowed.
+
+`BLINDPORT_RELAY_WIREGUARD_ALLOW_PRIVATE_DESTINATIONS=1` exists only for the
+isolated Docker E2E topology. Never set it on an Internet-connected relay.
+
+The production `compose.wireguard.yaml` overlays expose routed inventory to the
+backend, mount `secrets/wireguard-key` on the relay, and grant it `NET_ADMIN`;
+the base manifests do none of these. The overlay runs the relay as UID 0 because
+Docker does not retain `NET_ADMIN` effectively for the image's non-root user;
+all other capabilities remain dropped and `no-new-privileges` stays enabled. Set
+`WIREGUARD_RELAY_PUBLIC_KEY` to that key's public half. Persist
+`net.ipv4.ip_forward=1` on the host, permit UDP 51820, and verify provider return
+routing before enabling sales. A netlink or nftables failure prevents routed
+readiness and route activation.
+
+During rollout, deploy the nftables-aware relay before the annual routed-IP
+backend. It can consume the old v1 snapshot and defaults TCP/25 to denied. Drain
+all old relay processes before exposing v2 state or recording exceptions; an old
+relay does not enforce the routed policy.
+
+Approve a TCP/25 exception only after reviewing the intended use and safeguards
+and confirming receipt of at least `WIREGUARD_SMTP_EGRESS_FEE_SATS`. The admin
+records the use, fee, review reference, and revocation state against the current
+lease. Approval is removed on quarantine, release, suspension, or reassignment.
+Ports 465 and 587 are not included in this default block.
+
+Dedicated IPs remain unavailable for reuse for seven days by default after an
+assignment ends. Configure `IP_REUSE_QUARANTINE_SECONDS` between one hour and 90
+days according to inventory and reputation risk. Do not shorten it below the
+WireGuard reconciliation interval plus maximum staleness. Keep an account
+suspended, rather than expiring and recycling its address, while an abuse case is
+still under review.
+
 The relay retains the last good desired state during short backend failures. At
 maximum staleness it removes all peers, blackholes the full pool, and fails
 readiness until a valid snapshot is applied. A process with no successful
