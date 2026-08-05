@@ -142,6 +142,11 @@ x-backend-secrets: &backend-secrets
     uid: "10001"
     gid: "10001"
     mode: 0400
+  - source: credential-encryption-key
+    target: credential-encryption-key
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
 
 services:
   postgres:
@@ -182,7 +187,6 @@ services:
     environment:
       <<: *backend-environment
       REMINDER_EMAIL_ENABLED: "false"
-      CREDENTIAL_ENCRYPTION_KEY_FILE: ""
       SMTP_PASSWORD_FILE: ""
     secrets: *backend-secrets
     volumes:

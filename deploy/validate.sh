@@ -53,6 +53,29 @@ for name, service in services.items():
 '
 }
 
+migration_credential_scope_check() {
+    directory="$1"
+    docker compose \
+        --profile tools \
+        --env-file "$root/$directory/.env.example" \
+        -f "$root/$directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+migrate = services["migrate"]
+environment = migrate["environment"]
+assert environment["CREDENTIAL_ENCRYPTION_KEY_FILE"] == services["backend"]["environment"]["CREDENTIAL_ENCRYPTION_KEY_FILE"]
+secret_names = {
+    item if isinstance(item, str) else item.get("source")
+    for item in migrate.get("secrets", [])
+}
+assert "credential-encryption-key" in secret_names
+'
+}
+
 logging_policy_check() {
     directory="$1"
     docker compose \
@@ -433,6 +456,8 @@ backend_healthcheck_policy_check deploy/canary
 backend_healthcheck_policy_check deploy/split/control
 smtp_secret_scope_check deploy/canary
 smtp_secret_scope_check deploy/split/control
+migration_credential_scope_check deploy/canary
+migration_credential_scope_check deploy/split/control
 logging_policy_check deploy/canary
 logging_policy_check deploy/split/control
 logging_policy_check deploy/split/relay
