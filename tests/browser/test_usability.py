@@ -799,6 +799,129 @@ def test_inline_nwc_connects_pays_recovers_and_never_renders_secret(
         context.close()
 
 
+def test_nwc_budget_preflight_and_terminal_error_are_actionable(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        headers = {"Authorization": f"Bearer {account['token']}"}
+        assert request.post(
+            "/api/v1/me/nwc",
+            headers=headers,
+            data={"nwc_uri": "nostr+walletconnect://browser-budget-secret"},
+        ).ok
+        response = request.post(
+            "/api/v1/subscriptions",
+            headers=headers,
+            data={"product": "port", "transport": "tcp"},
+        )
+        assert response.ok, response.text()
+        subscription = response.json()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    required_sats = subscription["monthly_price_sats"]
+    budget_response = {
+        "state": "available",
+        "used_budget_msats": 1_000,
+        "total_budget_msats": required_sats * 1_000,
+        "renews_at": None,
+        "renewal_period": "monthly",
+    }
+    budget_available = False
+    payment_requests = 0
+
+    def route_budget(route) -> None:
+        if not budget_available:
+            route.fulfill(
+                status=503,
+                content_type="application/json",
+                json={"detail": "wallet transport is unavailable"},
+            )
+            return
+        route.fulfill(status=200, content_type="application/json", json=budget_response)
+
+    def route_payment(route) -> None:
+        nonlocal payment_requests
+        if route.request.method != "POST":
+            route.continue_()
+            return
+        payment_requests += 1
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "status": "failed",
+                "nwc_error_code": "quota_exceeded",
+            },
+        )
+
+    page.route("**/api/v1/me/nwc/budget", route_budget)
+    page.route("**/api/v1/payments", route_payment)
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        unavailable_notice = (
+            "The wallet spending limit could not be read. The wallet will enforce it during "
+            "payment."
+        )
+        assert page.locator("#nwcBudget").text_content() == unavailable_notice
+        budget_available = True
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        button = card.get_by_role("button", name="Pay with connected wallet")
+        budget_error = (
+            f"Wallet budget is {required_sats - 1} sats, but this payment needs "
+            f"{required_sats} sats plus possible routing fees. Increase the wallet budget "
+            "and try again."
+        )
+        button.click()
+        page.wait_for_function(
+            "({ selector, text }) => document.querySelector(selector)?.textContent === text",
+            arg={
+                "selector": f'.subscription-card[data-sub-id="{subscription["id"]}"] .cardStatus',
+                "text": budget_error,
+            },
+        )
+        assert card.locator(".cardStatus").text_content() == budget_error
+        assert payment_requests == 0
+        assert button.is_enabled()
+
+        budget_response.clear()
+        budget_response.update({"state": "unsupported"})
+        button.click()
+        wallet_error = (
+            "This wallet connection has reached its spending limit. Increase the budget "
+            "and allow room for possible routing fees."
+        )
+        page.wait_for_function(
+            "({ selector, text }) => document.querySelector(selector)?.textContent === text",
+            arg={
+                "selector": f'.subscription-card[data-sub-id="{subscription["id"]}"] .cardStatus',
+                "text": wallet_error,
+            },
+        )
+        assert card.locator(".cardStatus").text_content() == wallet_error
+        assert payment_requests == 1
+        assert button.is_enabled()
+        _assert_layout(page)
+    finally:
+        context.close()
+
+
 def test_inline_nwc_handles_existing_manual_payment_conflict(
     browser: Browser,
     browser_server: BrowserServer,

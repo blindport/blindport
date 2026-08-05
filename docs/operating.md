@@ -590,8 +590,11 @@ NWC uses the compiled `/usr/local/bin/blindport-nwc-helper`, which handles one
 bounded JSON request on stdin and one bounded JSON response on stdout. It accepts
 only strict `nostr+walletconnect://` URIs with lowercase 32-byte wallet and secret
 keys, one or more `wss` relays, and only `relay`, `secret`, and optional `lud16`
-query fields. Before validation, payment, or lookup, it requires `nip44_v2`,
-`pay_invoice`, and `lookup_invoice`; NIP-04 fallback is never allowed.
+query fields. Before validation, payment, lookup, or budget discovery, it requires
+`nip44_v2`, `pay_invoice`, and `lookup_invoice`; NIP-04 fallback is never allowed.
+NIP-04 uses an unauthenticated legacy payload format, leaks message length, and is
+deprecated by NIP-47. Blindport does not silently downgrade unattended recurring
+payment credentials; update or replace wallets that advertise only NIP-04.
 
 To enable NWC, retain `lightning` in `PAYMENT_ENABLED_METHODS`, set
 `PAYMENT_NWC_ADAPTER=nwc`, add `nwc` to the allowlist, and install
@@ -620,6 +623,14 @@ atomically enable automatic renewal for one subscription owned by the account;
 the checkbox is never implicit and revoking the credential disables every renewal.
 Credential replacement and deletion are blocked while an NWC payment is open, because
 safe lookup must retain the same wallet connection generation used for the attempt.
+The authenticated budget endpoint also uses `Cache-Control: no-store`. It calls
+the nonstandard `get_budget` extension only when the wallet advertises it and
+strictly validates millisatoshi amounts, renewal periods, and renewal timestamps.
+Unsupported or temporarily unavailable budget discovery does not block a valid
+NIP-47 payment. The dashboard blocks an attempt only when a reported finite
+remaining budget is below the invoice amount. Budget treatment of Lightning
+routing fees is wallet-specific, so users should leave margin above the service
+price; Alby Hub includes fees and pending fee reserves in its budget accounting.
 
 Blindport's LND invoice and payment hash are authoritative. Every NWC cycle checks
 LND first. After an attempted send, the backend performs NWC lookup before any

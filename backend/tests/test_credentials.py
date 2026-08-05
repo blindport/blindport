@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import Session, select
 
+from blindport.adapters.base import NwcAdapterError, NwcBudgetResult, NwcBudgetState
 from blindport.core.credentials import (
     CredentialCipher,
     CredentialError,
@@ -117,6 +118,140 @@ def test_nwc_api_and_database_never_disclose_plaintext(app_client) -> None:
     assert uri not in row.nwc_ciphertext
     assert row.nwc_key_version
     assert bool(row.has_nwc) is True
+
+
+def test_nwc_budget_api_returns_only_strict_budget_metadata(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    uri = "nostr+walletconnect://budget-private-secret"
+    assert (
+        client.post("/api/v1/me/nwc", json={"nwc_uri": uri}, headers=_auth(token)).status_code
+        == 200
+    )
+    monkeypatch.setattr(
+        factory.get_nwc_adapter(),
+        "get_budget",
+        lambda nwc_uri: NwcBudgetResult(
+            NwcBudgetState.AVAILABLE,
+            used_budget_msats=1_250_000,
+            total_budget_msats=5_000_000,
+            renews_at=1_800_000_000,
+            renewal_period="monthly",
+        ),
+    )
+
+    response = client.get("/api/v1/me/nwc/budget", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.json() == {
+        "state": "available",
+        "used_budget_msats": 1_250_000,
+        "total_budget_msats": 5_000_000,
+        "renews_at": 1_800_000_000,
+        "renewal_period": "monthly",
+    }
+    assert uri not in response.text
+    assert "private-secret" not in response.text
+
+
+def test_nwc_budget_api_requires_a_connection(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+
+    response = client.get("/api/v1/me/nwc/budget", headers=_auth(token))
+
+    assert response.status_code == 400
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.json()["detail"] == "wallet connection is unavailable"
+
+
+def test_nwc_budget_api_rejects_invalid_adapter_metadata(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    uri = "nostr+walletconnect://invalid-budget-private-secret"
+    assert (
+        client.post("/api/v1/me/nwc", json={"nwc_uri": uri}, headers=_auth(token)).status_code
+        == 200
+    )
+    monkeypatch.setattr(
+        factory.get_nwc_adapter(),
+        "get_budget",
+        lambda nwc_uri: NwcBudgetResult(
+            NwcBudgetState.AVAILABLE,
+            used_budget_msats=2_000,
+            total_budget_msats=1_000,
+            renewal_period="monthly",
+        ),
+    )
+
+    response = client.get("/api/v1/me/nwc/budget", headers=_auth(token))
+
+    assert response.status_code == 502
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.json()["detail"] == "wallet adapter returned an invalid budget"
+    assert uri not in response.text
+    assert "private-secret" not in response.text
+
+
+def test_nwc_budget_api_treats_protocol_failure_as_upstream(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    assert (
+        client.post(
+            "/api/v1/me/nwc",
+            json={"nwc_uri": "nostr+walletconnect://protocol-failure"},
+            headers=_auth(token),
+        ).status_code
+        == 200
+    )
+    monkeypatch.setattr(
+        factory.get_nwc_adapter(),
+        "get_budget",
+        lambda nwc_uri: (_ for _ in ()).throw(
+            NwcAdapterError(
+                "protocol", "wallet helper returned an invalid response", retryable=False
+            )
+        ),
+    )
+
+    response = client.get("/api/v1/me/nwc/budget", headers=_auth(token))
+
+    assert response.status_code == 502
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.json()["detail"] == "wallet helper returned an invalid response"
+
+
+def test_nwc_budget_api_is_rate_limited_before_wallet_access(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    assert (
+        client.post(
+            "/api/v1/me/nwc",
+            json={"nwc_uri": "nostr+walletconnect://budget-rate-limit"},
+            headers=_auth(token),
+        ).status_code
+        == 200
+    )
+    from blindport.services import rate_limits
+
+    monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_PAYMENT_CREATE_REQUESTS", 2)
+    budget_calls = 0
+
+    def get_budget(nwc_uri: str) -> NwcBudgetResult:
+        nonlocal budget_calls
+        budget_calls += 1
+        return NwcBudgetResult(NwcBudgetState.UNSUPPORTED)
+
+    monkeypatch.setattr(factory.get_nwc_adapter(), "get_budget", get_budget)
+
+    assert client.get("/api/v1/me/nwc/budget", headers=_auth(token)).status_code == 200
+    limited = client.get("/api/v1/me/nwc/budget", headers=_auth(token))
+
+    assert limited.status_code == 429
+    assert limited.headers["Cache-Control"] == "no-store"
+    assert "Retry-After" in limited.headers
+    assert budget_calls == 1
 
 
 def test_invalid_nwc_uri_is_not_reflected_by_api(app_client) -> None:

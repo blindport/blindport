@@ -10,6 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 
 @dataclass
@@ -121,10 +122,25 @@ class NwcLookupState(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+class NwcBudgetState(StrEnum):
+    AVAILABLE = "available"
+    UNLIMITED = "unlimited"
+    UNSUPPORTED = "unsupported"
+
+
 @dataclass(frozen=True)
 class NwcValidationResult:
     capabilities: tuple[str, ...]
     encryptions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NwcBudgetResult:
+    state: NwcBudgetState
+    used_budget_msats: int | None = None
+    total_budget_msats: int | None = None
+    renews_at: int | None = None
+    renewal_period: Literal["daily", "weekly", "monthly", "yearly", "never"] | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +172,9 @@ class NwcAdapter(ABC):
 
     @abstractmethod
     def validate_connection(self, nwc_uri: str) -> NwcValidationResult: ...
+
+    def get_budget(self, nwc_uri: str) -> NwcBudgetResult:
+        return NwcBudgetResult(NwcBudgetState.UNSUPPORTED)
 
     @abstractmethod
     def pay_invoice(self, nwc_uri: str, bolt11: str) -> NwcPayResult: ...

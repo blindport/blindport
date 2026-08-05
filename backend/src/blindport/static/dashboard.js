@@ -213,6 +213,69 @@ function updatePaymentTermControl(card) {
   }
 }
 
+function selectedPaymentAmount(card, term) {
+  const value = term === "yearly" ? card.dataset.yearlyPrice : card.dataset.monthlyPrice;
+  return Number.parseInt(value, 10);
+}
+
+function describeNwcBudget(budget) {
+  if (budget.state === "unsupported") {
+    return "The wallet does not report its spending limit. Leave room for possible routing fees.";
+  }
+  if (budget.state === "unlimited") {
+    return "The wallet reports no finite spending limit.";
+  }
+  const remainingMsats = Math.max(0, budget.total_budget_msats - budget.used_budget_msats);
+  const remainingSats = Math.floor(remainingMsats / 1000);
+  const totalSats = Math.floor(budget.total_budget_msats / 1000);
+  const renewal = budget.renews_at
+    ? ` Renews ${new Date(budget.renews_at * 1000).toLocaleString()}.`
+    : "";
+  return `Wallet budget: ${remainingSats} of ${totalSats} sats remaining.${renewal} Routing fees may also count.`;
+}
+
+function describeNwcPaymentError(code) {
+  const messages = {
+    expired: "This wallet connection has expired. Connect a new wallet permission.",
+    insufficient_balance: "The wallet cannot cover this payment and its possible routing fees.",
+    payment_failed: "The wallet could not complete the Lightning payment. A route or sufficient liquidity may be unavailable.",
+    quota_exceeded: "This wallet connection has reached its spending limit. Increase the budget and allow room for possible routing fees.",
+    restricted: "The wallet policy rejected this payment.",
+    unauthorized: "This wallet connection is no longer authorized.",
+    unsupported_capability: "This wallet connection lacks payment or lookup permission.",
+    unsupported_encryption: "This wallet connection does not support NIP-44 v2.",
+  };
+  return messages[code] || null;
+}
+
+async function checkNwcBudget(status, requiredSats = null) {
+  let budget;
+  try {
+    budget = await jsonFetch("/api/v1/me/nwc/budget", { headers: authHeaders() });
+  } catch {
+    const unavailable = {
+      canPay: true,
+      notice: "The wallet spending limit could not be read. The wallet will enforce it during payment.",
+    };
+    if (status) status.textContent = unavailable.notice;
+    return unavailable;
+  }
+  const notice = describeNwcBudget(budget);
+  if (status) status.textContent = notice;
+  if (budget.state !== "available" || requiredSats === null) {
+    return { canPay: true, notice };
+  }
+  const remainingMsats = budget.total_budget_msats - budget.used_budget_msats;
+  if (remainingMsats >= requiredSats * 1000) {
+    return { canPay: true, notice };
+  }
+  const remainingSats = Math.floor(Math.max(0, remainingMsats) / 1000);
+  return {
+    canPay: false,
+    notice: `Wallet budget is ${remainingSats} sats, but this payment needs ${requiredSats} sats plus possible routing fees. Increase the wallet budget and try again.`,
+  };
+}
+
 function preparePaymentPanel(method) {
   const panel = document.getElementById("payPanel");
   panel.dataset.paymentMethod = method;
@@ -351,6 +414,11 @@ async function pollPayment(payment, status) {
       return true;
     }
     if (current.status === "expired" || current.status === "failed") {
+      const errorMessage = describeNwcPaymentError(current.nwc_error_code);
+      if (current.method === "nwc" && errorMessage) {
+        status.textContent = errorMessage;
+        return false;
+      }
       status.textContent = `Payment ${current.status}. Refreshing the endpoint.`;
       window.setTimeout(() => window.location.reload(), 800);
       return false;
@@ -360,19 +428,28 @@ async function pollPayment(payment, status) {
   return false;
 }
 
-async function startNwcFlow(subId, term, trigger) {
+async function startNwcFlow(subId, term, trigger, budgetNotice = "") {
   const originalText = trigger.textContent;
   const cardStatus = trigger.closest(".subscription-card")?.querySelector(".cardStatus");
   const status = cardStatus || document.getElementById("nwcStatus") || trigger;
   trigger.disabled = true;
   trigger.textContent = "Sending payment...";
-  status.textContent = "Sending payment from the connected wallet.";
+  status.textContent = budgetNotice
+    ? `Sending payment from the connected wallet. ${budgetNotice}`
+    : "Sending payment from the connected wallet.";
   try {
     const payment = await jsonFetch("/api/v1/payments", {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({ subscription_id: subId, method: "nwc", billing_term: term }),
     });
+    const errorMessage = describeNwcPaymentError(payment.nwc_error_code);
+    if (payment.status === "failed" && errorMessage) {
+      status.textContent = errorMessage;
+      trigger.disabled = false;
+      trigger.textContent = originalText;
+      return;
+    }
     status.textContent = `Wallet payment ${payment.nwc_state || payment.status}.`;
     const paid = await pollPayment(payment, status);
     if (paid) return;
@@ -432,12 +509,18 @@ document.querySelectorAll(".stablecoinPayBtn").forEach((button) => {
 
 document.querySelectorAll(".nwcPayBtn").forEach((button) => {
   const card = button.closest(".subscription-card");
-  button.addEventListener("click", () => {
-    startNwcFlow(
-      button.dataset.subId,
-      selectedPaymentTerm(card),
-      button,
-    );
+  button.addEventListener("click", async () => {
+    const term = selectedPaymentTerm(card);
+    const status = card.querySelector(".cardStatus");
+    button.disabled = true;
+    status.textContent = "Checking the wallet spending limit.";
+    const preflight = await checkNwcBudget(status, selectedPaymentAmount(card, term));
+    if (!preflight.canPay) {
+      status.textContent = preflight.notice;
+      button.disabled = false;
+      return;
+    }
+    await startNwcFlow(button.dataset.subId, term, button, preflight.notice);
   });
 });
 
@@ -468,7 +551,15 @@ document.querySelectorAll(".inline-nwc-form").forEach((form) => {
       status.textContent = autoRenew.checked
         ? "Wallet connected. Automatic renewal enabled. Sending the initial payment."
         : "Wallet connected. Sending the initial payment.";
-      await startNwcFlow(form.dataset.subId, selectedPaymentTerm(card), button);
+      const term = selectedPaymentTerm(card);
+      const preflight = await checkNwcBudget(status, selectedPaymentAmount(card, term));
+      if (!preflight.canPay) {
+        status.textContent = preflight.notice;
+        button.textContent = "Wallet connected";
+        window.setTimeout(() => window.location.reload(), 2500);
+        return;
+      }
+      await startNwcFlow(form.dataset.subId, term, button, preflight.notice);
     } catch (error) {
       input.value = "";
       status.textContent = `Wallet connection error: ${error.message}`;
@@ -575,6 +666,11 @@ if (nwcForm) {
       button.disabled = false;
     }
   });
+}
+
+const nwcBudget = document.getElementById("nwcBudget");
+if (nwcBudget) {
+  checkNwcBudget(nwcBudget);
 }
 
 const revokeNwcButton = document.getElementById("revokeNwcBtn");

@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .base import (
     NwcAdapter,
     NwcAdapterError,
+    NwcBudgetResult,
+    NwcBudgetState,
     NwcLookupResult,
     NwcLookupState,
     NwcPaymentState,
@@ -79,6 +81,32 @@ class _Validation(_StrictModel):
     state: Literal["valid"]
     capabilities: list[Literal["pay_invoice", "lookup_invoice"]]
     encryptions: list[Literal["nip44_v2"]]
+
+
+class _Budget(_StrictModel):
+    state: Literal["available", "unlimited", "unsupported"]
+    used_budget_msats: int | None = Field(default=None, ge=0, le=9_007_199_254_740_991)
+    total_budget_msats: int | None = Field(default=None, ge=0, le=9_007_199_254_740_991)
+    renews_at: int | None = Field(default=None, ge=0, le=253_402_300_799)
+    renewal_period: Literal["daily", "weekly", "monthly", "yearly", "never"] | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self):
+        amounts = self.used_budget_msats is not None and self.total_budget_msats is not None
+        if self.state == "available":
+            if (
+                not amounts
+                or self.used_budget_msats > self.total_budget_msats
+                or self.renewal_period is None
+            ):
+                raise ValueError("available budget requires valid amounts")
+            if self.renewal_period == "never" and self.renews_at is not None:
+                raise ValueError("non-renewing budget has a renewal time")
+        elif amounts or self.used_budget_msats is not None or self.total_budget_msats is not None:
+            raise ValueError("non-finite budget includes amounts")
+        elif self.renews_at is not None or self.renewal_period is not None:
+            raise ValueError("non-finite budget includes renewal details")
+        return self
 
 
 class _Pay(_StrictModel):
@@ -353,6 +381,32 @@ class SubprocessNwcAdapter(NwcAdapter):
                 "protocol", "wallet helper returned an invalid response", retryable=False
             ) from None
         return NwcPayResult(NwcPaymentState(result.state), result.preimage, result.fees_paid_msats)
+
+    def get_budget(self, nwc_uri: str) -> NwcBudgetResult:
+        self._validate_relay_hosts(nwc_uri)
+        try:
+            result = _Budget.model_validate(
+                self._invoke(
+                    {
+                        "version": 1,
+                        "operation": "get_budget",
+                        "nwc_uri": nwc_uri,
+                        "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
+                        "allow_public_relays": self._allow_public_relays,
+                    }
+                )
+            )
+        except ValidationError:
+            raise NwcAdapterError(
+                "protocol", "wallet helper returned an invalid response", retryable=False
+            ) from None
+        return NwcBudgetResult(
+            NwcBudgetState(result.state),
+            result.used_budget_msats,
+            result.total_budget_msats,
+            result.renews_at,
+            result.renewal_period,
+        )
 
     def lookup_invoice(self, nwc_uri: str, payment_hash: str) -> NwcLookupResult:
         self._validate_relay_hosts(nwc_uri)

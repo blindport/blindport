@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from blindport.adapters.base import NwcAdapterError, NwcLookupState
+from blindport.adapters.base import NwcAdapter, NwcAdapterError, NwcBudgetState, NwcLookupState
 from blindport.adapters.nwc import SubprocessNwcAdapter
 
 _PUBKEY = "11" * 32
@@ -23,6 +23,10 @@ def _helper(tmp_path: Path, body: str) -> str:
 
 def _adapter(executable: str, timeout: float = 2) -> SubprocessNwcAdapter:
     return SubprocessNwcAdapter(executable, timeout, ("relay.example",))
+
+
+def test_budget_extension_is_optional_for_legacy_adapters() -> None:
+    assert "get_budget" not in NwcAdapter.__abstractmethods__
 
 
 def test_subprocess_sends_secret_only_in_bounded_stdin_and_parses_strict_json(tmp_path) -> None:
@@ -107,6 +111,46 @@ print(json.dumps({{"version": 1, "ok": True, "result": {{
 
     assert result.state == NwcLookupState.PENDING
     assert result.payment_hash == payment_hash
+
+
+def test_subprocess_budget_result_schema(tmp_path) -> None:
+    executable = _helper(
+        tmp_path,
+        """import json
+print(json.dumps({"version": 1, "ok": True, "result": {
+    "state": "available", "used_budget_msats": 1250000,
+    "total_budget_msats": 5000000, "renews_at": 1800000000,
+    "renewal_period": "monthly"}}))
+""",
+    )
+
+    result = _adapter(executable).get_budget(_URI)
+
+    assert result.state == NwcBudgetState.AVAILABLE
+    assert result.used_budget_msats == 1_250_000
+    assert result.total_budget_msats == 5_000_000
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"state": "available", "used_budget_msats": 1},
+        {"state": "available", "used_budget_msats": 0, "total_budget_msats": 1},
+        {"state": "available", "used_budget_msats": 2, "total_budget_msats": 1},
+        {"state": "unsupported", "used_budget_msats": 0, "total_budget_msats": 1},
+        {"state": "unlimited", "renewal_period": "monthly"},
+    ],
+)
+def test_subprocess_rejects_invalid_budget_result(tmp_path, result) -> None:
+    executable = _helper(
+        tmp_path,
+        f"import json\nprint(json.dumps({{'version': 1, 'ok': True, 'result': {result!r}}}))\n",
+    )
+
+    with pytest.raises(NwcAdapterError) as exc_info:
+        _adapter(executable).get_budget(_URI)
+
+    assert exc_info.value.code == "protocol"
 
 
 def test_subprocess_rejects_non_allowlisted_relay_before_helper_execution(tmp_path) -> None:

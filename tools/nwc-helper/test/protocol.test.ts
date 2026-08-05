@@ -22,6 +22,7 @@ function factory(overrides: Partial<Client> = {}): { create: ClientFactory; clie
       encryptions: ["nip44_v2"],
       capabilities: ["pay_invoice", "lookup_invoice"],
     }),
+    getBudget: async () => ({}),
     payInvoice: async () => ({ preimage: "33".repeat(32), fees_paid: 42 }),
     lookupInvoice: async () => ({
       state: "settled",
@@ -202,6 +203,88 @@ describe("wallet operations", () => {
     expect(closed).toBeTrue();
   });
 
+  test("returns a strictly validated advertised spending budget", async () => {
+    const { create } = factory({
+      getWalletServiceInfo: async () => ({
+        encryptions: ["nip44_v2"],
+        capabilities: ["pay_invoice", "lookup_invoice", "get_budget"],
+      }),
+      getBudget: async () => ({
+        used_budget: 1_250_000,
+        total_budget: 5_000_000,
+        renews_at: 1_800_000_000,
+        renewal_period: "monthly",
+      }),
+    });
+
+    const response = await executeRequest(
+      request({ version: 1, operation: "get_budget", nwc_uri: uri }),
+      create,
+    );
+
+    expect(response).toEqual({
+      version: 1,
+      ok: true,
+      result: {
+        state: "available",
+        used_budget_msats: 1_250_000,
+        total_budget_msats: 5_000_000,
+        renews_at: 1_800_000_000,
+        renewal_period: "monthly",
+      },
+    });
+  });
+
+  test("reports absent and unlimited budget extensions without guessing", async () => {
+    const unsupported = factory();
+    expect(
+      await executeRequest(
+        request({ version: 1, operation: "get_budget", nwc_uri: uri }),
+        unsupported.create,
+      ),
+    ).toEqual({ version: 1, ok: true, result: { state: "unsupported" } });
+
+    const unlimited = factory({
+      getWalletServiceInfo: async () => ({
+        encryptions: ["nip44_v2"],
+        capabilities: ["pay_invoice", "lookup_invoice", "get_budget"],
+      }),
+    });
+    expect(
+      await executeRequest(
+        request({ version: 1, operation: "get_budget", nwc_uri: uri }),
+        unlimited.create,
+      ),
+    ).toEqual({ version: 1, ok: true, result: { state: "unlimited" } });
+  });
+
+  test.each([
+    null,
+    { private_detail: secret },
+    { used_budget: 1 },
+    { used_budget: 0, total_budget: 1 },
+    { used_budget: 2, total_budget: 1 },
+    { used_budget: -1, total_budget: 1 },
+    { used_budget: 0, total_budget: 1, renewal_period: "sometimes" },
+    { used_budget: 0, total_budget: 1, renews_at: -1 },
+  ])("rejects malformed wallet budgets", async (budget) => {
+    const { create } = factory({
+      getWalletServiceInfo: async () => ({
+        encryptions: ["nip44_v2"],
+        capabilities: ["pay_invoice", "lookup_invoice", "get_budget"],
+      }),
+      getBudget: async () => budget as never,
+    });
+
+    const response = await executeRequest(
+      request({ version: 1, operation: "get_budget", nwc_uri: uri }),
+      create,
+    );
+
+    expect(response.ok).toBeFalse();
+    if (!response.ok) expect(response.error.code).toBe("invalid_wallet_response");
+  });
+
   test("maps not found lookup to an explicit state", async () => {
     const error = Object.assign(new Error("private wallet detail"), { code: "NOT_FOUND" });
     const { create } = factory({ lookupInvoice: async () => { throw error; } });
@@ -217,8 +300,12 @@ describe("wallet operations", () => {
     expect(response).toEqual({ version: 1, ok: true, result: { state: "not_found" } });
   });
 
-  test("returns sanitized terminal wallet errors", async () => {
-    const error = Object.assign(new Error(`leaked ${secret}`), { code: "INSUFFICIENT_BALANCE" });
+  test.each([
+    ["QUOTA_EXCEEDED", "quota_exceeded"],
+    ["INSUFFICIENT_BALANCE", "insufficient_balance"],
+    ["PAYMENT_FAILED", "payment_failed"],
+  ])("returns sanitized terminal wallet error %s", async (walletCode, safeCode) => {
+    const error = Object.assign(new Error(`leaked ${secret}`), { code: walletCode });
     const { create } = factory({ payInvoice: async () => { throw error; } });
     const response = await executeRequest(
       request({ version: 1, operation: "pay_invoice", nwc_uri: uri, invoice: "lnbc1private" }),
@@ -227,7 +314,7 @@ describe("wallet operations", () => {
     expect(JSON.stringify(response)).not.toContain(secret);
     expect(JSON.stringify(response)).not.toContain("lnbc1private");
     if (!response.ok) {
-      expect(response.error.code).toBe("insufficient_balance");
+      expect(response.error.code).toBe(safeCode);
       expect(response.error.retryable).toBeFalse();
     }
   });

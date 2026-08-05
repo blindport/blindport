@@ -16,6 +16,7 @@ interface RequestBase {
 
 export type Request =
   | RequestBase & { operation: "validate" }
+  | RequestBase & { operation: "get_budget" }
   | {
       version: 1;
       operation: "pay_invoice";
@@ -50,8 +51,16 @@ interface TransactionResponse {
   fees_paid: number;
 }
 
+interface BudgetResponse {
+  used_budget?: number;
+  total_budget?: number;
+  renews_at?: number;
+  renewal_period?: string;
+}
+
 export interface Client {
   getWalletServiceInfo(): Promise<WalletServiceInfo>;
+  getBudget(): Promise<BudgetResponse>;
   payInvoice(request: { invoice: string }): Promise<PayResponse>;
   lookupInvoice(request: { payment_hash: string }): Promise<TransactionResponse>;
   close(): unknown;
@@ -149,7 +158,12 @@ function requireBoolean(value: unknown, field: string): boolean {
 export function parseRequest(value: unknown): Request {
   const object = requireObject(value);
   const operation = object.operation;
-  if (operation !== "validate" && operation !== "pay_invoice" && operation !== "lookup_invoice") {
+  if (
+    operation !== "validate" &&
+    operation !== "get_budget" &&
+    operation !== "pay_invoice" &&
+    operation !== "lookup_invoice"
+  ) {
     throw new ProtocolError("invalid_request", "operation is unsupported");
   }
   const allowed = [
@@ -353,6 +367,60 @@ function safeFees(value: unknown): number | null {
   return value as number;
 }
 
+function safeBudget(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+  }
+  const budget = value as Record<string, unknown>;
+  const allowed = ["used_budget", "total_budget", "renews_at", "renewal_period"];
+  if (Object.keys(budget).some((key) => !allowed.includes(key))) {
+    throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+  }
+  const hasUsed = budget.used_budget !== undefined;
+  const hasTotal = budget.total_budget !== undefined;
+  if (hasUsed !== hasTotal) {
+    throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+  }
+  if (!hasUsed) {
+    if (budget.renews_at !== undefined || budget.renewal_period !== undefined) {
+      throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+    }
+    return { state: "unlimited" };
+  }
+  if (
+    !Number.isSafeInteger(budget.used_budget) ||
+    (budget.used_budget as number) < 0 ||
+    !Number.isSafeInteger(budget.total_budget) ||
+    (budget.total_budget as number) < 0 ||
+    (budget.used_budget as number) > (budget.total_budget as number)
+  ) {
+    throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+  }
+  const periods = ["daily", "weekly", "monthly", "yearly", "never"];
+  if (
+    typeof budget.renewal_period !== "string" ||
+    !periods.includes(budget.renewal_period)
+  ) {
+    throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+  }
+  if (
+    budget.renews_at !== undefined &&
+    (!Number.isSafeInteger(budget.renews_at) ||
+      (budget.renews_at as number) < 0 ||
+      (budget.renews_at as number) > 253_402_300_799 ||
+      budget.renewal_period === "never")
+  ) {
+    throw new ProtocolError("invalid_wallet_response", "wallet returned an invalid budget");
+  }
+  return {
+    state: "available",
+    used_budget_msats: budget.used_budget,
+    total_budget_msats: budget.total_budget,
+    ...(budget.renews_at === undefined ? {} : { renews_at: budget.renews_at }),
+    renewal_period: budget.renewal_period,
+  };
+}
+
 function mapError(error: unknown): SafeError {
   if (error instanceof ProtocolError) {
     return { code: error.code, message: error.safeMessage, retryable: error.retryable };
@@ -437,6 +505,12 @@ export async function executeRequest(
           encryptions: ["nip44_v2"],
         },
       };
+    }
+    if (request.operation === "get_budget") {
+      if (!info.capabilities.includes("get_budget")) {
+        return { version: 1, ok: true, result: { state: "unsupported" } };
+      }
+      return { version: 1, ok: true, result: safeBudget(await client.getBudget()) };
     }
     if (request.operation === "pay_invoice") {
       const paid = await client.payInvoice({ invoice: request.invoice });

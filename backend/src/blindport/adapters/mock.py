@@ -17,6 +17,8 @@ from .base import (
     LightningInvoice,
     LightningInvoiceState,
     NwcAdapter,
+    NwcBudgetResult,
+    NwcBudgetState,
     NwcLookupResult,
     NwcLookupState,
     NwcPaymentState,
@@ -191,6 +193,11 @@ class MockNwcAdapter(NwcAdapter):
             capabilities=("pay_invoice", "lookup_invoice"),
             encryptions=("nip44_v2",),
         )
+
+    def get_budget(self, nwc_uri: str) -> NwcBudgetResult:
+        if not nwc_uri:
+            raise ValueError("NWC URI is required")
+        return NwcBudgetResult(NwcBudgetState.UNSUPPORTED)
 
     def pay_invoice(self, nwc_uri: str, bolt11: str) -> NwcPayResult:
         # Mock BOLT11 values contain the first 20 hash characters. The service

@@ -453,9 +453,7 @@ def test_terminal_wallet_policy_failure_disables_auto_renew(app_client, monkeypa
         factory.get_nwc_adapter(),
         "pay_invoice",
         lambda uri, invoice: (_ for _ in ()).throw(
-            NwcAdapterError(
-                "insufficient_balance", "wallet balance is insufficient", retryable=False
-            )
+            NwcAdapterError("quota_exceeded", "wallet spending quota was exceeded", retryable=False)
         ),
     )
 
@@ -463,7 +461,7 @@ def test_terminal_wallet_policy_failure_disables_auto_renew(app_client, monkeypa
 
     assert renewal.status_code == 200
     assert renewal.json()["status"] == "failed"
-    assert renewal.json()["nwc_error_code"] == "insufficient_balance"
+    assert renewal.json()["nwc_error_code"] == "quota_exceeded"
     current = client.get("/api/v1/me", headers=_auth(token)).json()
     assert current["subscriptions"][0]["auto_renew"] is False
 

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlmodel import Session, select
 from starlette.concurrency import run_in_threadpool
 
@@ -71,6 +71,7 @@ from ..services.domain_verification import (
 from ..services.health import readiness_status
 from ..services.nwc_credentials import (
     clear_nwc_credential,
+    decrypt_nwc_credential,
     nwc_capabilities,
     store_nwc_credential,
 )
@@ -222,6 +223,34 @@ def _nwc_status(user: User) -> NwcStatusResponse:
 _NWC_RESPONSE_HEADERS = {"Cache-Control": "no-store"}
 
 
+class NwcBudgetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    state: Literal["available", "unlimited", "unsupported"]
+    used_budget_msats: int | None = Field(default=None, ge=0, le=9_007_199_254_740_991)
+    total_budget_msats: int | None = Field(default=None, ge=0, le=9_007_199_254_740_991)
+    renews_at: int | None = Field(default=None, ge=0, le=253_402_300_799)
+    renewal_period: Literal["daily", "weekly", "monthly", "yearly", "never"] | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self):
+        amounts = self.used_budget_msats is not None and self.total_budget_msats is not None
+        if self.state == "available":
+            if (
+                not amounts
+                or self.used_budget_msats > self.total_budget_msats
+                or self.renewal_period is None
+            ):
+                raise ValueError("available budget requires valid amounts and renewal period")
+            if self.renewal_period == "never" and self.renews_at is not None:
+                raise ValueError("non-renewing budget has a renewal time")
+        elif self.used_budget_msats is not None or self.total_budget_msats is not None:
+            raise ValueError("non-finite budget includes amounts")
+        elif self.renews_at is not None or self.renewal_period is not None:
+            raise ValueError("non-finite budget includes renewal details")
+        return self
+
+
 def _locked_nwc_user(session: Session, user: User) -> User:
     if user.id is None:
         raise HTTPException(
@@ -260,6 +289,70 @@ def get_nwc_status(
 ) -> NwcStatusResponse:
     response.headers.update(_NWC_RESPONSE_HEADERS)
     return _nwc_status(user)
+
+
+@router.get("/me/nwc/budget", response_model=NwcBudgetResponse)
+async def get_nwc_budget(
+    response: Response,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> NwcBudgetResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
+    try:
+        _enforce_public_rate_limit(
+            session,
+            RateLimitScope.PAYMENT_CREATE,
+            account_identifier(user.id or 0),
+        )
+    except HTTPException as error:
+        error.headers = {**(error.headers or {}), **_NWC_RESPONSE_HEADERS}
+        raise
+    try:
+        nwc_uri = decrypt_nwc_credential(user)
+    except CredentialError as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "wallet connection is unavailable",
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
+    try:
+        budget = await run_in_threadpool(get_nwc_adapter().get_budget, nwc_uri)
+    except NwcAdapterError as error:
+        response_status = (
+            status.HTTP_502_BAD_GATEWAY
+            if error.retryable
+            or error.code
+            in {
+                "internal",
+                "invalid_request",
+                "invalid_wallet_response",
+                "protocol",
+                "response_too_large",
+            }
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(
+            response_status,
+            str(error),
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
+    try:
+        return NwcBudgetResponse(
+            state=cast(Literal["available", "unlimited", "unsupported"], budget.state.value),
+            used_budget_msats=budget.used_budget_msats,
+            total_budget_msats=budget.total_budget_msats,
+            renews_at=budget.renews_at,
+            renewal_period=cast(
+                Literal["daily", "weekly", "monthly", "yearly", "never"] | None,
+                budget.renewal_period,
+            ),
+        )
+    except ValidationError as error:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "wallet adapter returned an invalid budget",
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
 
 
 @router.post("/me/nwc", response_model=NwcStatusResponse)
