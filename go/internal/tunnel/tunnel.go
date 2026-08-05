@@ -43,7 +43,7 @@ const MaxConcurrentStreams = 1024
 const (
 	tcpStreamReceiveQueueByteSize  = 4 << 20
 	tcpStreamReceiveQueueFrameSize = 512
-	legacyTCPReceiveQueueByteSize  = 32 << 20
+	legacyTCPReceiveQueueByteSize  = 56 << 20
 	legacyTCPReceiveQueueFrameSize = 4096
 	udpStreamReceiveQueueByteSize  = 512 << 10
 	udpStreamReceiveQueueFrameSize = 32

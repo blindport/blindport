@@ -98,7 +98,7 @@ updates for already removed streams are ignored as late control traffic. An
 unnegotiated update or zero stream ID is a tunnel protocol error.
 
 A peer that did not select `stream_flow_control` never receives or sends
-`window_update`. New receivers give such legacy TCP streams a 32 MiB or 4,096-frame
+`window_update`. New receivers give such legacy TCP streams a 56 MiB or 4,096-frame
 compatibility backlog under the same 64 MiB tunnel budget. This larger bounded
 fallback absorbs normal long reverse-test jitter without restoring an unbounded
 queue, but sustained legacy senders can still have only their offending stream
