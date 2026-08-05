@@ -5,11 +5,21 @@ useDefault = true
 description = "Deterministic development keys used only by the isolated Compose test stack"
 condition = "AND"
 regexTarget = "line"
-paths = ['''docker-compose\.yaml$''']
+paths = ['''(?:docker/docker-compose|deploy/ha-lab/compose)\.yaml$''']
 regexes = [
-  '''LND_INVOICE_HMAC_KEY: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"''',
+  '''LND_INVOICE_HMAC_KEY: ["']?0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef["']?''',
   '''CREDENTIAL_ENCRYPTION_KEY: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"''',
   '''BLINDPORT_RELAY_WIREGUARD_KEY: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="''',
+]
+
+[[allowlists]]
+description = "Public release-key fingerprints used to verify the checked-in public key"
+condition = "AND"
+regexTarget = "line"
+paths = ['''\.github/workflows/release\.yaml$''']
+regexes = [
+  '''EXPECTED_FINGERPRINT: 18EDE4726C1414844923D6FF14EABFF739C16205''',
+  '''EXPECTED_ENCRYPTION_SUBKEY: 1EFA5E7F8BC29A869CF53F2E91D63CDB51FEA639''',
 ]
 
 [[allowlists]]
