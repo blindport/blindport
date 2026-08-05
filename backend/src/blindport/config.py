@@ -349,6 +349,7 @@ class Settings(BaseSettings):
     # NWC helper and bounded outgoing-payment retries.
     NWC_HELPER_PATH: str = "/usr/local/bin/blindport-nwc-helper"
     NWC_ALLOWED_RELAY_HOSTS: str = ""
+    NWC_ALLOW_PUBLIC_RELAYS: bool = False
     NWC_HELPER_TIMEOUT_SECONDS: float = Field(default=20.0, ge=1, le=120)
     NWC_MAX_PAYMENT_ATTEMPTS: int = Field(default=3, ge=1, le=10)
     NWC_RETRY_BASE_SECONDS: int = Field(default=30, ge=1, le=3600)
@@ -827,6 +828,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "NWC_PAYMENT_LEASE_SECONDS must exceed NWC_HELPER_TIMEOUT_SECONDS by at least 5"
             )
+        if self.NWC_ALLOW_PUBLIC_RELAYS and self.nwc_allowed_relay_hosts:
+            raise ValueError(
+                "NWC_ALLOW_PUBLIC_RELAYS and NWC_ALLOWED_RELAY_HOSTS are mutually exclusive"
+            )
         if self.SMTP_TIMEOUT_SECONDS + 5 > self.REMINDER_DELIVERY_LEASE_SECONDS:
             raise ValueError(
                 "REMINDER_DELIVERY_LEASE_SECONDS must exceed SMTP_TIMEOUT_SECONDS by at least 5"
@@ -899,8 +904,11 @@ class Settings(BaseSettings):
                 )
             if not Path(self.NWC_HELPER_PATH).is_absolute():
                 failures.append("NWC_HELPER_PATH must be absolute")
-            if not self.nwc_allowed_relay_hosts:
-                failures.append("NWC_ALLOWED_RELAY_HOSTS must contain at least one trusted host")
+            if not self.NWC_ALLOW_PUBLIC_RELAYS and not self.nwc_allowed_relay_hosts:
+                failures.append(
+                    "NWC relay policy requires NWC_ALLOW_PUBLIC_RELAYS=true or at least one "
+                    "NWC_ALLOWED_RELAY_HOSTS entry"
+                )
         if self.REMINDER_EMAIL_ENABLED and self.SMTP_SECURITY not in {"starttls", "tls"}:
             failures.append("SMTP_SECURITY must use TLS in production")
         if (

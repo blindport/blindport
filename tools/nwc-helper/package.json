@@ -10,7 +10,8 @@
     "build": "bun build --compile --minify --outfile dist/blindport-nwc-helper src/main.ts"
   },
   "dependencies": {
-    "@getalby/sdk": "8.0.3"
+    "@getalby/sdk": "8.0.3",
+    "ipaddr.js": "2.2.0"
   },
   "devDependencies": {
     "@eslint/js": "9.32.0",

@@ -13,7 +13,7 @@ const uri = `nostr+walletconnect://${pubkey}?relay=${encodeURIComponent("wss://r
 const allowedRelayHosts = ["relay.example"];
 
 function request<T extends Record<string, unknown>>(value: T): T & { allowed_relay_hosts: string[] } {
-  return { ...value, allowed_relay_hosts: allowedRelayHosts };
+  return { ...value, allowed_relay_hosts: allowedRelayHosts, allow_public_relays: false };
 }
 
 function factory(overrides: Partial<Client> = {}): { create: ClientFactory; client: Client } {
@@ -60,6 +60,81 @@ describe("NWC URI validation", () => {
     uri.replace("relay.example", "relay.example%3A8443"),
   ])("rejects relay egress outside the exact standard-port allowlist", (value) => {
     expect(() => parseNwcUri(value, allowedRelayHosts)).toThrow();
+  });
+
+  test("accepts a user-selected relay only after public DNS validation", async () => {
+    const { create } = factory();
+    const response = await executeRequest(
+      {
+        version: 1,
+        operation: "validate",
+        nwc_uri: uri,
+        allowed_relay_hosts: [],
+        allow_public_relays: true,
+      },
+      create,
+      async () => ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"],
+    );
+
+    expect(response.ok).toBeTrue();
+  });
+
+  test.each([
+    "127.0.0.1",
+    "10.0.0.1",
+    "100.64.0.1",
+    "169.254.169.254",
+    "192.0.2.1",
+    "224.0.0.1",
+    "::1",
+    "fc00::1",
+    "fe80::1",
+    "2001:db8::1",
+    "ff0e::1",
+    "64:ff9b::7f00:1",
+  ])("rejects a user-selected relay resolving to non-public address %s", async (address) => {
+    const { create } = factory();
+    const response = await executeRequest(
+      {
+        version: 1,
+        operation: "validate",
+        nwc_uri: uri,
+        allowed_relay_hosts: [],
+        allow_public_relays: true,
+      },
+      create,
+      async () => ["93.184.216.34", address],
+    );
+
+    expect(response.ok).toBeFalse();
+    if (!response.ok) {
+      expect(response.error.code).toBe("relay_not_allowed");
+      expect(response.error.retryable).toBeFalse();
+    }
+  });
+
+  test("reports public relay DNS failures as retryable transport errors", async () => {
+    const { create } = factory();
+    const response = await executeRequest(
+      {
+        version: 1,
+        operation: "validate",
+        nwc_uri: uri,
+        allowed_relay_hosts: [],
+        allow_public_relays: true,
+      },
+      create,
+      async () => { throw new Error("private DNS detail"); },
+    );
+
+    expect(response.ok).toBeFalse();
+    if (!response.ok) {
+      expect(response.error).toEqual({
+        code: "transport",
+        message: "wallet relay name is unavailable",
+        retryable: true,
+      });
+    }
   });
 });
 

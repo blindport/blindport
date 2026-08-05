@@ -1,16 +1,27 @@
+import { lookup } from "node:dns/promises";
+import * as ipaddr from "ipaddr.js";
+
 export const MAX_REQUEST_BYTES = 16_384;
 export const MAX_RESPONSE_BYTES = 16_384;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const REQUIRED_CAPABILITIES = ["pay_invoice", "lookup_invoice"] as const;
 
+interface RequestBase {
+  version: 1;
+  nwc_uri: string;
+  allowed_relay_hosts: string[];
+  allow_public_relays: boolean;
+}
+
 export type Request =
-  | { version: 1; operation: "validate"; nwc_uri: string; allowed_relay_hosts: string[] }
+  | RequestBase & { operation: "validate" }
   | {
       version: 1;
       operation: "pay_invoice";
       nwc_uri: string;
       allowed_relay_hosts: string[];
+      allow_public_relays: boolean;
       invoice: string;
     }
   | {
@@ -18,6 +29,7 @@ export type Request =
       operation: "lookup_invoice";
       nwc_uri: string;
       allowed_relay_hosts: string[];
+      allow_public_relays: boolean;
       payment_hash: string;
     };
 
@@ -51,6 +63,8 @@ export type ClientFactory = (options: {
   secret: string;
   lud16?: string;
 }) => Client | Promise<Client>;
+
+export type RelayResolver = (hostname: string) => Promise<string[]>;
 
 export interface SafeError {
   code: string;
@@ -119,10 +133,17 @@ function requireAllowedRelayHosts(value: unknown): string[] {
     }
     hosts.push(host);
   }
-  if (hosts.length === 0 || hosts.length > 64 || new Set(hosts).size !== hosts.length) {
+  if (hosts.length > 64 || new Set(hosts).size !== hosts.length) {
     throw new ProtocolError("invalid_request", "relay allowlist is invalid");
   }
   return hosts;
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new ProtocolError("invalid_request", `${field} is invalid`);
+  }
+  return value;
 }
 
 export function parseRequest(value: unknown): Request {
@@ -131,7 +152,13 @@ export function parseRequest(value: unknown): Request {
   if (operation !== "validate" && operation !== "pay_invoice" && operation !== "lookup_invoice") {
     throw new ProtocolError("invalid_request", "operation is unsupported");
   }
-  const allowed = ["version", "operation", "nwc_uri", "allowed_relay_hosts"];
+  const allowed = [
+    "version",
+    "operation",
+    "nwc_uri",
+    "allowed_relay_hosts",
+    "allow_public_relays",
+  ];
   if (operation === "pay_invoice") allowed.push("invoice");
   if (operation === "lookup_invoice") allowed.push("payment_hash");
   requireExactKeys(object, allowed);
@@ -140,12 +167,17 @@ export function parseRequest(value: unknown): Request {
   }
   const nwcUri = requireString(object.nwc_uri, "nwc_uri", 4096);
   const allowedRelayHosts = requireAllowedRelayHosts(object.allowed_relay_hosts);
+  const allowPublicRelays = requireBoolean(object.allow_public_relays, "allow_public_relays");
+  if (allowPublicRelays === (allowedRelayHosts.length > 0)) {
+    throw new ProtocolError("invalid_request", "relay egress policy is invalid");
+  }
   if (operation === "pay_invoice") {
     return {
       version: 1,
       operation,
       nwc_uri: nwcUri,
       allowed_relay_hosts: allowedRelayHosts,
+      allow_public_relays: allowPublicRelays,
       invoice: requireString(object.invoice, "invoice", 8192),
     };
   }
@@ -155,13 +187,24 @@ export function parseRequest(value: unknown): Request {
       operation,
       nwc_uri: nwcUri,
       allowed_relay_hosts: allowedRelayHosts,
+      allow_public_relays: allowPublicRelays,
       payment_hash: requireString(object.payment_hash, "payment_hash", 64, HEX64),
     };
   }
-  return { version: 1, operation, nwc_uri: nwcUri, allowed_relay_hosts: allowedRelayHosts };
+  return {
+    version: 1,
+    operation,
+    nwc_uri: nwcUri,
+    allowed_relay_hosts: allowedRelayHosts,
+    allow_public_relays: allowPublicRelays,
+  };
 }
 
-export function parseNwcUri(uri: string, allowedRelayHosts: readonly string[]): {
+export function parseNwcUri(
+  uri: string,
+  allowedRelayHosts: readonly string[],
+  allowPublicRelays = false,
+): {
   relayUrls: string[];
   walletPubkey: string;
   secret: string;
@@ -223,7 +266,7 @@ export function parseNwcUri(uri: string, allowedRelayHosts: readonly string[]): 
     ) {
       throw new ProtocolError("invalid_uri", "wallet relay URL must use wss");
     }
-    if (!allowedRelayHosts.includes(relayUrl.hostname.toLowerCase())) {
+    if (!allowPublicRelays && !allowedRelayHosts.includes(relayUrl.hostname.toLowerCase())) {
       throw new ProtocolError("relay_not_allowed", "wallet relay host is not allowed");
     }
   }
@@ -234,6 +277,46 @@ export function parseNwcUri(uri: string, allowedRelayHosts: readonly string[]): 
   return lud16 === null
     ? { relayUrls, walletPubkey, secret }
     : { relayUrls, walletPubkey, secret, lud16 };
+}
+
+const defaultRelayResolver: RelayResolver = async (hostname) => {
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  return addresses.map(({ address }) => address);
+};
+
+export async function validatePublicRelayEgress(
+  relayUrls: readonly string[],
+  resolver: RelayResolver = defaultRelayResolver,
+): Promise<void> {
+  for (const relay of relayUrls) {
+    const rawHostname = new URL(relay).hostname;
+    const hostname = rawHostname.startsWith("[") && rawHostname.endsWith("]")
+      ? rawHostname.slice(1, -1)
+      : rawHostname;
+    let addresses: string[];
+    if (ipaddr.isValid(hostname)) {
+      addresses = [hostname];
+    } else {
+      try {
+        addresses = await resolver(hostname);
+      } catch {
+        throw new ProtocolError("transport", "wallet relay name is unavailable", true);
+      }
+    }
+    if (addresses.length === 0) {
+      throw new ProtocolError("transport", "wallet relay name is unavailable", true);
+    }
+    for (const address of addresses) {
+      try {
+        if (ipaddr.process(address).range() !== "unicast") {
+          throw new ProtocolError("relay_not_allowed", "wallet relay host is not public");
+        }
+      } catch (error) {
+        if (error instanceof ProtocolError) throw error;
+        throw new ProtocolError("relay_not_allowed", "wallet relay host is not public");
+      }
+    }
+  }
 }
 
 function validateInfo(info: WalletServiceInfo): void {
@@ -312,11 +395,19 @@ const defaultFactory: ClientFactory = async (options) => {
 export async function executeRequest(
   requestValue: unknown,
   clientFactory: ClientFactory = defaultFactory,
+  relayResolver: RelayResolver = defaultRelayResolver,
 ): Promise<Response> {
   let client: Client | undefined;
   try {
     const request = parseRequest(requestValue);
-    const options = parseNwcUri(request.nwc_uri, request.allowed_relay_hosts);
+    const options = parseNwcUri(
+      request.nwc_uri,
+      request.allowed_relay_hosts,
+      request.allow_public_relays,
+    );
+    if (request.allow_public_relays) {
+      await validatePublicRelayEgress(options.relayUrls, relayResolver);
+    }
     client = await clientFactory(options);
     const info = await client.getWalletServiceInfo();
     validateInfo(info);

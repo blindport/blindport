@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import selectors
+import socket
 import subprocess
 import time
+from collections.abc import Callable
+from ipaddress import ip_address
 from typing import Literal
 from urllib.parse import parse_qsl, urlsplit
 
@@ -24,6 +27,11 @@ from .base import (
 
 _MAX_REQUEST_BYTES = 16_384
 _MAX_RESPONSE_BYTES = 16_384
+
+
+def _resolve_relay_host(host: str) -> tuple[str, ...]:
+    addresses = {result[4][0] for result in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)}
+    return tuple(sorted(addresses))
 
 
 class _StrictModel(BaseModel):
@@ -125,6 +133,9 @@ class SubprocessNwcAdapter(NwcAdapter):
         executable: str,
         timeout_seconds: float,
         allowed_relay_hosts: tuple[str, ...] = (),
+        *,
+        allow_public_relays: bool = False,
+        relay_resolver: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
         if not os.path.isabs(executable):
             raise ValueError("NWC helper path must be absolute")
@@ -132,11 +143,42 @@ class SubprocessNwcAdapter(NwcAdapter):
             raise ValueError("NWC helper must be an executable regular file")
         if not 0 < timeout_seconds <= 120:
             raise ValueError("NWC helper timeout must be within 0-120 seconds")
-        if not allowed_relay_hosts:
-            raise ValueError("NWC relay allowlist must not be empty")
+        if bool(allowed_relay_hosts) == allow_public_relays:
+            raise ValueError("NWC requires exactly one relay egress policy")
         self._executable = executable
         self._timeout = timeout_seconds
         self._allowed_relay_hosts = frozenset(host.lower() for host in allowed_relay_hosts)
+        self._allow_public_relays = allow_public_relays
+        self._relay_resolver = relay_resolver or _resolve_relay_host
+
+    def _require_public_relay(self, host: str) -> None:
+        try:
+            addresses = (str(ip_address(host)),)
+        except ValueError:
+            try:
+                addresses = self._relay_resolver(host)
+            except UnicodeError as error:
+                raise NwcAdapterError(
+                    "relay_not_allowed", "wallet relay host is not public", retryable=False
+                ) from error
+            except OSError as error:
+                raise NwcAdapterError(
+                    "transport", "wallet relay name is unavailable", retryable=True
+                ) from error
+        if not addresses:
+            raise NwcAdapterError("transport", "wallet relay name is unavailable", retryable=True)
+        try:
+            parsed_addresses = tuple(ip_address(address) for address in addresses)
+            public = all(
+                address.is_global and not address.is_multicast and not address.is_reserved
+                for address in parsed_addresses
+            )
+        except ValueError:
+            public = False
+        if not public:
+            raise NwcAdapterError(
+                "relay_not_allowed", "wallet relay host is not public", retryable=False
+            )
 
     def _validate_relay_hosts(self, nwc_uri: str) -> None:
         try:
@@ -146,7 +188,6 @@ class SubprocessNwcAdapter(NwcAdapter):
             invalid = not parsed_relays or any(
                 relay.scheme.lower() != "wss"
                 or relay.hostname is None
-                or relay.hostname.lower() not in self._allowed_relay_hosts
                 or relay.port not in (None, 443)
                 or relay.username is not None
                 or relay.password is not None
@@ -160,6 +201,18 @@ class SubprocessNwcAdapter(NwcAdapter):
             raise NwcAdapterError(
                 "relay_not_allowed", "wallet relay host is not allowed", retryable=False
             )
+        for relay in parsed_relays:
+            assert relay.hostname is not None
+            host = relay.hostname.lower()
+            if self._allowed_relay_hosts:
+                if host not in self._allowed_relay_hosts:
+                    raise NwcAdapterError(
+                        "relay_not_allowed",
+                        "wallet relay host is not allowed",
+                        retryable=False,
+                    )
+            else:
+                self._require_public_relay(host)
 
     def _invoke(self, request: dict) -> dict:
         encoded = json.dumps(request, separators=(",", ":")).encode("utf-8")
@@ -266,6 +319,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "operation": "validate",
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
+                        "allow_public_relays": self._allow_public_relays,
                     }
                 )
             )
@@ -289,6 +343,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "operation": "pay_invoice",
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
+                        "allow_public_relays": self._allow_public_relays,
                         "invoice": bolt11,
                     }
                 )
@@ -309,6 +364,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "operation": "lookup_invoice",
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
+                        "allow_public_relays": self._allow_public_relays,
                         "payment_hash": payment_hash,
                     }
                 )

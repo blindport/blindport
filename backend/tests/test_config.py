@@ -248,6 +248,18 @@ def test_production_settings_allow_secured_nwc_alongside_lightning() -> None:
     }
 
 
+def test_production_settings_allow_public_user_selected_nwc_relays() -> None:
+    settings = _production_settings(
+        PAYMENT_ENABLED_METHODS="lightning,nwc",
+        PAYMENT_NWC_ADAPTER="nwc",
+        CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
+        NWC_ALLOW_PUBLIC_RELAYS=True,
+    )
+
+    assert settings.NWC_ALLOW_PUBLIC_RELAYS is True
+    assert settings.nwc_allowed_relay_hosts == ()
+
+
 @pytest.mark.parametrize("value", ["ab", "AB" * 32, "zz" * 32, f"{'ab' * 32},{'ab' * 32}"])
 def test_credential_keyring_requires_distinct_canonical_32_byte_hex(value: str) -> None:
     with pytest.raises(ValidationError, match="credential encryption"):
@@ -264,13 +276,22 @@ def test_production_nwc_requires_dedicated_credential_key() -> None:
         )
 
 
-def test_production_nwc_requires_trusted_relay_allowlist() -> None:
-    with pytest.raises(ValidationError, match="NWC_ALLOWED_RELAY_HOSTS"):
+def test_production_nwc_requires_an_explicit_relay_policy() -> None:
+    with pytest.raises(ValidationError, match="NWC relay policy"):
         _production_settings(
             PAYMENT_ENABLED_METHODS="lightning,nwc",
             PAYMENT_NWC_ADAPTER="nwc",
             CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
             NWC_ALLOWED_RELAY_HOSTS="",
+        )
+
+
+def test_nwc_relay_policies_are_mutually_exclusive() -> None:
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        Settings(
+            _env_file=None,
+            NWC_ALLOWED_RELAY_HOSTS="relay.getalby.com",
+            NWC_ALLOW_PUBLIC_RELAYS=True,
         )
 
 
