@@ -20,6 +20,61 @@ at `$XDG_CONFIG_HOME/blindport/token` or `$HOME/.config/blindport/token` with
 mode `0600`. The hosted backend is the default. Self-hosted deployments set
 `--backend`. A legacy `/etc/blindport/token` remains supported.
 
+The installer downloads hosted release assets by default. When run as a normal
+user it installs to `$HOME/.local/bin` without using `sudo`; when run as root it
+installs to `/usr/local/bin`. If the user-local directory is not in `PATH`, the
+installer adds one export to `.profile`, `.bashrc`, or `.zshrc` as appropriate
+and prints the export needed by the current shell. Repeated installs do not add
+duplicate profile lines. Self-hosted downloads and test harnesses can override
+`BLINDPORT_DOWNLOAD_BASE_URL` and `BLINDPORT_INSTALL_DIR` explicitly.
+
+## User systemd service
+
+On a host with user systemd, create the static config at
+`$XDG_CONFIG_HOME/blindport/config.json` or
+`$HOME/.config/blindport/config.json`, protect it with mode `0600`, and run:
+
+```sh
+blindportd -install-user-service
+```
+
+The command securely prompts for and stores the token first if it is absent. It
+then validates owner and permission safety, installs an owner-only
+`blindportd.service` under the standard user systemd directory, reloads user
+systemd, and enables and starts the service. The unit uses absolute paths for
+the executable, static config, token file, and existing default state directory,
+so the enrolled client identity remains stable. The bearer token itself is not
+placed in the unit or in systemctl command arguments. The command prints the
+corresponding `systemctl --user status` and `journalctl --user` commands.
+Enable systemd lingering if the service must start at boot and remain active
+without an interactive login:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+The host may require administrator approval for that policy change.
+
+Installation fails without a usable user systemd session, without the static
+config, for Docker or routed WireGuard modes, or when the executable, config,
+token, unit, or unit directory has unsafe type, ownership, or permissions.
+
+## Update
+
+Rerun the hosted installer to verify and replace the binary, confirm the
+reported version, then restart a managed service so it begins using the new
+executable:
+
+```sh
+curl -fsSL https://blindport.com/downloads/install.sh | sh
+blindportd -version
+systemctl --user restart blindportd.service
+```
+
+Foreground agents use the new binary on their next manual restart. Keep the
+existing config, token, and state directories so the enrolled identity is not
+replaced.
+
 ## Client identity
 
 The agent generates one Ed25519 key locally and enrolls only its signed CSR at

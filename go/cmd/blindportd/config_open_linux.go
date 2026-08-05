@@ -30,3 +30,14 @@ func validateStaticConfigOwner(info os.FileInfo) error {
 	}
 	return nil
 }
+
+func validateServiceExecutableOwner(info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("cannot determine executable owner")
+	}
+	if stat.Uid != 0 && stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("executable owner UID %d is neither root nor effective UID %d", stat.Uid, os.Geteuid())
+	}
+	return nil
+}

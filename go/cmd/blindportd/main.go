@@ -47,6 +47,7 @@ type provisioning struct {
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
+	installUserServiceFlag := flag.Bool("install-user-service", false, "install and start the native user systemd service")
 	tokenFlag := flag.String("token", "", "Blindport bearer token (or BLINDPORT_TOKEN env)")
 	defaultTokenPath := defaultTokenFile()
 	tokenFile := flag.String("token-file", defaultTokenPath, "file containing the token")
@@ -74,6 +75,17 @@ func main() {
 	flag.Parse()
 	if *showVersion {
 		fmt.Fprintf(os.Stdout, "blindportd %s\n", version)
+		return
+	}
+	if *installUserServiceFlag {
+		if err := installUserService(userServiceOptions{
+			configPath: *configPath, tokenPath: *tokenFile, stateDir: *stateDir,
+			wireguard: *wireguardMode, docker: *dockerEnabled,
+			input: os.Stdin, output: os.Stdout,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "blindportd: install user service: %v\n", err)
+			os.Exit(2)
+		}
 		return
 	}
 
@@ -282,6 +294,10 @@ func loadToken(flagValue, path string) (string, error) {
 		}
 		return token, nil
 	}
+	return loadTokenFile(path)
+}
+
+func loadTokenFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}

@@ -55,6 +55,7 @@ actual_hash=${actual_hash%% *}
     exit 1
 }
 
+user_install=false
 if [ -n "$install_dir" ]; then
     install -d -m 0755 "$install_dir"
     install -m 0755 "$temporary/$asset" "$install_dir/blindportd"
@@ -63,16 +64,45 @@ elif [ "$(id -u)" -eq 0 ]; then
     install -d -m 0755 /usr/local/bin
     install -m 0755 "$temporary/$asset" /usr/local/bin/blindportd
     destination=/usr/local/bin/blindportd
-elif command -v sudo >/dev/null 2>&1; then
-    sudo install -d -m 0755 /usr/local/bin
-    sudo install -m 0755 "$temporary/$asset" /usr/local/bin/blindportd
-    destination=/usr/local/bin/blindportd
 else
     install_dir=${HOME:?HOME is required}/.local/bin
     install -d -m 0755 "$install_dir"
     install -m 0755 "$temporary/$asset" "$install_dir/blindportd"
     destination="$install_dir/blindportd"
+    user_install=true
 fi
 
 printf 'Installed blindportd to %s\n' "$destination"
-printf 'Run blindportd beside your service. The first run asks for your account token.\n'
+if [ "$user_install" = true ]; then
+    case ":${PATH:-}:" in
+        *":$install_dir:"*)
+            printf '%s is already in PATH; run: blindportd\n' "$install_dir"
+            ;;
+        *)
+            path_export='export PATH="$HOME/.local/bin:$PATH"'
+            case "${SHELL:-}" in
+                */zsh) profile=${ZDOTDIR:-$HOME}/.zshrc ;;
+                */bash) profile=$HOME/.bashrc ;;
+                *) profile=$HOME/.profile ;;
+            esac
+            found=false
+            if [ -f "$profile" ]; then
+                while IFS= read -r profile_line || [ -n "$profile_line" ]; do
+                    if [ "$profile_line" = "$path_export" ]; then
+                        found=true
+                        break
+                    fi
+                done < "$profile"
+            fi
+            if [ "$found" = false ]; then
+                printf '\n%s\n' "$path_export" >> "$profile"
+                printf 'Added %s to %s\n' "$install_dir" "$profile"
+            else
+                printf '%s is already configured in %s\n' "$install_dir" "$profile"
+            fi
+            printf 'For this shell, run: %s\n' "$path_export"
+            ;;
+    esac
+fi
+printf 'Verify the installed release with: %s -version\n' "$destination"
+printf 'Next, create the dashboard configuration and run blindportd beside your service or install its user service.\n'

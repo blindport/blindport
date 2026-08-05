@@ -27,6 +27,17 @@ func defaultTokenFile() string {
 	return filepath.Join(home, ".config", "blindport", "token")
 }
 
+func defaultStaticConfigFile() string {
+	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
+		return filepath.Join(configHome, "blindport", "config.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "blindport", "config.json")
+}
+
 func validateToken(token string) error {
 	if token == "" {
 		return errors.New("token is empty")

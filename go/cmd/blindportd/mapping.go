@@ -46,6 +46,14 @@ type workerPlan struct {
 var upstreamHostnameLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 func loadStaticConfig(path string) ([]mapping, error) {
+	return loadStaticConfigWithPermissions(path, false)
+}
+
+func loadOwnerOnlyStaticConfig(path string) ([]mapping, error) {
+	return loadStaticConfigWithPermissions(path, true)
+}
+
+func loadStaticConfigWithPermissions(path string, ownerOnly bool) ([]mapping, error) {
 	f, err := openStaticConfig(path)
 	if err != nil {
 		return nil, fmt.Errorf("open config %q: %w", path, err)
@@ -60,6 +68,9 @@ func loadStaticConfig(path string) ([]mapping, error) {
 	}
 	if openedInfo.Mode().Perm()&0o022 != 0 {
 		return nil, fmt.Errorf("config %q must not be writable by group or others", path)
+	}
+	if ownerOnly && openedInfo.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("config %q must be owner-only (mode 0600 or stricter)", path)
 	}
 	if err := validateStaticConfigOwner(openedInfo); err != nil {
 		return nil, fmt.Errorf("config %q: %w", path, err)

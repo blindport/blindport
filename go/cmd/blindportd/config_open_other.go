@@ -11,3 +11,7 @@ func openStaticConfig(path string) (*os.File, error) {
 func validateStaticConfigOwner(_ os.FileInfo) error {
 	return nil
 }
+
+func validateServiceExecutableOwner(_ os.FileInfo) error {
+	return nil
+}
