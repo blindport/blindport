@@ -149,8 +149,9 @@ services:
       BLINDPORT_RELAY_WIREGUARD: "1"
       # Fixed development key matching WIREGUARD_RELAY_PUBLIC_KEY above.
       BLINDPORT_RELAY_WIREGUARD_KEY: "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
-      BLINDPORT_RELAY_WIREGUARD_INTERVAL: "1s"
-      BLINDPORT_RELAY_WIREGUARD_MAX_STALENESS: "5s"
+      BLINDPORT_RELAY_WIREGUARD_INTERVAL: "5s"
+      BLINDPORT_RELAY_WIREGUARD_MAX_STALENESS: "15s"
+      BLINDPORT_RELAY_WIREGUARD_ALLOW_PRIVATE_DESTINATIONS: "1"
     sysctls:
       net.ipv4.ip_forward: "1"
     networks:
@@ -192,6 +193,22 @@ services:
       - ../:/repo:ro
     command: ["python", "/repo/tests/e2e/routed_requester.py"]
 
+  routed-observer:
+    image: blindport-tester
+    depends_on:
+      relay:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+    networks:
+      blindport:
+        ipv4_address: 10.50.0.40
+    volumes:
+      - ../:/repo:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - ip route add 10.50.1.20/32 via 10.50.0.10 && exec python /repo/tests/e2e/routed_observer.py
+
   tester:
     image: blindport-tester
     build:
@@ -219,6 +236,8 @@ services:
       BLINDPORT_WIREGUARD_AGENT_IP: 10.50.0.31
       BLINDPORT_WIREGUARD_ROUTED_IP: 10.50.1.20
       BLINDPORT_ROUTED_REQUESTER_URL: http://relay:9191
+      BLINDPORT_ROUTED_OBSERVER_URL: http://10.50.0.40:9292
+      BLINDPORT_ADMIN_TOKEN: ADMINDEV0000
     networks:
       blindport:
         ipv4_address: 10.50.0.30

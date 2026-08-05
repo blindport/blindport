@@ -117,9 +117,10 @@ func desiredStateFromResponse(state *relayauth.WireGuardDesiredState) *wgnet.Des
 		})
 	}
 	return &wgnet.DesiredState{
-		Revision:        state.Revision,
-		ManagedPrefixes: append([]string(nil), state.ManagedPrefixes...),
-		Peers:           peers,
+		Revision:            state.Revision,
+		ManagedPrefixes:     append([]string(nil), state.ManagedPrefixes...),
+		Peers:               peers,
+		SMTPAllowedPrefixes: append([]string(nil), state.SMTPAllowedPrefixes...),
 	}
 }
 

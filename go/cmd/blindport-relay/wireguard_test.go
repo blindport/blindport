@@ -52,8 +52,9 @@ func TestWireGuardManagerAppliesDesiredStateAndReportsHealth(t *testing.T) {
 	health.wgNeeded.Store(true)
 	metrics := &relayMetrics{health: health}
 	fetcher := &fakePeersFetcher{state: &relayauth.WireGuardDesiredState{
-		Revision:        "r1",
-		ManagedPrefixes: []string{"198.51.100.20/32", "198.51.100.21/32"},
+		Revision:            "r1",
+		ManagedPrefixes:     []string{"198.51.100.20/32", "198.51.100.21/32"},
+		SMTPAllowedPrefixes: []string{"198.51.100.20/32"},
 		Peers: []relayauth.WireGuardPeer{{
 			PublicKey:       wireGuardTestKey(),
 			AllowedPrefixes: []string{"198.51.100.20/32"},
@@ -66,6 +67,9 @@ func TestWireGuardManagerAppliesDesiredStateAndReportsHealth(t *testing.T) {
 
 	if len(applier.applied) != 1 || applier.applied[0].Revision != "r1" {
 		t.Fatalf("applied = %+v", applier.applied)
+	}
+	if len(applier.applied[0].SMTPAllowedPrefixes) != 1 || applier.applied[0].SMTPAllowedPrefixes[0] != "198.51.100.20/32" {
+		t.Fatalf("SMTP allowed prefixes = %v", applier.applied[0].SMTPAllowedPrefixes)
 	}
 	if health.wgState.Load() != wgHealthy {
 		t.Fatalf("wireguard health state = %d", health.wgState.Load())

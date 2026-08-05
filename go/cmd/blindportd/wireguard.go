@@ -24,6 +24,7 @@ const (
 	maxWireGuardStateSize    = 4 << 10
 	maxWireGuardResponseSize = 64 << 10
 	maxLinuxRoutingID        = 1<<31 - 1
+	linuxMainRulePriority    = 32766
 )
 
 type storedWireGuardKey struct {
@@ -248,9 +249,14 @@ func validateWireGuardAgentOptions(options wireGuardAgentOptions) error {
 	if options.httpClient == nil {
 		return errors.New("WireGuard HTTP client is required")
 	}
-	if options.routeTable < 1 || options.routeTable > maxLinuxRoutingID ||
-		options.rulePriority < 1 || options.rulePriority > maxLinuxRoutingID {
-		return fmt.Errorf("WireGuard route table and rule priority must be within 1-%d", maxLinuxRoutingID)
+	if options.routeTable < 1 || options.routeTable > maxLinuxRoutingID {
+		return fmt.Errorf("WireGuard route table must be within 1-%d", maxLinuxRoutingID)
+	}
+	if options.rulePriority < 1 || options.rulePriority >= linuxMainRulePriority {
+		return fmt.Errorf(
+			"WireGuard rule priority must be within 1-%d so leased-source traffic precedes the main route table",
+			linuxMainRulePriority-1,
+		)
 	}
 	return nil
 }
@@ -287,8 +293,8 @@ func runWireGuard(ctx context.Context, log *slog.Logger, credentials *credential
 	if err := validateWireGuardClientConfig(config, publicKey); err != nil {
 		return fmt.Errorf("invalid WireGuard provisioning: %w", err)
 	}
-	if options.rulePriority > maxLinuxRoutingID-len(config.AssignedPrefixes)+1 {
-		return errors.New("WireGuard rule priorities exceed the Linux routing range")
+	if options.rulePriority > linuxMainRulePriority-len(config.AssignedPrefixes) {
+		return errors.New("WireGuard source rules would overlap the Linux main route-table priority")
 	}
 	if err := wgnet.ConfigureAgent(wgnet.AgentConfig{
 		DeviceName:          options.deviceName,

@@ -148,15 +148,15 @@ func TestValidateWireGuardClientConfig(t *testing.T) {
 }
 
 func TestValidateWireGuardAgentOptionsAcceptsShippedDefaults(t *testing.T) {
-	defaults := wireGuardAgentOptions{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: 51820}
+	defaults := wireGuardAgentOptions{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: 10000}
 	if err := validateWireGuardAgentOptions(defaults); err != nil {
 		t.Fatalf("default WireGuard routing options rejected: %v", err)
 	}
 	for _, options := range []wireGuardAgentOptions{
-		{httpClient: http.DefaultClient, routeTable: 0, rulePriority: 51820},
+		{httpClient: http.DefaultClient, routeTable: 0, rulePriority: 10000},
 		{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: 0},
-		{httpClient: http.DefaultClient, routeTable: maxLinuxRoutingID + 1, rulePriority: 51820},
-		{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: maxLinuxRoutingID + 1},
+		{httpClient: http.DefaultClient, routeTable: maxLinuxRoutingID + 1, rulePriority: 10000},
+		{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: linuxMainRulePriority},
 	} {
 		if err := validateWireGuardAgentOptions(options); err == nil {
 			t.Fatalf("invalid WireGuard routing options accepted: %+v", options)

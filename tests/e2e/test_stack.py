@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -47,6 +48,11 @@ WIREGUARD_AGENT_IP = os.environ["BLINDPORT_WIREGUARD_AGENT_IP"]
 WIREGUARD_ROUTED_IP = os.environ["BLINDPORT_WIREGUARD_ROUTED_IP"]
 RELAY_ADMIN = os.environ["BLINDPORT_RELAY_ADMIN_URL"]
 ROUTED_REQUESTER = os.environ["BLINDPORT_ROUTED_REQUESTER_URL"]
+ROUTED_OBSERVER = os.environ["BLINDPORT_ROUTED_OBSERVER_URL"]
+ROUTED_OBSERVER_HOST = urlsplit(ROUTED_OBSERVER).hostname
+if ROUTED_OBSERVER_HOST is None:
+    raise ValueError("BLINDPORT_ROUTED_OBSERVER_URL must include a hostname")
+ADMIN_TOKEN = os.environ["BLINDPORT_ADMIN_TOKEN"]
 
 
 def _wait_for_backend(timeout: float = 30) -> None:
@@ -210,6 +216,26 @@ def _capture_in_namespace(namespace: str, *command: str) -> str:
         timeout=5,
     )
     return f"exit={result.returncode}\n{result.stdout}{result.stderr}".strip()
+
+
+def _smtp_probe(namespace: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        _in_namespace(
+            namespace,
+            "python",
+            "-c",
+            (
+                "import socket; "
+                f"s=socket.socket(); s.bind(('{WIREGUARD_ROUTED_IP}',0)); "
+                f"s.settimeout(2); s.connect(('{ROUTED_OBSERVER_HOST}',25)); "
+                f"assert s.recv(64).startswith(b'220 {WIREGUARD_ROUTED_IP} ')"
+            ),
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
 
 
 def _stop_process(proc: subprocess.Popen[bytes]) -> None:
@@ -513,7 +539,7 @@ def test_ip_end_to_end():
 
 def test_wireguard_ip_end_to_end():
     token = _signup()
-    sub = _subscribe(token, "ip", delivery="wireguard")
+    sub = _subscribe(token, "ip", delivery="wireguard", billing_term="yearly")
     assert sub["delivery"] == "wireguard"
     _create_payment(token, sub["id"])
     _wait_for_background_activation(token, sub["id"])
@@ -569,6 +595,66 @@ def test_wireguard_ip_end_to_end():
         assert icmp.status_code == 200
         assert icmp.content == b"blindport-routed-icmp"
 
+        observed_source = subprocess.run(
+            _in_namespace(
+                namespace,
+                "curl",
+                "--fail",
+                "--max-time",
+                "5",
+                "--interface",
+                WIREGUARD_ROUTED_IP,
+                f"{ROUTED_OBSERVER}/source",
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=7,
+        )
+        assert observed_source.stdout == WIREGUARD_ROUTED_IP
+
+        denied_smtp = _smtp_probe(namespace)
+        assert denied_smtp.returncode != 0
+
+        approval = httpx.post(
+            f"{BACKEND}/api/v2/admin/subscriptions/{sub['id']}/smtp-egress/approve",
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+            json={
+                "intended_use": "transactional service mail",
+                "fee_paid_sats": 50000,
+                "review_reference": "e2e-approved",
+            },
+            timeout=5,
+        )
+        assert approval.status_code == 200, approval.text
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            allowed_smtp = _smtp_probe(namespace)
+            if allowed_smtp.returncode == 0:
+                break
+            time.sleep(0.5)
+        else:
+            raise AssertionError(
+                "approved outbound TCP/25 remained blocked: "
+                f"stdout={allowed_smtp.stdout!r} stderr={allowed_smtp.stderr!r}"
+            )
+
+        revocation = httpx.post(
+            f"{BACKEND}/api/v2/admin/subscriptions/{sub['id']}/smtp-egress/revoke",
+            headers={"Authorization": f"Bearer {ADMIN_TOKEN}"},
+            json={"reason": "e2e revocation"},
+            timeout=5,
+        )
+        assert revocation.status_code == 200, revocation.text
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            revoked_smtp = _smtp_probe(namespace)
+            if revoked_smtp.returncode != 0:
+                break
+            time.sleep(0.5)
+        else:
+            raise AssertionError("revoked outbound TCP/25 remained available")
+
         address_state = subprocess.run(
             [
                 *_in_namespace(
@@ -591,6 +677,8 @@ def test_wireguard_ip_end_to_end():
             row["local"] == WIREGUARD_ROUTED_IP and row["prefixlen"] == 32
             for row in addresses
         )
+        rule_state = _capture_in_namespace(namespace, "ip", "rule", "show")
+        assert f"10000:\tfrom {WIREGUARD_ROUTED_IP} lookup 51820" in rule_state
 
         metrics = httpx.get(f"{RELAY_ADMIN}/metrics", timeout=5).text
         assert "blindport_relay_wireguard_peers_active 1" in metrics

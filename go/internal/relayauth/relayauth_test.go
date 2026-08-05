@@ -120,7 +120,7 @@ func TestResolveDoesNotFallbackAfterNonNotFoundFailure(t *testing.T) {
 
 func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/internal/v1/wireguard/peers" {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/v2/wireguard/peers" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("X-Relay-Secret"); got != "secret" {
@@ -129,7 +129,8 @@ func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"revision":"abc","generated_at":"2026-07-18T00:00:00Z",` +
 			`"managed_prefixes":["198.51.100.20/32"],` +
-			`"peers":[{"public_key":"k","allowed_prefixes":["198.51.100.20/32"]}]}`))
+			`"peers":[{"public_key":"k","allowed_prefixes":["198.51.100.20/32"]}],` +
+			`"smtp_allowed_prefixes":["198.51.100.20/32"]}`))
 	}))
 	defer server.Close()
 
@@ -141,7 +142,7 @@ func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WireGuardPeers() error = %v", err)
 	}
-	if state.Revision != "abc" || len(state.Peers) != 1 || state.Peers[0].PublicKey != "k" {
+	if state.Revision != "abc" || len(state.Peers) != 1 || state.Peers[0].PublicKey != "k" || len(state.SMTPAllowedPrefixes) != 1 {
 		t.Fatalf("state = %+v", state)
 	}
 
@@ -155,6 +156,59 @@ func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 	}
 	if _, err := resolver.WireGuardPeers(context.Background()); !IsKind(err, ErrorSecret) {
 		t.Fatalf("WireGuardPeers() error = %v, want secret", err)
+	}
+}
+
+func TestWireGuardPeersFallsBackToV1WithoutSMTPExceptions(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/internal/v2/wireguard/peers" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"revision":"legacy","generated_at":"2026-07-18T00:00:00Z","managed_prefixes":[],"peers":[]}`))
+	}))
+	defer server.Close()
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := resolver.WireGuardPeers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "/internal/v2/wireguard/peers,/internal/v1/wireguard/peers" || state.SMTPAllowedPrefixes != nil {
+		t.Fatalf("paths/state = %v/%+v", paths, state)
+	}
+}
+
+func TestWireGuardPeersRetainsStrictDecodingOnV2AndV1(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		v2   bool
+		body string
+	}{
+		{name: "v2 unknown field", v2: true, body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"smtp_allowed_prefixes":[],"extra":true}`},
+		{name: "v1 does not accept v2 field", body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"smtp_allowed_prefixes":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !test.v2 && r.URL.Path == "/internal/v2/wireguard/peers" {
+					http.NotFound(w, r)
+					return
+				}
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			resolver, err := New(server.URL, "secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resolver.WireGuardPeers(context.Background()); !IsKind(err, ErrorInfrastructure) {
+				t.Fatalf("WireGuardPeers() error = %v", err)
+			}
+		})
 	}
 }
 

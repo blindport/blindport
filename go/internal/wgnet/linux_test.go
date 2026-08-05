@@ -4,9 +4,12 @@ package wgnet
 
 import (
 	"encoding/base64"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 
+	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -21,6 +24,45 @@ func testWireGuardKey(t *testing.T, start byte) wgtypes.Key {
 		t.Fatal(err)
 	}
 	return key
+}
+
+type fakeRelayStartupDataplane struct {
+	operations []string
+	policyErr  error
+	routeErr   error
+	peerErr    error
+}
+
+func (f *fakeRelayStartupDataplane) ApplyRoutedPolicy(active, smtp []string) error {
+	f.operations = append(f.operations, "policy")
+	return f.policyErr
+}
+
+func (f *fakeRelayStartupDataplane) blackholeActiveOwnedRoutes() error {
+	f.operations = append(f.operations, "routes")
+	return f.routeErr
+}
+
+func (f *fakeRelayStartupDataplane) ReplacePeers(peers []Peer) error {
+	f.operations = append(f.operations, "peers")
+	return f.peerErr
+}
+
+func TestFailCloseRelayStartupOrdersAndAttemptsEveryLayer(t *testing.T) {
+	dataplane := &fakeRelayStartupDataplane{
+		policyErr: errors.New("nft unavailable"),
+		routeErr:  errors.New("route failure"),
+		peerErr:   errors.New("peer failure"),
+	}
+	err := failCloseRelayStartup(dataplane)
+	if strings.Join(dataplane.operations, ",") != "peers,policy,routes" {
+		t.Fatalf("startup operations = %v", dataplane.operations)
+	}
+	for _, message := range []string{"nft unavailable", "route failure", "peer failure"} {
+		if err == nil || !strings.Contains(err.Error(), message) {
+			t.Fatalf("startup error = %v, want %q", err, message)
+		}
+	}
 }
 
 func TestRelayPeerConfigsUpdatesDesiredPeersWithoutReplacingRuntimeState(t *testing.T) {
@@ -49,5 +91,36 @@ func TestRelayPeerConfigsUpdatesDesiredPeersWithoutReplacingRuntimeState(t *test
 	}
 	if !updated.ReplaceAllowedIPs || len(updated.AllowedIPs) != 1 || updated.AllowedIPs[0].String() != "198.51.100.20/32" {
 		t.Fatalf("desired allowed IPs = %+v", updated.AllowedIPs)
+	}
+}
+
+func TestOwnedAgentRuleRecognizesTaggedAndLegacyRules(t *testing.T) {
+	previous := map[string]struct{}{"198.51.100.20/32": {}}
+	tagged := *netlink.NewRule()
+	tagged.Protocol = RouteProtocol
+	if !isOwnedAgentRule(tagged, nil, 51820) {
+		t.Fatal("tagged Blindport rule was not recognized")
+	}
+	_, source, err := net.ParseCIDR("198.51.100.20/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := *netlink.NewRule()
+	legacy.Table = 51820
+	legacy.Src = source
+	if !isOwnedAgentRule(legacy, previous, 51820) {
+		t.Fatal("legacy leased-source rule was not recognized")
+	}
+	legacy.Table = 100
+	if isOwnedAgentRule(legacy, previous, 51820) {
+		t.Fatal("rule from an operator table was treated as Blindport-owned")
+	}
+	legacy.Table = 51820
+	_, legacy.Src, err = net.ParseCIDR("198.51.100.21/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isOwnedAgentRule(legacy, previous, 51820) {
+		t.Fatal("rule for an address absent from the Blindport interface was treated as owned")
 	}
 }

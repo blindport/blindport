@@ -92,6 +92,7 @@ func main() {
 	wireguardMTU := flag.Int("wireguard-mtu", envIntDefault("BLINDPORT_RELAY_WIREGUARD_MTU", 1420), "routed WireGuard interface MTU")
 	wireguardInterval := flag.Duration("wireguard-interval", envDurationDefault("BLINDPORT_RELAY_WIREGUARD_INTERVAL", 10*time.Second), "routed desired-state reconcile interval")
 	wireguardMaxStale := flag.Duration("wireguard-max-staleness", envDurationDefault("BLINDPORT_RELAY_WIREGUARD_MAX_STALENESS", 90*time.Second), "maximum backend staleness before the routed plane fails closed")
+	wireguardAllowPrivate := flag.Bool("wireguard-allow-private-destinations", os.Getenv("BLINDPORT_RELAY_WIREGUARD_ALLOW_PRIVATE_DESTINATIONS") == "1", "allow private routed destinations (isolated development tests only)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -177,7 +178,13 @@ func main() {
 			logger.Error("configure WireGuard device", "err", err)
 			os.Exit(1)
 		}
-		dataplane, err := wgnet.NewLinuxRelayDataplane(*wireguardInterface)
+		if *wireguardAllowPrivate {
+			logger.Warn("private WireGuard destinations enabled; do not use this setting in production")
+		}
+		dataplane, err := wgnet.NewLinuxRelayDataplaneWithPolicy(
+			*wireguardInterface,
+			*wireguardAllowPrivate,
+		)
 		if err != nil {
 			logger.Error("bind WireGuard dataplane", "err", err)
 			os.Exit(1)

@@ -123,19 +123,39 @@ type WireGuardPeer struct {
 
 // WireGuardDesiredState is the complete routed-plane snapshot for one relay.
 type WireGuardDesiredState struct {
-	Revision        string          `json:"revision"`
-	GeneratedAt     string          `json:"generated_at"`
-	ManagedPrefixes []string        `json:"managed_prefixes"`
-	Peers           []WireGuardPeer `json:"peers"`
+	Revision            string          `json:"revision"`
+	GeneratedAt         string          `json:"generated_at"`
+	ManagedPrefixes     []string        `json:"managed_prefixes"`
+	Peers               []WireGuardPeer `json:"peers"`
+	SMTPAllowedPrefixes []string        `json:"smtp_allowed_prefixes"`
 }
 
 // WireGuardPeers fetches the complete desired routed-plane state.
 func (r *Resolver) WireGuardPeers(ctx context.Context) (*WireGuardDesiredState, error) {
 	var out WireGuardDesiredState
-	if err := r.getJSON(ctx, "/internal/v1/wireguard/peers", &out); err != nil {
+	err := r.getJSON(ctx, "/internal/v2/wireguard/peers", &out)
+	if err == nil {
+		return &out, nil
+	}
+	var typed *Error
+	if !errors.As(err, &typed) || typed.Status != http.StatusNotFound {
 		return nil, err
 	}
-	return &out, nil
+	var legacy struct {
+		Revision        string          `json:"revision"`
+		GeneratedAt     string          `json:"generated_at"`
+		ManagedPrefixes []string        `json:"managed_prefixes"`
+		Peers           []WireGuardPeer `json:"peers"`
+	}
+	if err = r.getJSON(ctx, "/internal/v1/wireguard/peers", &legacy); err != nil {
+		return nil, err
+	}
+	return &WireGuardDesiredState{
+		Revision:        legacy.Revision,
+		GeneratedAt:     legacy.GeneratedAt,
+		ManagedPrefixes: legacy.ManagedPrefixes,
+		Peers:           legacy.Peers,
+	}, nil
 }
 
 // RelayCert is the materials issued by POST /internal/v1/relay/cert.

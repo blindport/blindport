@@ -23,9 +23,10 @@ type Peer struct {
 
 // DesiredState is one complete backend snapshot of the routed plane.
 type DesiredState struct {
-	Revision        string
-	ManagedPrefixes []string
-	Peers           []Peer
+	Revision            string
+	ManagedPrefixes     []string
+	Peers               []Peer
+	SMTPAllowedPrefixes []string
 }
 
 // ValidateKey rejects values that are not canonical base64 32-byte keys.
@@ -92,6 +93,22 @@ func (s *DesiredState) Validate() error {
 			owners[prefix] = struct{}{}
 		}
 	}
+	smtpAllowed := make(map[string]struct{}, len(s.SMTPAllowedPrefixes))
+	for _, prefix := range s.SMTPAllowedPrefixes {
+		if _, err := ValidatePrefix(prefix); err != nil {
+			return fmt.Errorf("SMTP allowed prefix: %w", err)
+		}
+		if _, exists := smtpAllowed[prefix]; exists {
+			return fmt.Errorf("duplicate SMTP allowed prefix %s", prefix)
+		}
+		smtpAllowed[prefix] = struct{}{}
+		if _, exists := managed[prefix]; !exists {
+			return fmt.Errorf("SMTP allowed prefix %s is not managed inventory", prefix)
+		}
+		if _, active := owners[prefix]; !active {
+			return fmt.Errorf("SMTP allowed prefix %s is not active", prefix)
+		}
+	}
 	return nil
 }
 
@@ -107,6 +124,8 @@ func (s *DesiredState) ActivePrefixes() []string {
 
 // Dataplane applies WireGuard peer state and per-prefix routing decisions.
 type Dataplane interface {
+	// ApplyRoutedPolicy atomically replaces the managed forwarding policy.
+	ApplyRoutedPolicy(activePrefixes, smtpAllowedPrefixes []string) error
 	// ReplacePeers reconciles exactly this peer set on the device.
 	ReplacePeers(peers []Peer) error
 	// ActivateRoute routes one managed prefix into the WireGuard device.
@@ -137,10 +156,25 @@ func (r *Reconciler) Apply(state *DesiredState) error {
 	}
 	managed := append([]string(nil), state.ManagedPrefixes...)
 	sort.Strings(managed)
+	allManaged := make(map[string]struct{}, len(managed)+len(r.managedPrefixes))
+	for _, prefix := range managed {
+		allManaged[prefix] = struct{}{}
+	}
+	for _, prefix := range r.managedPrefixes {
+		allManaged[prefix] = struct{}{}
+	}
+	possiblyRevoked := make([]string, 0, len(allManaged))
+	for prefix := range allManaged {
+		possiblyRevoked = append(possiblyRevoked, prefix)
+	}
+	sort.Strings(possiblyRevoked)
+	// Retain the union until every layer is reconciled so a later stale-state
+	// fail-close also covers inventory introduced by a partially applied snapshot.
+	r.managedPrefixes = possiblyRevoked
 
 	// Revoked or unenrolled prefixes stop forwarding before peer replacement so
 	// no packet can reach a peer that is about to lose authorization.
-	for _, prefix := range managed {
+	for _, prefix := range possiblyRevoked {
 		if _, active := owned[prefix]; active {
 			continue
 		}
@@ -148,10 +182,20 @@ func (r *Reconciler) Apply(state *DesiredState) error {
 			return fmt.Errorf("blackhole %s: %w", prefix, err)
 		}
 	}
+	active := state.ActivePrefixes()
+	smtpAllowed := append([]string(nil), state.SMTPAllowedPrefixes...)
+	sort.Strings(smtpAllowed)
+	if err := r.dataplane.ApplyRoutedPolicy(active, smtpAllowed); err != nil {
+		return fmt.Errorf("apply routed firewall policy: %w", err)
+	}
 	peers := append([]Peer(nil), state.Peers...)
 	sort.Slice(peers, func(i, j int) bool { return peers[i].PublicKey < peers[j].PublicKey })
 	if err := r.dataplane.ReplacePeers(peers); err != nil {
-		return fmt.Errorf("replace WireGuard peers: %w", err)
+		applyErr := fmt.Errorf("replace WireGuard peers: %w", err)
+		if failErr := r.failClosed(possiblyRevoked); failErr != nil {
+			return errors.Join(applyErr, fmt.Errorf("fail closed after peer replacement failure: %w", failErr))
+		}
+		return applyErr
 	}
 	for _, prefix := range managed {
 		if _, active := owned[prefix]; !active {
@@ -168,8 +212,23 @@ func (r *Reconciler) Apply(state *DesiredState) error {
 // FailClosed removes every peer and blackholes all previously managed
 // inventory after backend state has become too stale to trust.
 func (r *Reconciler) FailClosed() error {
-	return r.Apply(&DesiredState{
-		Revision:        "fail-closed",
-		ManagedPrefixes: append([]string(nil), r.managedPrefixes...),
-	})
+	return r.failClosed(r.managedPrefixes)
+}
+
+func (r *Reconciler) failClosed(prefixes []string) error {
+	var failures []error
+	// Peer removal is the fastest single operation that blocks both ingress and
+	// egress. The independent policy and route layers are still attempted if it fails.
+	if err := r.dataplane.ReplacePeers(nil); err != nil {
+		failures = append(failures, fmt.Errorf("remove WireGuard peers: %w", err))
+	}
+	if err := r.dataplane.ApplyRoutedPolicy(nil, nil); err != nil {
+		failures = append(failures, fmt.Errorf("apply empty routed firewall policy: %w", err))
+	}
+	for _, prefix := range prefixes {
+		if err := r.dataplane.BlackholeRoute(prefix); err != nil {
+			failures = append(failures, fmt.Errorf("blackhole %s: %w", prefix, err))
+		}
+	}
+	return errors.Join(failures...)
 }

@@ -29,8 +29,18 @@ func NewLinuxRelayDataplane(string) (*LinuxRelayDataplane, error) {
 	return nil, ErrUnsupportedPlatform
 }
 
+// NewLinuxRelayDataplaneWithPolicy is unavailable outside Linux.
+func NewLinuxRelayDataplaneWithPolicy(string, bool) (*LinuxRelayDataplane, error) {
+	return nil, ErrUnsupportedPlatform
+}
+
 // ReplacePeers is unavailable outside Linux.
 func (*LinuxRelayDataplane) ReplacePeers([]Peer) error { return ErrUnsupportedPlatform }
+
+// ApplyRoutedPolicy is unavailable outside Linux.
+func (*LinuxRelayDataplane) ApplyRoutedPolicy([]string, []string) error {
+	return ErrUnsupportedPlatform
+}
 
 // ActivateRoute is unavailable outside Linux.
 func (*LinuxRelayDataplane) ActivateRoute(string) error { return ErrUnsupportedPlatform }

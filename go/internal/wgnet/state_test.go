@@ -46,9 +46,10 @@ func TestValidatePrefixRequiresCanonicalIPv4Slash32(t *testing.T) {
 
 func TestDesiredStateValidation(t *testing.T) {
 	valid := &DesiredState{
-		Revision:        "r1",
-		ManagedPrefixes: []string{"198.51.100.20/32", "198.51.100.21/32"},
-		Peers:           []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}},
+		Revision:            "r1",
+		ManagedPrefixes:     []string{"198.51.100.20/32", "198.51.100.21/32"},
+		Peers:               []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}},
+		SMTPAllowedPrefixes: []string{"198.51.100.20/32"},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
@@ -67,12 +68,24 @@ func TestDesiredStateValidation(t *testing.T) {
 				{PublicKey: testKey(9), AllowedPrefixes: []string{"198.51.100.20/32"}},
 			},
 		},
+		{ManagedPrefixes: []string{"198.51.100.20/32"}, SMTPAllowedPrefixes: []string{"198.51.100.20/32"}},
+		{ManagedPrefixes: []string{"198.51.100.20/32"}, Peers: []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}}, SMTPAllowedPrefixes: []string{"198.51.100.20/32", "198.51.100.20/32"}},
+		{ManagedPrefixes: []string{"198.51.100.20/32"}, Peers: []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}}, SMTPAllowedPrefixes: []string{"198.51.100.99/32"}},
+		{ManagedPrefixes: []string{"198.51.100.20/32"}, Peers: []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}}, SMTPAllowedPrefixes: []string{"198.51.100.20/24"}},
 	}
 	for index, state := range invalid {
 		if err := state.Validate(); err == nil {
 			t.Fatalf("Validate() case %d accepted invalid state", index)
 		}
 	}
+}
+
+func (f *fakeDataplane) ApplyRoutedPolicy(active, smtp []string) error {
+	f.operations = append(f.operations, "policy:"+strings.Join(active, ",")+":"+strings.Join(smtp, ","))
+	if f.failOn == "policy" {
+		return errors.New("injected policy failure")
+	}
+	return nil
 }
 
 type fakeDataplane struct {
@@ -116,6 +129,7 @@ func TestReconcilerAppliesRevocationSafeOrder(t *testing.T) {
 	}
 	want := []string{
 		"blackhole:198.51.100.21/32",
+		"policy:198.51.100.20/32:",
 		"peers:" + testKey(1)[:4],
 		"activate:198.51.100.20/32",
 	}
@@ -138,9 +152,74 @@ func TestReconcilerFailClosedBlackholesAllManagedInventory(t *testing.T) {
 	if err := reconciler.FailClosed(); err != nil {
 		t.Fatalf("FailClosed() error = %v", err)
 	}
-	want := []string{"blackhole:198.51.100.20/32", "peers:"}
+	want := []string{"peers:", "policy::", "blackhole:198.51.100.20/32"}
 	if strings.Join(dataplane.operations, "|") != strings.Join(want, "|") {
 		t.Fatalf("fail-closed operations = %v, want %v", dataplane.operations, want)
+	}
+}
+
+func TestReconcilerBlackholesPrefixesRemovedFromManagedInventory(t *testing.T) {
+	dataplane := &fakeDataplane{}
+	reconciler := NewReconciler(dataplane)
+	if err := reconciler.Apply(&DesiredState{
+		ManagedPrefixes: []string{"198.51.100.20/32"},
+		Peers:           []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dataplane.operations = nil
+	if err := reconciler.Apply(&DesiredState{}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"blackhole:198.51.100.20/32", "policy::", "peers:"}
+	if strings.Join(dataplane.operations, "|") != strings.Join(want, "|") {
+		t.Fatalf("operations = %v, want %v", dataplane.operations, want)
+	}
+}
+
+func TestReconcilerInstallsPolicyBeforeNewPeersAndRoutes(t *testing.T) {
+	dataplane := &fakeDataplane{failOn: "policy"}
+	reconciler := NewReconciler(dataplane)
+	err := reconciler.Apply(&DesiredState{
+		ManagedPrefixes: []string{"198.51.100.20/32"},
+		Peers:           []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}},
+	})
+	if err == nil || len(dataplane.operations) != 1 || !strings.HasPrefix(dataplane.operations[0], "policy:") {
+		t.Fatalf("Apply() err=%v operations=%v", err, dataplane.operations)
+	}
+}
+
+func TestReconcilerFailClosedAttemptsPeerRemovalAfterFirewallError(t *testing.T) {
+	dataplane := &fakeDataplane{failOn: "policy"}
+	reconciler := NewReconciler(dataplane)
+	if err := reconciler.FailClosed(); err == nil {
+		t.Fatal("FailClosed() returned nil error")
+	}
+	want := []string{"peers:", "policy::"}
+	if strings.Join(dataplane.operations, "|") != strings.Join(want, "|") {
+		t.Fatalf("operations = %v, want %v", dataplane.operations, want)
+	}
+}
+
+func TestReconcilerPeerReplacementFailureImmediatelyFailsClosed(t *testing.T) {
+	dataplane := &fakeDataplane{failOn: "peers"}
+	reconciler := NewReconciler(dataplane)
+	err := reconciler.Apply(&DesiredState{
+		ManagedPrefixes: []string{"198.51.100.20/32"},
+		Peers:           []Peer{{PublicKey: testKey(1), AllowedPrefixes: []string{"198.51.100.20/32"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "replace WireGuard peers") {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	want := []string{
+		"policy:198.51.100.20/32:",
+		"peers:" + testKey(1)[:4],
+		"peers:",
+		"policy::",
+		"blackhole:198.51.100.20/32",
+	}
+	if strings.Join(dataplane.operations, "|") != strings.Join(want, "|") {
+		t.Fatalf("operations = %v, want %v", dataplane.operations, want)
 	}
 }
 

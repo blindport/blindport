@@ -73,7 +73,7 @@ func main() {
 	wireguardMode := flag.Bool("wireguard", envEnabled("BLINDPORT_WIREGUARD"), "configure the routed WireGuard Blindport IP plane instead of framed tunnels (Linux only)")
 	wireguardInterface := flag.String("wireguard-interface", envDefault("BLINDPORT_WIREGUARD_INTERFACE", "bpwg0"), "routed WireGuard interface name")
 	wireguardTable := flag.Int("wireguard-route-table", envIntDefault("BLINDPORT_WIREGUARD_ROUTE_TABLE", 51820), "policy routing table for routed replies")
-	wireguardPriority := flag.Int("wireguard-rule-priority", envIntDefault("BLINDPORT_WIREGUARD_RULE_PRIORITY", 51820), "base priority for source policy rules")
+	wireguardPriority := flag.Int("wireguard-rule-priority", envIntDefault("BLINDPORT_WIREGUARD_RULE_PRIORITY", 10000), "base priority for source policy rules")
 	serverName := flag.String("server-name", os.Getenv("BLINDPORT_SERVER_NAME"), "TLS ServerName for every relay (defaults independently to each relay host)")
 	socks5Address := flag.String("socks5", os.Getenv("BLINDPORT_SOCKS5"), "SOCKS5 proxy address for backend and relay connections (host:port)")
 	stateDir := flag.String("state-dir", defaultCredentialStateDir(), "private directory for persistent client identity (or BLINDPORT_STATE_DIR)")
