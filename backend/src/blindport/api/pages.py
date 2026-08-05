@@ -283,13 +283,15 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         if subscription.product == ProductType.RELAY:
             mapping = {
                 "subscription_id": str(subscription.public_id),
-                "upstream": "127.0.0.1:443",
-                "http_challenge_upstream": "127.0.0.1:80",
+                "upstream": "127.0.0.1:8080",
+                "tls_mode": "automatic",
+                "acme_terms_accepted": False,
             }
         else:
             mapping = {
                 "subscription_id": str(subscription.public_id),
-                "upstream": "127.0.0.1:80",
+                "upstream": "127.0.0.1:8080",
+                "tls_mode": "passthrough",
             }
         client_mappings.append(mapping)
     catalog = get_catalog(session)
@@ -319,7 +321,7 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
                 if subscription.status == SubscriptionStatus.ACTIVE
             ],
             client_config_json=(
-                json.dumps({"version": 1, "mappings": client_mappings}, indent=2)
+                json.dumps({"version": 2, "mappings": client_mappings}, indent=2)
                 if client_mappings
                 else ""
             ),

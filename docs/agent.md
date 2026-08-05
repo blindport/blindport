@@ -130,7 +130,7 @@ Pass `--config /etc/blindport/config.json` or set
       "tls_mode": "automatic",
       "acme_terms_accepted": true
     },
-    {"subscription_id": "45645645-6456-4456-8456-456456456456", "upstream": "traefik:443", "tls_mode": "passthrough", "http_challenge_upstream": "traefik:80"}
+    {"subscription_id": "45645645-6456-4456-8456-456456456456", "upstream": "tls-proxy:443", "tls_mode": "passthrough", "http_challenge_upstream": "tls-proxy:80"}
   ]
 }
 ```
@@ -150,7 +150,7 @@ requires each mapping to set `tls_mode` explicitly to `passthrough` or
 operator's explicit `acme_terms_accepted: true`. It obtains one exact-hostname
 certificate through the relay's destination-port-80 HTTP-01 path, terminates TLS
 inside `blindportd`, and forwards decrypted plaintext to `upstream`. It does not
-require Traefik, root, or a local public port. Automatic mode rejects
+require a separate reverse proxy, root, or a local public port. Automatic mode rejects
 `http_challenge_upstream`; use passthrough when an origin proxy or server should
 continue owning TLS and ACME.
 

@@ -90,28 +90,35 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     dashboard = _dashboard(client, token)
     generated = _element_text(dashboard, "generatedClientConfig")
     command = _element_text(dashboard, "framedConfigInstallCommand")
+    install_command = _element_text(dashboard, "installAgentCommand")
     run_command = _element_text(dashboard, "framedRunCommand")
     config = json.loads(generated)
 
     assert "Framed tunnel" in dashboard
-    assert "Generated multi-endpoint config" in dashboard
+    assert "Review and install configuration" in dashboard
     assert 'class="disclosure-summary"' in dashboard
-    assert "Copy JSON config" in dashboard
-    assert "Copy install command" in dashboard
+    assert "Copy JSON" in dashboard
+    assert "Copy config install" in dashboard
     assert f"<dt>Subscription ID</dt><dd><code>{public_id}</code></dd>" in dashboard
-    assert "first run asks for your account token" in dashboard
-    assert "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in run_command
-    assert "BLINDPORT_INSTALL_DIR=" in run_command
-    assert '"$HOME/.local/bin/blindportd"' in run_command
-    assert "-upstream=127.0.0.1:443" in run_command
+    assert "prompts for your account token" in dashboard
+    assert install_command == "curl -fsSL http://testserver/downloads/install.sh | sh"
+    assert "BLINDPORT_DOWNLOAD_BASE_URL" not in dashboard
+    assert "BLINDPORT_INSTALL_DIR" not in dashboard
+    assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
+    assert 'acmeTermsAccepted" type="checkbox" checked' not in dashboard
+    assert run_command == (
+        'export PATH="$HOME/.local/bin:$PATH" && '
+        'blindportd -config="$HOME/.config/blindport/config.json"'
+    )
     assert "-token-file" not in run_command
     assert config == {
-        "version": 1,
+        "version": 2,
         "mappings": [
             {
                 "subscription_id": public_id,
-                "upstream": "127.0.0.1:443",
-                "http_challenge_upstream": "127.0.0.1:80",
+                "upstream": "127.0.0.1:8080",
+                "tls_mode": "automatic",
+                "acme_terms_accepted": False,
             }
         ],
     }
@@ -120,10 +127,11 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert "wireGuardSetupCommand" not in dashboard
 
     command_lines = command.splitlines()
-    assert command_lines[3] == (
-        "cat > \"$HOME/.config/blindport/config.json\" <<'BLINDPORT_CONFIG'"
-    )
-    assert command_lines[-1] == "BLINDPORT_CONFIG"
+    assert command_lines[3] == ("cat > \"$temporary\" <<'BLINDPORT_CONFIG' &&")
+    assert command_lines[-1] == ('mv -f -- "$temporary" "$HOME/.config/blindport/config.json"')
+    assert token not in command
+    assert token not in install_command
+    assert token not in run_command
     syntax = subprocess.run(
         ["bash", "-n"],
         input=command,
@@ -153,11 +161,13 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert installed.read_text(encoding="utf-8") == f"{generated}\n"
     assert json.loads(installed.read_text(encoding="utf-8")) == config
     assert victim.read_text(encoding="utf-8") == "preserve me"
+    assert (config_dir / "config.json.backup").read_text(encoding="utf-8") == "preserve me"
+    assert stat.S_IMODE((config_dir / "config.json.backup").stat().st_mode) == 0o600
     assert stat.S_IMODE(installed.stat().st_mode) == 0o600
     assert stat.S_IMODE(config_dir.stat().st_mode) == 0o700
 
 
-def test_generated_nonrelay_mappings_use_local_port_80(app_client) -> None:
+def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_client) -> None:
     client, _ = app_client
     signup = client.post("/api/v2/signup").json()
     token = signup["token"]
@@ -169,11 +179,26 @@ def test_generated_nonrelay_mappings_use_local_port_80(app_client) -> None:
     config = json.loads(_element_text(_dashboard(client, token), "generatedClientConfig"))
     mappings = {mapping["subscription_id"]: mapping for mapping in config["mappings"]}
     assert mappings == {
-        port_id: {"subscription_id": port_id, "upstream": "127.0.0.1:80"},
-        ip_id: {"subscription_id": ip_id, "upstream": "127.0.0.1:80"},
+        port_id: {
+            "subscription_id": port_id,
+            "upstream": "127.0.0.1:8080",
+            "tls_mode": "passthrough",
+        },
+        ip_id: {
+            "subscription_id": ip_id,
+            "upstream": "127.0.0.1:8080",
+            "tls_mode": "passthrough",
+        },
     }
 
     dashboard = _dashboard(client, token)
+    assert dashboard.index("Configure local targets") < dashboard.index(
+        "Start the persistent service"
+    )
+    assert "systemctl --user status blindportd.service" in dashboard
+    assert "journalctl --user -u blindportd.service -f" in dashboard
+    assert "systemctl --user restart blindportd.service" in dashboard
+    assert 'id="acmeTermsAccepted"' not in dashboard
     assert f"<code>{port_id}</code>" in dashboard
     assert f"<code>{ip_id}</code>" in dashboard
 

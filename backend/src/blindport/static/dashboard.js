@@ -652,8 +652,96 @@ document.querySelectorAll(".verifyDomainBtn").forEach((button) => {
   });
 });
 
+function validUpstream(value) {
+  if (!value || value !== value.trim() || value.length > 259 || /\s/.test(value)) return false;
+  let host;
+  let port;
+  if (value.startsWith("[")) {
+    const match = value.match(/^\[([0-9a-fA-F:.]+)\]:(\d{1,5})$/);
+    if (!match || !match[1].includes(":")) return false;
+    try {
+      const parsed = new URL(`http://${value}/`);
+      if (!parsed.hostname.startsWith("[")) return false;
+    } catch (error) {
+      return false;
+    }
+    [, host, port] = match;
+  } else {
+    const separator = value.lastIndexOf(":");
+    if (separator < 1 || value.indexOf(":") !== separator) return false;
+    host = value.slice(0, separator);
+    port = value.slice(separator + 1);
+    const octets = host.split(".");
+    const numericIPv4 = octets.length === 4 && octets.every((octet) => /^\d+$/.test(octet));
+    const ipv4 = numericIPv4 && octets.every(
+      (octet) => /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255,
+    );
+    const hostname = host.length <= 253 && host.split(".").every(
+      (label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label),
+    );
+    if ((numericIPv4 && !ipv4) || (!ipv4 && !hostname)) return false;
+  }
+  if (!/^[1-9]\d{0,4}$/.test(port)) return false;
+  const portNumber = Number(port);
+  return host.length > 0 && portNumber >= 1 && portNumber <= 65535;
+}
+
+function updateClientConfig() {
+  const controls = [...document.querySelectorAll(".mapping-control")];
+  if (!controls.length) return;
+  let targetsValid = true;
+  const terms = document.getElementById("acmeTermsAccepted");
+  const termsAccepted = !terms || terms.checked;
+  const mappings = controls.map((control) => {
+    const input = control.querySelector(".mappingUpstream");
+    const error = control.querySelector(".mapping-error");
+    const valid = validUpstream(input.value);
+    targetsValid = targetsValid && valid;
+    input.setAttribute("aria-invalid", String(!valid));
+    error.textContent = valid ? "" : "Use a hostname or IP followed by a port, for example 127.0.0.1:8080.";
+    const mapping = {
+      subscription_id: control.dataset.subscriptionId,
+      upstream: input.value.trim(),
+      tls_mode: control.dataset.tlsMode,
+    };
+    if (control.dataset.tlsMode === "automatic") {
+      mapping.acme_terms_accepted = termsAccepted;
+    }
+    return mapping;
+  });
+  const configText = JSON.stringify({ version: 2, mappings }, null, 2);
+  document.getElementById("generatedClientConfig").textContent = configText;
+  document.getElementById("framedConfigInstallCommand").textContent =
+    `install -d -m 700 "$HOME/.config/blindport" &&\n` +
+    `temporary=$(mktemp "$HOME/.config/blindport/config.json.XXXXXX") &&\n` +
+    `chmod 600 "$temporary" &&\n` +
+    `cat > "$temporary" <<'BLINDPORT_CONFIG' &&\n` +
+    `${configText}\nBLINDPORT_CONFIG\n` +
+    `([ ! -f "$HOME/.config/blindport/config.json" ] || ` +
+    `install -m 600 "$HOME/.config/blindport/config.json" "$HOME/.config/blindport/config.json.backup") &&\n` +
+    `mv -f -- "$temporary" "$HOME/.config/blindport/config.json"`;
+  const ready = targetsValid && termsAccepted;
+  document.querySelectorAll(".configDependent").forEach((button) => {
+    button.disabled = !ready;
+  });
+  const status = document.getElementById("configSetupStatus");
+  if (!targetsValid) {
+    status.textContent = "Correct each local target before installing this configuration.";
+  } else if (!termsAccepted) {
+    status.textContent = "Review and accept the Let's Encrypt agreement to enable automatic HTTPS.";
+  } else {
+    status.textContent = "Configuration is ready to install.";
+  }
+}
+
+document.querySelectorAll(".mappingUpstream").forEach((input) => {
+  input.addEventListener("input", updateClientConfig);
+});
+document.getElementById("acmeTermsAccepted")?.addEventListener("change", updateClientConfig);
+
 document.querySelectorAll(".copyCommandBtn").forEach((button) => {
   button.addEventListener("click", async () => {
+    if (button.disabled) return;
     const command = document.getElementById(button.dataset.copyTarget).textContent;
     const originalText = button.textContent;
     const copied = await accounts.copyText(command);
@@ -666,4 +754,5 @@ document.querySelectorAll(".copyCommandBtn").forEach((button) => {
 
 updateDashboardManagedPreview();
 updateSubscriptionFields();
+updateClientConfig();
 void resumeOpenPayment();

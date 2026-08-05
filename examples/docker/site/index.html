@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blindport demo</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; background: #eef2ef; color: #171a20; }
+    * { box-sizing: border-box; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; }
+    main { width: min(100%, 640px); border-top: 6px solid #007b59; background: white; padding: 32px; }
+    h1 { margin: 0 0 16px; font-size: 3rem; letter-spacing: 0; }
+    p { margin: 0; color: #4f5d56; line-height: 1.65; }
+    dl { margin: 32px 0 0; border-top: 1px solid #c5cec9; }
+    dl > div { display: grid; grid-template-columns: 120px 1fr; gap: 16px; padding: 12px 0; border-bottom: 1px solid #c5cec9; }
+    dt { color: #59645f; }
+    dd { margin: 0; font-family: ui-monospace, monospace; }
+    @media (max-width: 480px) { h1 { font-size: 2.2rem; } dl > div { grid-template-columns: 1fr; gap: 4px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>HTTPS is online.</h1>
+    <p>Nginx serves this page over the private Compose network. The Blindport agent owns the certificate and carries the public Relay connection to this container.</p>
+    <dl>
+      <div><dt>Application</dt><dd>nginx:80</dd></div>
+      <div><dt>TLS</dt><dd>blindportd + let's encrypt</dd></div>
+      <div><dt>Ingress</dt><dd>blindport relay</dd></div>
+    </dl>
+  </main>
+</body>
+</html>

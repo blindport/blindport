@@ -6,7 +6,7 @@
     <p class="eyebrow">Best-effort public ingress beta</p>
     <h1 id="intro-title">{{ brand_name }}</h1>
     <p class="lead">A leased public endpoint for self-hosted services you intend to keep online.</p>
-    <p>Publish from your own hardware, even behind CGNAT, without inbound port forwarding in framed mode or sending ordinary visitors to your residential IP. Your service and data stay at the origin; Blindport Relay leaves visitor TLS and its private key there too.</p>
+    <p>Publish from your own hardware, even behind CGNAT, without inbound port forwarding in framed mode or sending ordinary visitors to your residential IP. Your service and data stay on your host, where the agent handles automatic Relay HTTPS.</p>
     <div class="intro-actions">
       <a class="button-link" href="#products">Choose a public endpoint</a>
       <a class="text-link" href="#tls-title">See the TLS boundary</a>
@@ -37,7 +37,7 @@
       <ul class="check-list">
         <li>Managed name or customer-owned subdomain</li>
         <li>Shared port 443, routed by visible TLS SNI</li>
-        <li>Your existing origin proxy owns TLS and the private key</li>
+        <li>Automatic HTTPS to a local plaintext app port</li>
       </ul>
       <p class="product-state{% if not relay.available %} is-unavailable{% endif %}">{% if relay.available %}Available{% elif relay.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
       {% if relay.available %}<a class="text-link product-jump" href="#order" data-order-product="relay">Choose Relay</a>{% endif %}
@@ -88,19 +88,19 @@
 <section class="tls-band" aria-labelledby="tls-title">
   <div class="content-width tls-layout">
     <div class="tls-copy">
-      <p class="eyebrow">Blindport Relay trust boundary</p>
-      <h2 id="tls-title">Your certificate stays at the origin</h2>
-      <p>Blindport reads the visible ClientHello SNI needed to select a tunnel, then forwards the original TLS bytes. Your existing reverse proxy or application completes the handshake and keeps the private key.</p>
-      <p>For Let's Encrypt, an optional public port 80 path accepts only bounded, validated HTTP-01 requests and sends them to a separate plaintext challenge listener at the origin. Other valid GET requests redirect to HTTPS. DNS-01 remains available through your DNS provider.</p>
-      <p><a href="/guide#tls">Read the TLS guide</a> or follow the <a href="https://github.com/blindport/blindport/tree/main/examples/traefik">Traefik and Let's Encrypt example</a>.</p>
+      <p class="eyebrow">Blindport Relay HTTPS</p>
+      <h2 id="tls-title">Automatic HTTPS, local app port</h2>
+      <p>After you accept the Let's Encrypt agreement, <code>blindportd</code> obtains and renews the certificate, handles HTTPS on your host, and forwards plaintext to your app at a local target such as <code>127.0.0.1:8080</code>.</p>
+      <p>Advanced TLS passthrough remains available when your existing server must keep the certificate and terminate TLS itself.</p>
+      <p><a href="/guide#tls">Read the TLS guide</a>.</p>
     </div>
     <figure class="tls-figure" aria-describedby="tls-caption">
-      <div class="tls-path" role="img" aria-label="Visitor TLS passes through Blindport and terminates at the origin reverse proxy">
+      <div class="tls-path" role="img" aria-label="Visitor HTTPS passes through Blindport to the local agent and app">
         <span class="tls-node">Visitor<small>Starts TLS</small></span>
         <span class="tls-link" aria-hidden="true"></span>
-        <span class="tls-node tls-node-relay">Blindport<small>Reads SNI, forwards ciphertext</small></span>
+        <span class="tls-node tls-node-relay">Blindport<small>Routes the connection</small></span>
         <span class="tls-link" aria-hidden="true"></span>
-        <span class="tls-node tls-node-origin">Your origin<small>TLS, certificate, private key</small></span>
+        <span class="tls-node tls-node-origin">Your host<small>Agent HTTPS to local app</small></span>
       </div>
       <figcaption id="tls-caption">Blindport still observes SNI, connection timing, volume, and active network addresses. Encrypted ClientHello cannot be routed by the current Relay service.</figcaption>
     </figure>
@@ -121,7 +121,7 @@
         <tr><th scope="row">Quick preview tunnel</th><td data-label="Best fit">Demos, webhook tests, and short-lived sharing</td><td data-label="TLS and identity">Usually an automatic certificate on a provider hostname</td><td data-label="Tradeoff">Fast and often free; URL lifetime, limits, and durability may not fit an ongoing service</td></tr>
         <tr><th scope="row">Managed application gateway</th><td data-label="Best fit">Global edge, HTTP policy, authentication, observability, and compliance</td><td data-label="TLS and identity">Often edge-terminated; raw TLS passthrough depends on product and plan</td><td data-label="Tradeoff">More platform capability, account data, configuration, and usage billing</td></tr>
         <tr><th scope="row">Community or self-hosted relay</th><td data-label="Best fit">Experimentation, relay control, and choosing independent operators</td><td data-label="TLS and identity">Depends on the relay protocol and certificate model</td><td data-label="Tradeoff">You evaluate operator trust, persistence, abuse controls, upgrades, and availability</td></tr>
-        <tr><th scope="row">Blindport hosted beta</th><td data-label="Best fit">An ongoing self-hosted service needing a leased hostname, socket, or IPv4</td><td data-label="TLS and identity">Token-only account; Relay certificate and key stay at your origin</td><td data-label="Tradeoff">Best effort during beta; Linux client, wallet payment, and fewer edge features</td></tr>
+        <tr><th scope="row">Blindport hosted beta</th><td data-label="Best fit">An ongoing self-hosted service needing a leased hostname, socket, or IPv4</td><td data-label="TLS and identity">Token-only account; agent-managed Relay certificate on your host</td><td data-label="Tradeoff">Best effort during beta; Linux client, wallet payment, and fewer edge features</td></tr>
       </tbody>
     </table>
   </div>

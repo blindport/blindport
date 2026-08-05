@@ -5,11 +5,11 @@
   <aside class="guide-nav" aria-label="Guide sections">
     <strong>Guide</strong>
     <a href="#install">Install</a>
-    <a href="#credentials">Credentials</a>
-    <a href="#run">Run</a>
-    <a href="#static-config">Static config</a>
+    <a href="#configure">Configure</a>
+    <a href="#service">Persistent service</a>
+    <a href="#run">Foreground run</a>
     <a href="#docker">Docker</a>
-    <a href="#tls">TLS and HTTP-01</a>
+    <a href="#tls">TLS</a>
     <a href="#wireguard">WireGuard</a>
     <a href="#tor">Tor</a>
     <a href="#troubleshooting">Troubleshooting</a>
@@ -20,15 +20,14 @@
     <header class="guide-header">
       <p class="eyebrow">Client operations</p>
       <h1 id="guide-title">Run <code>blindportd</code></h1>
-      <p class="lead">Connect paid subscriptions to services on one Linux host. One daemon can serve every framed mapping in an account.</p>
+      <p class="lead">Connect each paid endpoint to a local service on one Linux host.</p>
     </header>
 
     <section id="install">
       <h2>Install</h2>
       <p>On Linux amd64, arm64, or armv7, install the current agent with one command:</p>
-      <pre><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | \
-  BLINDPORT_DOWNLOAD_BASE_URL={{ request.url.scheme }}://{{ request.url.netloc }}/downloads sh</code></pre>
-      <p>The installer detects the architecture, downloads the binary and checksum over HTTPS (or the selected authenticated onion service), verifies SHA-256, and installs to <code>/usr/local/bin</code> with sudo when available. Without sudo it uses <code>~/.local/bin</code>.</p>
+       <pre><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh</code></pre>
+       <p>The installer detects your Linux architecture, downloads the current binary and checksum from this site, and verifies SHA-256. As a normal user it installs <code>blindportd</code> to <code>$HOME/.local/bin</code> and adds that directory to your shell profile when needed. When run as root, it installs to <code>/usr/local/bin</code>.</p>
       <details><summary>Manual download and trust details</summary>
       <p>GitHub Actions builds versioned static Linux binaries and publishes them through <a href="https://github.com/blindport/blindport/releases">GitHub Releases</a>. The hosted copies are:</p>
       {% if blindportd_version != "dev" %}
@@ -53,52 +52,65 @@ sudo install -m 0755 blindportd /usr/local/bin/blindportd</code></pre>
       </details>
     </section>
 
-    <section id="credentials">
-      <h2>Token and state</h2>
-      <p>Run <code>blindportd</code> interactively once. It asks for the account token without echo and stores it at <code>~/.config/blindport/token</code> with owner-only permissions. Docker uses <code>BLINDPORT_TOKEN</code> instead.</p>
-      <p>The state directory stores the client Ed25519 identity and, in routed mode, a WireGuard key. It must be absolute, owned by the daemon user, and inaccessible to group and other users. Back it up as a secret. Production permits one enrolled client identity per account; losing <code>credential.json</code> requires an operator reset before enrollment can be repeated.</p>
-    </section>
-
-    <section id="run">
-      <h2>Run framed mode</h2>
-      <p>With one active endpoint, point the agent at the local service:</p>
-      <pre><code>blindportd -backend={{ request.url.scheme }}://{{ request.url.netloc }} -upstream=127.0.0.1:8080</code></pre>
-      <p>The hosted binary defaults to <code>https://blindport.com</code>, so hosted users can omit <code>-backend</code>. The only required first-run input is the token prompt. With several active endpoints, use the generated dashboard config.</p>
-      <p>The backend returns only active subscriptions. Restart the daemon after adding, removing, or changing a subscription.</p>
-    </section>
-
-    <section id="static-config">
-      <h2>Static mappings</h2>
-      <p>Use a static configuration for multiple mappings or explicit subscription selection. Copy the dashboard-generated configuration to <code>~/.config/blindport/config.json</code> with mode <code>0600</code>. The paid product determines TCP or UDP behavior.</p>
+    <section id="configure">
+      <h2>Configure local services</h2>
+      <p>Open <a href="/dashboard#client-config-title">Connect your service</a> in the dashboard. For every active endpoint, enter the local <code>host:port</code> where your app listens. A common local target is <code>127.0.0.1:8080</code>.</p>
+      <p>Relay uses automatic HTTPS by default. Review and accept the linked Let's Encrypt Subscriber Agreement in the dashboard, then install the generated config at <code>$HOME/.config/blindport/config.json</code>. Port and framed IP mappings pass traffic through to the local target without changing its protocol.</p>
       <pre><code>{
-  "version": 1,
+  "version": 2,
   "mappings": [
     {
       "subscription_id": "12312312-3123-4123-8123-123123123123",
-      "upstream": "reverse-proxy:443",
-      "http_challenge_upstream": "reverse-proxy:80"
+      "upstream": "127.0.0.1:8080",
+      "tls_mode": "automatic",
+      "acme_terms_accepted": true
     },
     {
       "subscription_id": "45645645-6456-4456-8456-456456456456",
-      "upstream": "photos:8080"
+      "upstream": "127.0.0.1:9000",
+      "tls_mode": "passthrough"
     }
   ]
 }</code></pre>
-      <p>The file must be a regular, owner-only file, not a symlink. Mapping IDs must be canonical, unique UUIDv4 values copied from the dashboard. Upstreams use <code>host:port</code>; bracket IPv6 addresses, for example <code>[::1]:8080</code>.</p>
+      <p>The file must be a regular owner-only file with mode <code>0600</code>, not a symlink. Mapping IDs are canonical, unique UUIDv4 values shown in the dashboard. Bracket IPv6 targets, for example <code>[::1]:8080</code>.</p>
+    </section>
+
+    <section id="service">
+      <h2>Start a persistent user service</h2>
+      <p>After installing the config, run:</p>
+      <pre><code>export PATH="$HOME/.local/bin:$PATH"
+blindportd -install-user-service</code></pre>
+      <p>The command asks for your account token without displaying it, stores it with owner-only permissions, validates the config, and enables and starts <code>blindportd.service</code> for your user.</p>
+      <pre><code>systemctl --user status blindportd.service
+journalctl --user -u blindportd.service -f</code></pre>
+      <p>To start the service at boot and keep it running while you are logged out, enable lingering. This policy may require administrator approval:</p>
+      <pre><code>loginctl enable-linger "$USER"</code></pre>
+      <h3>Update the agent</h3>
+      <pre><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh
+blindportd -version
+systemctl --user restart blindportd.service</code></pre>
+      <p>The installer replaces only the binary. Keep the existing config, token, and <code>$HOME/.local/state/blindport</code> state directory so the client identity and certificates remain available.</p>
+    </section>
+
+    <section id="run">
+      <h2>Run in the foreground</h2>
+      <p>For a temporary session, use the same config without installing the user service:</p>
+      <pre><code>export PATH="$HOME/.local/bin:$PATH"
+blindportd -config="$HOME/.config/blindport/config.json"</code></pre>
+      <p>The first run asks for the account token without echo. Stop the process with <code>Ctrl+C</code>. Restart it after changing the static config.</p>
     </section>
 
     <section id="docker">
-      <h2>Docker discovery</h2>
-      <p>One long-running agent continuously discovers running containers, registers declared orders, refreshes active provisioning, and starts or stops mappings without a restart.</p>
-      <p>Pass the token as an environment variable and persist the enrolled identity in a named volume. Set <code>DOCKER_GID</code> to the numeric group owner from <code>stat -c '%g' /var/run/docker.sock</code>.</p>
+      <h2>Docker</h2>
+      <p>Connect an existing paid Relay subscription directly to an app container. Replace the subscription UUID, set <code>.upstream</code> to the app's Compose service name and internal port, and accept the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> before setting the consent label to <code>true</code>.</p>
       <pre><code>services:
-  reverse-proxy:
+  app:
+    image: example/app:latest
     labels:
-      tech.blindport.mapping.web.product: "relay"
-      tech.blindport.mapping.web.domain: "web.relay.blindport.com"
-      tech.blindport.mapping.web.billing_term: "monthly"
-      tech.blindport.mapping.web.upstream: "reverse-proxy:443"
-      tech.blindport.mapping.web.http_challenge_upstream: "reverse-proxy:80"
+      tech.blindport.mapping.web.subscription: "12312312-3123-4123-8123-123123123123"
+      tech.blindport.mapping.web.upstream: "app:8080"
+      tech.blindport.mapping.web.tls_mode: "automatic"
+      tech.blindport.mapping.web.acme_terms_accepted: "true"
 
   blindportd:
     image: ghcr.io/blindport/blindportd:{{ blindportd_version if blindportd_version != "dev" else "latest" }}
@@ -121,8 +133,17 @@ sudo install -m 0755 blindportd /usr/local/bin/blindportd</code></pre>
 volumes:
   blindport-state:</code></pre>
       <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
-      <p>The mapping name is a stable order key. Relay also requires a domain; Port accepts TCP or UDP; IP uses framed delivery. Existing <code>.subscription</code> labels remain supported. With NWC, an eligible new declaration starts one initial payment; without NWC it appears in the dashboard for manual payment. Removing a label stops forwarding but does not cancel service.</p>
-      <p>Run the agent and targets on a shared Docker network so labeled upstream names resolve. The agent polls every 10 seconds by default; set <code>BLINDPORT_DOCKER_POLL_INTERVAL</code> between <code>1s</code> and <code>5m</code>.</p>
+      <p><code>app</code> and <code>blindportd</code> share Compose's default network, so <code>app:8080</code> resolves directly. The named <code>blindport-state</code> volume preserves the enrolled identity, ACME account, and certificates. Pass the account token through <code>BLINDPORT_TOKEN</code>, and set <code>DOCKER_GID</code> to <code>stat -c '%g' /var/run/docker.sock</code>.</p>
+      <details><summary>Advanced: create orders from labels</summary>
+      <p>Instead of <code>.subscription</code>, a mapping can declare <code>.product</code>, and Relay also requires <code>.domain</code>. The mapping name becomes a stable order key. With a connected NWC wallet, an eligible declaration can start its initial payment; otherwise the pending order appears in the dashboard.</p>
+      <pre><code>tech.blindport.mapping.web.product: "relay"
+tech.blindport.mapping.web.domain: "web.example.com"
+tech.blindport.mapping.web.billing_term: "monthly"
+tech.blindport.mapping.web.upstream: "app:8080"
+tech.blindport.mapping.web.tls_mode: "automatic"
+tech.blindport.mapping.web.acme_terms_accepted: "true"</code></pre>
+      <p>Removing labels stops forwarding but does not cancel a paid subscription.</p>
+      </details>
     </section>
 
     <section>
@@ -131,9 +152,11 @@ volumes:
     </section>
 
     <section id="tls">
-      <h2>TLS and HTTP-01</h2>
-      <p>Blindport Relay reads ClientHello SNI and forwards the original TCP stream. Keep the TLS private key and certificate at the origin and configure the TLS service as the mapping's <code>upstream</code>. Blindport does not terminate customer TLS.</p>
-      <p>For a managed hostname, the optional <code>http_challenge_upstream</code> receives only relay-validated ACME HTTP-01 requests on port 80. It must be a separate plaintext challenge listener. The relay permanently redirects other valid HTTP GET requests to the same HTTPS URL without forwarding them. All TLS traffic continues to the regular upstream. Customer-owned domains can use their normal DNS-01 workflow.</p>
+      <h2>Automatic HTTPS</h2>
+      <p>Automatic is the default for Relay. After you explicitly accept the Let's Encrypt agreement, <code>blindportd</code> obtains and renews the certificate, handles HTTPS locally, and sends plaintext traffic to your configured target such as <code>127.0.0.1:8080</code>. It does not need root access or a local public port.</p>
+      <p>Keep <code>$HOME/.local/state/blindport</code> private and persistent because it contains the ACME account and certificate keys. Automatic HTTPS applies only to Relay mappings.</p>
+      <h3>Advanced: TLS passthrough</h3>
+      <p>Set <code>"tls_mode": "passthrough"</code> when your local server must own its certificate and terminate TLS. Point <code>upstream</code> to that TLS listener. If it uses HTTP-01, add a separate plaintext <code>http_challenge_upstream</code>. Do not set <code>acme_terms_accepted</code> in passthrough mode.</p>
       <p>Customer-owned names must be subdomains with a direct CNAME. Zone apexes, wildcard claims, CNAME flattening, and CDN-proxied records are not supported. Keep the record in DNS-only mode so Blindport can verify it before each invoice.</p>
     </section>
 
@@ -147,16 +170,9 @@ volumes:
 
     <section id="tor">
       <h2>Tor SOCKS5 transport</h2>
-      <p>Send backend and relay connections through a local Tor SOCKS5 listener. SOCKS mode fails closed and does not fall back to direct connections. WireGuard mode is rejected because kernel UDP cannot traverse SOCKS:</p>
-      <pre><code>blindportd \
-  -socks5=127.0.0.1:9050 \
-  -backend=http://{{ onion_host or "BACKEND_ONION" }} \
-  -relay={{ onion_host or "RELAY_ONION" }}:5443 \
-  -server-name={{ relay_server_name }} \
-  -token-file=/etc/blindport/token \
-  -state-dir=/var/lib/blindport \
-  -config=/etc/blindport/config.json</code></pre>
-      <p>The client uses SOCKS authentication isolation for its outbound path and does not fall back to a direct connection when the proxy fails. SOCKS5 transport is available only in framed mode; the client rejects combining <code>-socks5</code> with <code>-wireguard</code> because the kernel WireGuard UDP data plane cannot use the proxy. Tor can conceal the client's source address from the backend and relay, subject to endpoint and traffic-correlation risks. Blindport remains a reachability service, not an anonymity network.</p>
+      <p>Route the agent's framed backend and relay connections through a local Tor listener:</p>
+      <pre><code>blindportd -socks5=127.0.0.1:9050 -config="$HOME/.config/blindport/config.json"</code></pre>
+      <p>This mode fails closed if the proxy is unavailable and cannot be combined with WireGuard. It changes the agent's outbound network path; it does not make Blindport an anonymity service.</p>
     </section>
 
     <section id="troubleshooting">
@@ -165,8 +181,7 @@ volumes:
         <div><dt><code>no token</code></dt><dd>Run the native agent once in a terminal to enter it, or set <code>BLINDPORT_TOKEN</code> for Docker. Explicit token files remain supported.</dd></div>
         <div><dt>Subscription is missing</dt><dd>Confirm payment is settled and the subscription is active. Docker mode will discover it on the next poll; static and legacy modes still require a restart.</dd></div>
         <div><dt>Domain payment is unavailable</dt><dd>For a customer domain, publish the one exact CNAME name and target from the dashboard and run the DNS check before creating an invoice.</dd></div>
-        <div><dt>TLS certificate fails</dt><dd>Confirm SNI matches the ordered hostname and the origin serves its complete certificate chain. Blindport does not issue the public service certificate.</dd></div>
-        <div><dt>HTTP-01 fails</dt><dd>Configure a separate plaintext challenge upstream and make sure the origin ACME client answers the requested token there.</dd></div>
+        <div><dt>TLS certificate fails</dt><dd>For automatic HTTPS, confirm the terms checkbox is accepted, the Relay subscription is active, and the state directory is writable. For passthrough, confirm the local TLS listener serves the ordered hostname and complete certificate chain.</dd></div>
         <div><dt>WireGuard setup fails</dt><dd>Confirm Linux WireGuard support, <code>CAP_NET_ADMIN</code>, an active routed Blindport IP order, and no conflicts with interface, table, or rule-priority values.</dd></div>
       </dl>
     </section>

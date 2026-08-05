@@ -625,17 +625,19 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
             card.get_by_text("Endpoint details", exact=True).click()
             assert card.get_by_text("Subscription ID").is_visible()
             assert card.get_by_text(subscription["id"], exact=True).is_visible()
+            install_command = page.locator("#installAgentCommand").text_content()
+            assert install_command == (
+                f"curl -fsSL {browser_server.base_url}/downloads/install.sh | sh"
+            )
             quick_command = page.locator("#framedRunCommand").text_content()
             assert (
-                "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in quick_command
+                quick_command == 'export PATH="$HOME/.local/bin:$PATH" && '
+                'blindportd -config="$HOME/.config/blindport/config.json"'
             )
-            assert "BLINDPORT_INSTALL_DIR=" in quick_command
-            assert '"$HOME/.local/bin/blindportd"' in quick_command
-            assert "-upstream=127.0.0.1:443" in quick_command
-            page.get_by_role("button", name="Copy command", exact=True).click()
-            assert page.evaluate("navigator.clipboard.readText()") == quick_command
+            assert page.locator("#framedRunCommand + button").is_disabled()
+            assert page.locator("#installServiceCommand + button").is_disabled()
             disclosure = page.locator(".advanced-config").filter(
-                has_text="Generated multi-endpoint config"
+                has_text="Review and install configuration"
             )
             summary = disclosure.locator("summary")
             assert summary.get_attribute("class") == "disclosure-summary"
@@ -647,14 +649,41 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
                 "element => ({width: getComputedStyle(element).width, "
                 "height: getComputedStyle(element).height})"
             ) == {"width": "10px", "height": "10px"}
-            summary.click()
+            assert disclosure.get_attribute("open") == ""
+            upstream = page.locator(".mappingUpstream")
+            upstream.fill("127.0.0.1:080")
+            assert upstream.get_attribute("aria-invalid") == "true"
+            upstream.fill("http://bad-target")
+            assert upstream.get_attribute("aria-invalid") == "true"
+            assert (
+                "Use a hostname or IP" in page.locator(".mapping-error").text_content()
+            )
+            upstream.fill("127.0.0.1:8080")
+            assert upstream.get_attribute("aria-invalid") == "false"
+            assert page.locator("#framedRunCommand + button").is_disabled()
+            terms = page.locator("#acmeTermsAccepted")
+            assert not terms.is_checked()
+            terms.check()
             command = page.locator("#framedConfigInstallCommand").text_content()
             assert subscription["id"] in command
-            assert '"upstream": "127.0.0.1:443"' in command
-            assert 'cat > "$HOME/.config/blindport/config.json"' in command
-            page.get_by_role("button", name="Copy install command").click()
+            assert '"version": 2' in command
+            assert '"upstream": "127.0.0.1:8080"' in command
+            assert '"tls_mode": "automatic"' in command
+            assert '"acme_terms_accepted": true' in command
+            assert (
+                'temporary=$(mktemp "$HOME/.config/blindport/config.json.XXXXXX")'
+                in command
+            )
+            assert 'cat > "$temporary"' in command
+            assert "config.json.backup" in command
+            assert (
+                'mv -f -- "$temporary" "$HOME/.config/blindport/config.json"' in command
+            )
+            assert page.locator("#framedRunCommand + button").is_enabled()
+            assert page.locator("#installServiceCommand + button").is_enabled()
+            page.get_by_role("button", name="Copy config install").click()
             assert page.evaluate("navigator.clipboard.readText()") == command
-            page.get_by_role("button", name="Copy JSON config").click()
+            page.get_by_role("button", name="Copy JSON").click()
             assert subscription["id"] in page.evaluate("navigator.clipboard.readText()")
             symbol = page.locator(".drawer-symbol")
             center_offsets = symbol.evaluate(
@@ -672,6 +701,15 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
                 "afterLeft": "8px",
             }
             _assert_layout(page)
+            page.screenshot(
+                path=browser_server.artifacts / "relay-setup-mobile.png", full_page=True
+            )
+            page.set_viewport_size({"width": 1440, "height": 1000})
+            _assert_layout(page)
+            page.screenshot(
+                path=browser_server.artifacts / "relay-setup-desktop.png",
+                full_page=True,
+            )
     finally:
         context.close()
 

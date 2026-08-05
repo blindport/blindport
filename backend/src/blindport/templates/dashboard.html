@@ -213,31 +213,56 @@
           <a class="text-link" href="/guide">Full guide</a>
         </div>
         {% if client_subscriptions %}
-          {% if client_subscriptions | length == 1 %}
-            {% set quick_sub = client_subscriptions[0] %}
-            <p>Run this beside your origin. The first run asks for your account token and stores it privately.</p>
-            <div class="quick-command">
-              <code id="framedRunCommand">curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL={{ request.url.scheme }}://{{ request.url.netloc }}/downloads BLINDPORT_INSTALL_DIR="$HOME/.local/bin" sh &amp;&amp; "$HOME/.local/bin/blindportd" -backend={{ request.url.scheme }}://{{ request.url.netloc }} -upstream={% if quick_sub.product.value == "relay" %}127.0.0.1:443{% else %}127.0.0.1:80{% endif %}</code>
-              <button type="button" class="copyCommandBtn" data-copy-target="framedRunCommand">Copy command</button>
-            </div>
-            <p class="field-help">Change the final local port to the service you are publishing.</p>
-          {% else %}
-            <p>Install the agent, then use the generated multi-endpoint configuration below.</p>
-            <div class="quick-command"><code id="framedRunCommand">curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL={{ request.url.scheme }}://{{ request.url.netloc }}/downloads BLINDPORT_INSTALL_DIR="$HOME/.local/bin" sh &amp;&amp; "$HOME/.local/bin/blindportd" -backend={{ request.url.scheme }}://{{ request.url.netloc }} -config="$HOME/.config/blindport/config.json"</code><button type="button" class="copyCommandBtn" data-copy-target="framedRunCommand">Copy command</button></div>
-          {% endif %}
-          <details class="advanced-config">
-            <summary class="disclosure-summary"><span>Generated multi-endpoint config</span><span class="disclosure-icon" aria-hidden="true"></span></summary>
-            <div class="config-heading"><strong>Configuration file</strong><button type="button" class="copyCommandBtn button-secondary" data-copy-target="generatedClientConfig">Copy JSON config</button></div>
-            <pre><code id="generatedClientConfig">{{ client_config_json }}</code></pre>
-            <div class="config-heading"><strong>Secure install command</strong></div>
-            <code id="framedConfigInstallCommand">install -d -m 700 "$HOME/.config/blindport" &amp;&amp;
-rm -f -- "$HOME/.config/blindport/config.json" &amp;&amp;
-install -m 600 /dev/null "$HOME/.config/blindport/config.json" &amp;&amp;
-cat &gt; "$HOME/.config/blindport/config.json" &lt;&lt;'BLINDPORT_CONFIG'
+          <ol class="origin-setup-steps">
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">1</span><div><h3>Install the agent</h3><p>Run as your normal Linux user.</p></div></div>
+              <div class="quick-command"><code id="installAgentCommand">curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh</code><button type="button" class="copyCommandBtn" data-copy-target="installAgentCommand">Copy</button></div>
+              <p class="field-help">The installer downloads and verifies the current release. It installs <code>blindportd</code> to <code>$HOME/.local/bin</code> for a normal user, or <code>/usr/local/bin</code> when run as root, and adds the user path to your shell profile when needed.</p>
+            </li>
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">2</span><div><h3>Configure local targets</h3><p>Enter the host and port where each service listens on this machine.</p></div></div>
+              <div id="mappingControls" class="mapping-controls">
+                {% for s in client_subscriptions %}
+                <div class="mapping-control" data-subscription-id="{{ s.public_id }}" data-tls-mode="{{ 'automatic' if s.product.value == 'relay' else 'passthrough' }}">
+                  <div><strong>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}{{ s.public_id }}{% endif %}</strong><span>{{ "Automatic HTTPS" if s.product.value == "relay" else "TCP/UDP passthrough" }}</span></div>
+                  <label for="mappingUpstream-{{ loop.index }}">Local target</label>
+                  <input id="mappingUpstream-{{ loop.index }}" class="mappingUpstream" type="text" value="127.0.0.1:8080" maxlength="259" inputmode="url" autocomplete="off" spellcheck="false" aria-describedby="mappingError-{{ loop.index }}">
+                  <p id="mappingError-{{ loop.index }}" class="mapping-error field-help" aria-live="polite"></p>
+                </div>
+                {% endfor %}
+              </div>
+              {% if client_subscriptions | selectattr('product.value', 'equalto', 'relay') | list %}
+              <label class="terms-consent"><input id="acmeTermsAccepted" type="checkbox"> <span>I agree to the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> for automatic HTTPS.</span></label>
+              {% endif %}
+              <details class="advanced-config" open>
+                <summary class="disclosure-summary"><span>Review and install configuration</span><span class="disclosure-icon" aria-hidden="true"></span></summary>
+                <div class="config-heading"><strong><code>~/.config/blindport/config.json</code></strong><button type="button" class="copyCommandBtn button-secondary configDependent" data-copy-target="generatedClientConfig" disabled>Copy JSON</button></div>
+                <pre><code id="generatedClientConfig">{{ client_config_json }}</code></pre>
+                <div class="config-heading"><strong>Secure config install</strong></div>
+                <code id="framedConfigInstallCommand">install -d -m 700 "$HOME/.config/blindport" &amp;&amp;
+temporary=$(mktemp "$HOME/.config/blindport/config.json.XXXXXX") &amp;&amp;
+chmod 600 "$temporary" &amp;&amp;
+cat &gt; "$temporary" &lt;&lt;'BLINDPORT_CONFIG' &amp;&amp;
 {{ client_config_json }}
-BLINDPORT_CONFIG</code>
-            <button type="button" class="copyCommandBtn button-secondary" data-copy-target="framedConfigInstallCommand">Copy install command</button>
-          </details>
+BLINDPORT_CONFIG
+([ ! -f "$HOME/.config/blindport/config.json" ] || install -m 600 "$HOME/.config/blindport/config.json" "$HOME/.config/blindport/config.json.backup") &amp;&amp;
+mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
+                <button type="button" class="copyCommandBtn button-secondary configDependent" data-copy-target="framedConfigInstallCommand" disabled>Copy config install</button>
+                <p id="configSetupStatus" class="field-help" role="status" aria-live="polite"></p>
+              </details>
+            </li>
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">3</span><div><h3>Start the persistent service</h3><p>This prompts for your account token if it has not been stored, then starts the agent.</p></div></div>
+              <div class="quick-command"><code id="installServiceCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd -install-user-service</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="installServiceCommand" disabled>Copy</button></div>
+              <div class="service-commands"><code>systemctl --user status blindportd.service</code><code>journalctl --user -u blindportd.service -f</code></div>
+              <p class="field-help">For startup before login, enable lingering with <code>loginctl enable-linger "$USER"</code>. Your administrator may need to approve it.</p>
+              <details class="service-update"><summary>Update later</summary><div class="service-commands"><code>curl -fsSL {{ request.url.scheme }}://{{ request.url.netloc }}/downloads/install.sh | sh</code><code>blindportd -version</code><code>systemctl --user restart blindportd.service</code></div></details>
+            </li>
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">4</span><div><h3>Or run in the foreground</h3><p>Use this instead of the persistent service for a temporary session.</p></div></div>
+              <div class="quick-command"><code id="framedRunCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd -config="$HOME/.config/blindport/config.json"</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="framedRunCommand" disabled>Copy</button></div>
+            </li>
+          </ol>
         {% elif subscriptions %}
           <p class="muted">The connection command appears after payment activates an endpoint.</p>
         {% else %}
@@ -263,7 +288,7 @@ BLINDPORT_CONFIG</code>
       </details>
       {% if nwc_enabled %}<details class="sidebar-section"><summary>Wallet connection</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% else %}Not connected{% endif %}</p><form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" required><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
       {% if reminder_email_enabled %}<details class="sidebar-section"><summary>Expiration reminders</summary><p id="reminderStatus" role="status" aria-live="polite">{% if user.has_reminder_email %}Enabled{% else %}Disabled{% endif %}</p><form id="reminderForm"><label for="reminderEmail">Email address</label><input id="reminderEmail" type="email" autocomplete="email" maxlength="254" required><div class="button-row"><button id="saveReminderBtn" type="submit">Enable</button>{% if user.has_reminder_email %}<button id="deleteReminderBtn" type="button" class="button-secondary">Disable</button>{% endif %}</div></form></details>{% endif %}
-      <div class="sidebar-section sidebar-note"><strong>Traffic stays encrypted</strong><p>Blindport forwards bytes. Your origin holds the TLS private key.</p></div>
+      <div class="sidebar-section sidebar-note"><strong>Relay HTTPS stays on your host</strong><p>The agent holds automatic HTTPS keys locally. Blindport routes the connection.</p></div>
     </aside>
   </div>
 </div>

@@ -1,0 +1,39 @@
+name: blindport-docker-demo
+
+services:
+  site:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    restart: unless-stopped
+    volumes:
+      - ./site/index.html:/usr/share/nginx/html/index.html:ro
+    labels:
+      tech.blindport.mapping.site.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID in .env}"
+      tech.blindport.mapping.site.upstream: "site:80"
+      tech.blindport.mapping.site.tls_mode: "automatic"
+      tech.blindport.mapping.site.acme_terms_accepted: "${ACME_TERMS_ACCEPTED:?review the Let's Encrypt agreement and set ACME_TERMS_ACCEPTED}"
+
+  blindportd:
+    image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      site:
+        condition: service_started
+    command: ["--docker"]
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID in .env}"
+    environment:
+      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
+      BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN in .env}"
+      BLINDPORT_STATE_DIR: /var/lib/blindport
+      BLINDPORT_ACME_EMAIL: "${ACME_EMAIL:-}"
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - blindport-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+volumes:
+  blindport-state:

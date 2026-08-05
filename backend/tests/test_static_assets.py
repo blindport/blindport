@@ -213,8 +213,12 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
     assert 'id="stablecoinNotice"' in dashboard
     assert 'class="stablecoinPayBtn button-secondary"' in dashboard
-    assert "/downloads/install.sh | BLINDPORT_DOWNLOAD_BASE_URL=" in dashboard
-    assert "BLINDPORT_INSTALL_DIR=" in dashboard
+    assert "/downloads/install.sh | sh" in dashboard
+    assert "BLINDPORT_DOWNLOAD_BASE_URL=" not in dashboard
+    assert "BLINDPORT_INSTALL_DIR=" not in dashboard
+    assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
+    assert 'class="mappingUpstream"' in dashboard
+    assert 'class="copyCommandBtn configDependent"' in dashboard
     assert 'id="framedRunCommand"' in dashboard
     assert 'id="framedConfigInstallCommand"' in dashboard
     assert 'id="generatedClientConfig"' in dashboard
@@ -263,8 +267,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "A leased public endpoint",
         "Live pricing and availability",
         "Three steps, no inbound router changes",
-        "Your certificate stays at the origin",
-        "validated HTTP-01 requests",
+        "Automatic HTTPS, local app port",
+        "Automatic HTTPS to a local plaintext app port",
         "Different tools optimize for different jobs",
         "Quick preview tunnel",
         "Managed application gateway",
@@ -287,14 +291,14 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
 
     for term in (
         "sha256sum -c",
-        "Token and state",
-        "Static mappings",
+        "Configure local services",
+        "persistent user service",
         "Docker socket warning",
-        "TLS and HTTP-01",
+        "Automatic HTTPS",
         "Routed WireGuard mode",
         "Tor SOCKS5 transport",
-        "does not fall back to a direct connection",
-        "rejects combining",
+        "fails closed",
+        "cannot be combined",
         "Troubleshooting",
         "Current limitations",
         "CAP_NET_ADMIN",
@@ -302,9 +306,9 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "other IPv4 protocols",
         "ghcr.io/blindport/blindportd",
         "https://github.com/blindport/blindport/issues",
-        "-upstream=127.0.0.1:8080",
-        "BLINDPORT_DOWNLOAD_BASE_URL=",
-        "first-run input is the token prompt",
+        '"upstream": "127.0.0.1:8080"',
+        "blindportd -install-user-service",
+        "blindportd -socks5=127.0.0.1:9050 -config=",
         'BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"',
         "blindport-state:/var/lib/blindport",
         "GitHub Actions builds versioned static Linux binaries",
@@ -315,8 +319,11 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     ):
         assert term in guide
     run_section = guide.split('<section id="run">', 1)[1].split("</section>", 1)[0]
-    assert '-config="$HOME/.config/blindport/config.json"</code>' not in run_section
+    assert '-config="$HOME/.config/blindport/config.json"</code>' in run_section
     assert "canonical, unique UUIDv4 values" in guide
+    assert "BLINDPORT_DOWNLOAD_BASE_URL" not in guide
+    assert "BLINDPORT_INSTALL_DIR" not in guide
+    assert "Traefik" not in guide
 
     base = _asset("templates/base.html")
     assert "https://github.com/blindport/blindport" in base
