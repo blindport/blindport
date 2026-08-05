@@ -33,15 +33,15 @@ The three products use distinct ingress identities:
   privileged Linux customer host.
 - **Blindport Port** leases exactly one `(shared public IP, port, TCP or UDP)` socket.
   Shared addresses are separate inventory from dedicated Blindport IP addresses.
-- **Blindport Relay** leases one hostname. A shared TLS listener reads ClientHello SNI
-  without terminating TLS and forwards the raw TCP stream. An optional HTTP
-  listener permanently redirects normal GET requests to the same HTTPS URL and
-  forwards bounded ACME HTTP-01 validation requests to a separate customer
-  upstream; it is not a general HTTP relay.
+- **Blindport Relay** leases one hostname. By default, `blindportd` obtains and
+  renews a Let's Encrypt certificate, terminates TLS on the customer host, and
+  forwards plaintext to the configured local app. Advanced passthrough keeps TLS
+  termination and certificate management in an existing origin server.
 
-TLS for user traffic, when used, terminates at the user's upstream. Blindport Port
-supports TCP or UDP. WireGuard Blindport IP is the only routed interface mode; framed
-Blindport IP, Blindport Port, and Blindport Relay remain application forwarding products.
+Automatic Relay TLS terminates in the customer agent, not at the Blindport edge.
+Blindport Port supports TCP or UDP. WireGuard Blindport IP is the only routed
+interface mode; framed Blindport IP, Blindport Port, and Blindport Relay remain
+application forwarding products.
 
 Blindport Relay supports provider-managed names strictly below configured wildcard
 suffixes and customer-owned names proven by pointing one exact DNS CNAME record
@@ -112,21 +112,28 @@ CI inside their trust boundary should verify the GPG-signed release tag and buil
 the checked-out source locally.
 
 See [Self-hosting Blindport](docs/self-hosting.md) for control-plane and relay
-deployment. Agent configuration is documented in [docs/agent.md](docs/agent.md).
+deployment. The [high-availability notes](docs/ha.md) describe the local fault lab and
+the additional infrastructure required for a two-provider deployment. Agent configuration is documented in [docs/agent.md](docs/agent.md).
 Maintainer release steps are documented in [docs/releasing.md](docs/releasing.md).
 
-For one active hosted endpoint, install and run the Linux agent:
+For active hosted endpoints, install the Linux agent as your normal user:
 
 ```sh
 curl -fsSL https://blindport.com/downloads/install.sh | sh
-blindportd -upstream=127.0.0.1:8080
 ```
 
-The first run prompts for the account token. Docker deployments use
-`BLINDPORT_TOKEN` and a named volume for client identity.
+In the dashboard, set each local target (for example, `127.0.0.1:8080`), explicitly
+accept the Let's Encrypt Subscriber Agreement for automatic Relay HTTPS, and install
+the generated version 2 config. Then start the persistent user service:
 
-To publish a complete HTTPS site without host port forwarding, follow the
-[Blindport, Traefik, and Let's Encrypt example](examples/traefik/README.md).
+```sh
+blindportd -install-user-service
+```
+
+The command prompts for the account token if needed. Docker deployments use
+`BLINDPORT_TOKEN` and a named volume for client identity and certificate state.
+The runnable [Docker example](examples/docker/README.md) connects an existing
+paid Relay directly to an application container without adding a reverse proxy.
 
 ## Development stack
 

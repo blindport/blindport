@@ -5,6 +5,10 @@ one dedicated host. The split stack separates control and relay
 failure domains, but neither stack provides database, proxy, relay, or API high
 availability.
 
+The disposable [HA lab](../docs/ha.md) exercises application-level failure behavior
+on one Docker host. It is not a production manifest and does not change the availability
+claims of the canary or split stacks.
+
 The hosted beta is best effort and has no uptime or high-availability guarantee.
 High availability is planned after beta, but future topology is not part of the
 current service commitment.

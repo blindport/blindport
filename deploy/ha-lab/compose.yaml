@@ -1,0 +1,289 @@
+name: blindport-ha-lab
+
+x-service-defaults: &service-defaults
+  init: true
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - control
+
+x-backend-environment: &backend-environment
+  ENVIRONMENT: development
+  DEBUG: "false"
+  DATABASE_MIGRATE_ON_STARTUP: "false"
+  DATABASE_URL: postgresql+psycopg://blindport:ha-lab-postgres@postgres:5432/blindport
+  SECRET_KEY: ha-lab-secret-key-must-not-be-used-outside-this-lab
+  TOKEN_HASH_KEY: ha-lab-token-hash-key-must-not-be-used-outside-this-lab
+  RELAY_SECRET: ha-lab-relay-secret-must-not-be-used-outside-this-lab
+  ADMIN_TOKEN: HA-LAB-ADMIN-TOKEN
+  LND_INVOICE_HMAC_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  CA_DIR: /var/lib/blindport/ca
+  LEGACY_CLIENT_CERT_ISSUANCE_ENABLED: "false"
+  PAYMENT_ENABLED_METHODS: lightning
+  PAYMENT_LIGHTNING_ADAPTER: mock-auto
+  PAYMENT_RECONCILIATION_ENABLED: "false"
+  BTC_USD_PRICE_ENABLED: "false"
+  REMINDER_EMAIL_ENABLED: "false"
+  IP_ENABLED: "false"
+  PORT_ENABLED: "true"
+  PORT_MONTHLY_SATS: "1500"
+  PORT_YEARLY_SATS: "15000"
+  RELAY_ENABLED: "true"
+  RELAY_MONTHLY_SATS: "3000"
+  RELAY_YEARLY_SATS: "30000"
+  RELAY_CUSTOMER_DOMAINS_ENABLED: "false"
+  RELAY_MANAGED_DOMAIN_CAP: "20"
+  RELAY_SHARED_IPS: 192.0.2.10
+  RELAY_SHARED_TCP_PORTS: 12000-12003
+  RELAY_SHARED_UDP_PORTS: 12000-12003
+  RELAY_POOL_DOMAINS: relay.test
+  RELAY_MANAGED_SUFFIXES: relay.test
+  RELAY_CONTROL_URL: relay-a:5443
+  RELAY_CONTROL_URLS: relay-a:5443,relay-b:5443
+  RATE_LIMIT_SIGNUP_REQUESTS: "1000"
+  RATE_LIMIT_SIGNUP_WINDOW_SECONDS: "60"
+  PUBLIC_SITE_URL: http://api-lb:8000
+
+x-backend-service: &backend-service
+  <<: *service-defaults
+  image: blindport-ha-backend:local
+  build:
+    context: ../..
+    dockerfile: docker/backend.Dockerfile
+  pull_policy: never
+  environment: *backend-environment
+  volumes:
+    - backend-ca:/var/lib/blindport/ca
+  networks:
+    - control
+    - database
+  depends_on:
+    postgres:
+      condition: service_healthy
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"]
+    interval: 2s
+    timeout: 4s
+    retries: 20
+    start_period: 10s
+
+x-relay-service: &relay-service
+  <<: *service-defaults
+  image: blindport-ha-relay:local
+  build:
+    context: ../..
+    dockerfile: docker/go.Dockerfile
+    target: relay
+  pull_policy: never
+  environment:
+    BLINDPORT_BACKEND_URL: http://api-lb:8000
+    BLINDPORT_RELAY_SECRET: ha-lab-relay-secret-must-not-be-used-outside-this-lab
+    BLINDPORT_RELAY_IPS: ""
+    BLINDPORT_RELAY_PORTS: ""
+    BLINDPORT_RELAY_SHARED_IPS: ""
+    BLINDPORT_RELAY_SHARED_TCP_PORTS: ""
+    BLINDPORT_RELAY_SHARED_UDP_PORTS: ""
+    BLINDPORT_RELAY_SNI: :4443
+    BLINDPORT_RELAY_MTLS_HOSTS: relay-a,relay-b
+    BLINDPORT_RELAY_ADMIN: :9090
+    BLINDPORT_RELAY_WIREGUARD: "0"
+    BLINDPORT_RELAY_SHUTDOWN_TIMEOUT: 5s
+  depends_on:
+    api-lb:
+      condition: service_healthy
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  cap_drop: [ALL]
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/readyz"]
+    interval: 2s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
+  command: ["-control", ":5443"]
+
+services:
+  postgres:
+    <<: *service-defaults
+    image: postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+    environment:
+      POSTGRES_DB: blindport
+      POSTGRES_USER: blindport
+      POSTGRES_PASSWORD: ha-lab-postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - database
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blindport -d blindport"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *service-defaults
+    profiles: [tools]
+    image: blindport-ha-backend:local
+    build:
+      context: ../..
+      dockerfile: docker/backend.Dockerfile
+    pull_policy: never
+    restart: "no"
+    environment: *backend-environment
+    volumes:
+      - backend-ca:/var/lib/blindport/ca
+    networks:
+      - control
+      - database
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    command: ["blindport-migrate", "upgrade"]
+
+  state-init:
+    <<: *service-defaults
+    profiles: [tools]
+    image: alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    restart: "no"
+    user: "0:0"
+    volumes:
+      - lab-state:/lab-state
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    command: ["chown", "10001:10001", "/lab-state"]
+
+  backend-a:
+    <<: *backend-service
+
+  backend-b:
+    <<: *backend-service
+
+  api-lb:
+    <<: *service-defaults
+    image: haproxy:3.2.1-alpine@sha256:ac79fe145f2bb6626ff26b584a2d0a34e791906c01015f2ae037aa3137b683d9
+    user: "99:99"
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      backend-a:
+        condition: service_healthy
+      backend-b:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/api/v1/health/ready"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  relay-a:
+    <<: *relay-service
+    networks:
+      control:
+      edge-a:
+
+  relay-b:
+    <<: *relay-service
+    networks:
+      control:
+      edge-b:
+
+  origin:
+    <<: *service-defaults
+    image: blindport-ha-backend:local
+    pull_policy: never
+    restart: "no"
+    entrypoint: ["python", "/lab/origin.py"]
+    volumes:
+      - ./origin.py:/lab/origin.py:ro
+    networks:
+      - agent
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+
+  agent:
+    <<: *service-defaults
+    image: blindport-ha-agent:local
+    build:
+      context: ../..
+      dockerfile: docker/go.Dockerfile
+      target: blindportd
+    pull_policy: never
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until test -s /lab-state/token && test -s /lab-state/config.json; do sleep 1; done;
+        exec blindportd -backend http://api-lb:8000 -token-file /lab-state/token
+        -config /lab-state/config.json -state-dir /lab-state/identity
+    volumes:
+      - lab-state:/lab-state
+    networks:
+      - control
+      - edge-a
+      - edge-b
+      - agent
+    depends_on:
+      relay-a:
+        condition: service_healthy
+      relay-b:
+        condition: service_healthy
+      origin:
+        condition: service_started
+    read_only: true
+    cap_drop: [ALL]
+
+  tester:
+    <<: *service-defaults
+    profiles: [tools]
+    image: blindport-ha-backend:local
+    pull_policy: never
+    restart: "no"
+    entrypoint: ["python", "/lab/lab_test.py"]
+    environment:
+      LAB_API_URL: http://api-lb:8000
+    volumes:
+      - ./lab_test.py:/lab/lab_test.py:ro
+      - lab-state:/lab-state
+    networks:
+      - control
+      - edge-a
+      - edge-b
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+
+networks:
+  control:
+    internal: true
+  database:
+    internal: true
+  edge-a:
+    internal: true
+  edge-b:
+    internal: true
+  agent:
+    internal: true
+
+volumes:
+  postgres-data:
+  backend-ca:
+  lab-state:

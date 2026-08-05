@@ -216,54 +216,39 @@ assert "\"status_code\": 404" in onion_config
 '
 }
 
-traefik_example_check() {
+docker_example_check() {
     docker compose \
-        --env-file "$root/examples/traefik/.env.example" \
-        -f "$root/examples/traefik/compose.yaml" \
+        --env-file "$root/examples/docker/.env.example" \
+        -f "$root/examples/docker/compose.yaml" \
         config --format json \
         | python3 -c '
 import json
 import sys
 
 services = json.load(sys.stdin)["services"]
-assert set(services) == {"blindportd", "site", "traefik"}
+assert set(services) == {"blindportd", "site"}
 assert all(not service.get("ports") for service in services.values())
-assert all(set(service["networks"]) == {"ingress"} for service in services.values())
+assert all(set(service["networks"]) == {"default"} for service in services.values())
 assert "user" not in services["blindportd"]
 assert services["blindportd"]["depends_on"]["site"]["condition"] == "service_started"
-assert services["traefik"]["depends_on"]["blindportd"]["condition"] == "service_started"
-assert services["traefik"]["entrypoint"] == [
-    "/bin/sh",
-    "-c",
-    "sleep 30; exec /entrypoint.sh \"$$@\"",
-    "--",
-]
-assert services["blindportd"]["environment"]["BLINDPORT_DOCKER_POLL_INTERVAL"] == "1s"
+assert services["blindportd"]["command"] == ["--docker"]
+assert services["blindportd"]["read_only"] is True
+assert services["blindportd"]["cap_drop"] == ["ALL"]
+assert services["blindportd"]["security_opt"] == ["no-new-privileges:true"]
 
 labels = services["site"]["labels"]
 assert labels["tech.blindport.mapping.site.subscription"] == "12312312-3123-4123-8123-123123123123"
-assert labels["tech.blindport.mapping.site.upstream"] == "traefik:443"
-assert labels["tech.blindport.mapping.site.http_challenge_upstream"] == "traefik:80"
-assert labels["traefik.http.routers.site.rule"] == "Host(`your-name.relay.blindport.com`)"
-assert labels["traefik.http.routers.site.entrypoints"] == "websecure"
-assert labels["traefik.http.routers.site.tls"] == "true"
-assert labels["traefik.http.routers.site.tls.certresolver"] == "letsencrypt"
+assert labels["tech.blindport.mapping.site.upstream"] == "site:80"
+assert labels["tech.blindport.mapping.site.tls_mode"] == "automatic"
+assert labels["tech.blindport.mapping.site.acme_terms_accepted"] == "false"
+assert not any(key.startswith("traefik.") for key in labels)
 
-command = services["traefik"]["command"]
-assert "--providers.docker.exposedbydefault=false" in command
-assert "--entrypoints.web.address=:80" in command
-assert "--entrypoints.websecure.address=:443" in command
-assert "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web" in command
-assert not any("acme.email" in item for item in command)
-assert services["traefik"]["environment"]["TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL"] == ""
-
-for name in ("blindportd", "traefik"):
-    socket = next(
-        volume
-        for volume in services[name]["volumes"]
-        if volume["target"] == "/var/run/docker.sock"
-    )
-    assert socket["read_only"] is True
+socket = next(
+    volume
+    for volume in services["blindportd"]["volumes"]
+    if volume["target"] == "/var/run/docker.sock"
+)
+assert socket["read_only"] is True
 
 state = next(
     volume
@@ -274,46 +259,87 @@ assert state["type"] == "volume"
 assert state["source"] == "blindport-state"
 assert not state.get("read_only", False)
 assert services["blindportd"]["environment"]["BLINDPORT_TOKEN"] == "replace-with-your-account-token"
+assert services["blindportd"]["environment"]["BLINDPORT_ACME_EMAIL"] == ""
 assert "BLINDPORT_TOKEN_FILE" not in services["blindportd"]["environment"]
 '
 
     DOCKER_SOCKET_PATH=/run/user/1234/docker.sock docker compose \
-        --env-file "$root/examples/traefik/.env.example" \
-        -f "$root/examples/traefik/compose.yaml" \
+        --env-file "$root/examples/docker/.env.example" \
+        -f "$root/examples/docker/compose.yaml" \
         config --format json \
         | python3 -c '
 import json
 import sys
 
 services = json.load(sys.stdin)["services"]
-for name in ("blindportd", "traefik"):
-    socket = next(
-        volume
-        for volume in services[name]["volumes"]
-        if volume["target"] == "/var/run/docker.sock"
-    )
-    assert socket["source"] == "/run/user/1234/docker.sock"
+socket = next(
+    volume
+    for volume in services["blindportd"]["volumes"]
+    if volume["target"] == "/var/run/docker.sock"
+)
+assert socket["source"] == "/run/user/1234/docker.sock"
 '
 
-    DOCKER_GID=999 ACME_EMAIL=owner@example.com \
+    DOCKER_GID=1001 ACME_EMAIL=owner@example.com ACME_TERMS_ACCEPTED=true \
         docker compose \
-        --env-file "$root/examples/traefik/.env.example" \
-        -f "$root/examples/traefik/compose.yaml" \
+        --env-file "$root/examples/docker/.env.example" \
+        -f "$root/examples/docker/compose.yaml" \
         config --format json \
         | python3 -c '
 import json
 import sys
 
 services = json.load(sys.stdin)["services"]
-assert services["blindportd"]["group_add"] == ["999"]
-assert services["traefik"]["environment"]["TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL"] == "owner@example.com"
+assert services["blindportd"]["group_add"] == ["1001"]
+assert services["blindportd"]["environment"]["BLINDPORT_ACME_EMAIL"] == "owner@example.com"
+assert services["site"]["labels"]["tech.blindport.mapping.site.acme_terms_accepted"] == "true"
 '
+}
+
+ha_lab_policy_check() {
+    docker compose \
+        --profile tools \
+        -f "$root/deploy/ha-lab/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+from pathlib import Path
+
+config = json.load(sys.stdin)
+services = config["services"]
+assert {"backend-a", "backend-b", "api-lb", "relay-a", "relay-b"} <= set(services)
+assert all(not service.get("ports") for service in services.values())
+assert all(network.get("internal") is True for network in config["networks"].values())
+
+for name in ("backend-a", "backend-b", "api-lb", "relay-a", "relay-b", "postgres"):
+    assert services[name].get("healthcheck"), name
+for name in ("backend-a", "backend-b"):
+    assert services[name]["environment"]["CA_DIR"] == "/var/lib/blindport/ca"
+    assert any(volume["source"].endswith("backend-ca") for volume in services[name]["volumes"])
+    assert services[name]["environment"]["RELAY_CONTROL_URLS"] == "relay-a:5443,relay-b:5443"
+
+assert services["relay-a"]["environment"]["BLINDPORT_BACKEND_URL"] == "http://api-lb:8000"
+assert services["relay-b"]["environment"]["BLINDPORT_BACKEND_URL"] == "http://api-lb:8000"
+assert set(services["relay-a"]["networks"]) == {"control", "edge-a"}
+assert set(services["relay-b"]["networks"]) == {"control", "edge-b"}
+assert services["postgres"]["image"].startswith("postgres:17.5-alpine@sha256:")
+assert services["api-lb"]["image"].startswith("haproxy:3.2.1-alpine@sha256:")
+
+haproxy = Path(sys.argv[1]).read_text(encoding="utf-8")
+assert "balance roundrobin" in haproxy
+assert "option httpchk GET /api/v1/health/ready" in haproxy
+assert "cookie" not in haproxy.lower()
+assert "server backend-a backend-a:8000" in haproxy
+assert "server backend-b backend-b:8000" in haproxy
+' "$root/deploy/ha-lab/haproxy.cfg"
 }
 
 compose_check deploy/canary
 compose_check deploy/split/control
 compose_check deploy/split/relay
-compose_check examples/traefik
+compose_check deploy/ha-lab
+compose_check examples/docker
 backend_healthcheck_policy_check deploy/canary
 backend_healthcheck_policy_check deploy/split/control
 smtp_secret_scope_check deploy/canary
@@ -329,6 +355,7 @@ caddy_log_policy_check deploy/canary
 caddy_log_policy_check deploy/canary Caddyfile.internal
 caddy_log_policy_check deploy/split/control
 haproxy_check deploy/canary
+haproxy_check deploy/ha-lab
 canary_http_routing_check
 caddy_runtime_policy_check
 caddy_admin_policy_check deploy/canary
@@ -336,6 +363,7 @@ caddy_admin_policy_check deploy/canary Caddyfile.internal
 caddy_admin_policy_check deploy/split/control
 canary_proxy_protocol_check Caddyfile
 canary_proxy_protocol_check Caddyfile.internal
-traefik_example_check
+docker_example_check
+ha_lab_policy_check
 
 echo "deployment configuration validation passed"

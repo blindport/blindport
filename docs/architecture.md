@@ -283,6 +283,9 @@ device revocation.
 
 ## DNS and high availability
 
+The production topology, database fencing, address constraints, and limits of the
+local fault lab are described in [High availability](ha.md).
+
 Blindport Relay has three DNS operating models:
 
 1. **Managed wildcard:** the provider configures suffixes such as
