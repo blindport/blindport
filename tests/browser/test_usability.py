@@ -340,7 +340,7 @@ def test_saved_accounts_migrate_switch_and_forget(
         context.close()
 
 
-def test_regular_admin_login_never_enters_customer_browser_storage(
+def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_login(
     browser: Browser,
     browser_server: BrowserServer,
     playwright_runtime: Playwright,
@@ -360,6 +360,12 @@ def test_regular_admin_login_never_enters_customer_browser_storage(
         )
         page.reload(wait_until="networkidle")
         page.locator("#savedAccountForm").get_by_role("button", name="Sign in").click()
+        page.get_by_role("alert").wait_for(state="visible")
+        assert page.get_by_role("heading", name="Admin", exact=True).count() == 0
+
+        page.goto(f"{browser_server.base_url}/admin", wait_until="networkidle")
+        page.locator("#adminToken").fill("BROWSERCIADMIN0000")
+        page.get_by_role("button", name="Sign in").click()
         page.get_by_role("heading", name="Admin", exact=True).wait_for(state="visible")
 
         storage = page.evaluate(

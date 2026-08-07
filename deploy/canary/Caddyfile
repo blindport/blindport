@@ -37,11 +37,12 @@
 		remote_ip {$RELAY_PRIVATE_CIDRS}
 	}
 	@internal path /internal/*
-	@admin_allowed {
-		path /admin* /api/v1/admin/* /api/v2/admin/*
+	@admin_browser path /admin*
+	@admin_api_allowed {
+		path /api/v1/admin/* /api/v2/admin/*
 		remote_ip {$ADMIN_PRIVATE_CIDRS}
 	}
-	@admin path /admin* /api/v1/admin/* /api/v2/admin/*
+	@admin_api path /api/v1/admin/* /api/v2/admin/*
 
 	handle @downloads {
 		root * /srv
@@ -53,10 +54,13 @@
 	handle @internal {
 		respond 404
 	}
-	handle @admin_allowed {
+	handle @admin_browser {
 		reverse_proxy 127.0.0.1:8000
 	}
-	handle @admin {
+	handle @admin_api_allowed {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle @admin_api {
 		respond 404
 	}
 	handle {

@@ -329,6 +329,27 @@ for protected in ("/admin*", "/api/v1/admin/*", "/api/v2/admin/*"):
 '
 }
 
+caddy_admin_routing_policy_check() {
+    python3 - "$@" <<'PY'
+from pathlib import Path
+import sys
+
+for path in sys.argv[1:]:
+    config = Path(path).read_text(encoding="utf-8")
+    public = config.split("http://{$ONION_HOST}", 1)[0]
+    assert "@admin_browser path /admin*" in public
+    assert "@admin_api_allowed {\n\t\tpath /api/v1/admin/* /api/v2/admin/*\n\t\tremote_ip {$ADMIN_PRIVATE_CIDRS}" in public
+    assert "@admin_api path /api/v1/admin/* /api/v2/admin/*" in public
+    assert public.index("handle @admin_browser") < public.index("handle @admin_api_allowed")
+    assert public.index("handle @admin_api_allowed") < public.index("handle @admin_api {")
+    assert public.index("handle @admin_api {") < public.index("handle {")
+    if "http://{$ONION_HOST}" in config:
+        onion = config.split("http://{$ONION_HOST}", 1)[1]
+        assert "@private path /internal/* /admin* /api/v1/admin/* /api/v2/admin/*" in onion
+        assert "handle @private {\n\t\trespond 404" in onion
+PY
+}
+
 canary_proxy_protocol_check() {
     config="$1"
     docker run --rm \
@@ -551,6 +572,10 @@ caddy_runtime_policy_check
 caddy_admin_policy_check deploy/canary
 caddy_admin_policy_check deploy/canary Caddyfile.internal
 caddy_admin_policy_check deploy/split/control
+caddy_admin_routing_policy_check \
+    "$root/deploy/canary/Caddyfile" \
+    "$root/deploy/canary/Caddyfile.internal" \
+    "$root/deploy/split/control/Caddyfile"
 canary_proxy_protocol_check Caddyfile
 canary_proxy_protocol_check Caddyfile.internal
 docker_example_check

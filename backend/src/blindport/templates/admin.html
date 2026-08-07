@@ -11,11 +11,33 @@
   </header>
 
   <section class="metric-strip" aria-label="Service summary">
-    <div><span>Accounts</span><strong>{{ users | length }}</strong></div>
-    <div><span>Subscriptions</span><strong>{{ subscriptions | length }}</strong></div>
-    <div><span>Active</span><strong>{{ active_count }}</strong></div>
-    <div><span>Payments</span><strong>{{ payments | length }}</strong></div>
-    <div><span>Reminders</span><strong>{{ reminders | length }}</strong></div>
+    <div><span>Active subscriptions</span><strong>{{ operations.active_subscriptions }}</strong></div>
+    <div><span>Active customers</span><strong>{{ operations.active_customers }}</strong></div>
+    <div><span>Settled gross sats</span><strong>{{ operations.settled_gross_sats }}</strong></div>
+    <div><span>Pending / processing</span><strong>{{ operations.open_payments }}</strong></div>
+    <div><span>Oldest pending / processing</span><strong>{{ operations.oldest_open_payment_age or "None" }}</strong></div>
+  </section>
+
+  <section class="operations-detail" aria-label="Capacity and account activity">
+    <div>
+      <h2>Capacity</h2>
+      <dl class="operations-list">
+        {% for capacity in operations.capacities %}
+        <div>
+          <dt>{{ capacity.product | capitalize }} <span>{{ capacity.sales_state }}</span></dt>
+          <dd>{{ capacity.availability }}<br><span class="muted">{{ capacity.detail }}</span></dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    <div>
+      <h2>Account activity</h2>
+      <dl class="operations-list">
+        <div><dt>Last 24 hours</dt><dd>{{ operations.active_accounts_24h }} accounts</dd></div>
+        <div><dt>Last 7 days</dt><dd>{{ operations.active_accounts_7d }} accounts</dd></div>
+      </dl>
+      <p class="muted operations-note">Based only on rate-limited account last-seen updates, not connection telemetry.</p>
+    </div>
   </section>
 
   <section class="admin-section" aria-labelledby="accounts-title">

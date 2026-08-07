@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..config import settings
@@ -42,7 +43,13 @@ def _available_product(
 def get_catalog(session: Session) -> CatalogResponse:
     """Return a conservative snapshot without releasing or reallocating resources."""
     assigned = session.exec(
-        select(Subscription).where(Subscription.assigned_ip.is_not(None))  # type: ignore[union-attr]
+        select(
+            Subscription.product,
+            Subscription.delivery,
+            Subscription.transport,
+            Subscription.assigned_ip,
+            Subscription.assigned_port,
+        ).where(Subscription.assigned_ip.is_not(None))  # type: ignore[union-attr]
     ).all()
 
     framed_inventory = set(settings.relay_public_ips_list)
@@ -122,14 +129,17 @@ def get_catalog(session: Session) -> CatalogResponse:
         port_available > 0,
     )
 
-    managed_held = len(
+    managed_held = int(
         session.exec(
-            select(Subscription).where(
+            select(func.count())
+            .select_from(Subscription)
+            .where(
                 Subscription.product == ProductType.RELAY,
                 Subscription.domain_is_managed.is_(True),  # type: ignore[union-attr]
                 Subscription.domain.is_not(None),  # type: ignore[union-attr]
             )
-        ).all()
+        ).one()
+        or 0
     )
     managed_available = max(0, settings.RELAY_MANAGED_DOMAIN_CAP - managed_held)
     relay_pool_available = bool(settings.relay_pool_domains_list)

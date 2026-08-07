@@ -44,7 +44,9 @@ def test_admin_api_uses_exact_configured_bearer_and_rejects_browser_session(
         )
         assert response.status_code == 401
 
-    browser_login = client.post("/login", data={"token": "Exact-Admin-I0"}, follow_redirects=False)
+    browser_login = client.post(
+        "/admin/login", data={"token": "Exact-Admin-I0"}, follow_redirects=False
+    )
     assert browser_login.status_code == 303
     assert client.post(f"/api/v2/admin/users/{account['account_id']}/suspend").status_code == 401
 
@@ -96,35 +98,47 @@ def test_legacy_admin_rows_have_no_customer_relay_or_admin_access(app_client) ->
     )
 
 
-def test_regular_admin_login_classifies_before_redirect_and_never_reflects_secret(
+def test_customer_login_rejects_admin_token_and_admin_login_uses_dedicated_scope(
     app_client, monkeypatch
 ) -> None:
     from blindport.api import pages
+    from blindport.config import EnvironmentMode
+    from blindport.services.rate_limits import RateLimitScope
 
     client, _ = app_client
-    looked_up: list[str] = []
-    original_lookup = pages._get_user_by_token
+    scopes: list[RateLimitScope] = []
 
-    def tracking_lookup(session, token):
-        looked_up.append(token)
-        return original_lookup(session, token)
+    def tracking_limit(request, session, scope):
+        scopes.append(scope)
 
-    monkeypatch.setattr(pages, "_get_user_by_token", tracking_lookup)
-    client.cookies.set(
-        "blindport_token",
-        "stale-customer-token",
-        domain="testserver.local",
-        path="/",
-    )
-    response = client.post("/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
+    def unexpected_customer_lookup(session, token):
+        raise AssertionError("customer login must not look up the configured admin token")
 
-    assert response.status_code == 303
-    assert response.headers["location"] == "/admin"
-    assert looked_up == ["TESTADMIN0000"]
-    assert "TESTADMIN0000" not in response.text
-    assert "TESTADMIN0000" not in response.headers["set-cookie"]
-    assert "blindport_admin_session=" in response.headers["set-cookie"]
-    assert client.cookies.get("blindport_token") is None
+    monkeypatch.setattr(pages, "_enforce_login_rate_limit", tracking_limit)
+    monkeypatch.setattr(pages, "_get_user_by_token", unexpected_customer_lookup)
+    monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
+    rejected = client.post("/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
+
+    assert rejected.status_code == 401
+    assert rejected.headers["Cache-Control"] == "no-store"
+    assert "Invalid credentials." in rejected.text
+    assert "TESTADMIN0000" not in rejected.text
+    assert "blindport_admin_session=" not in rejected.headers.get("set-cookie", "")
+    assert client.cookies.get("blindport_admin_session") is None
+
+    accepted = client.post("/admin/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
+
+    assert accepted.status_code == 303
+    assert accepted.headers["location"] == "/admin"
+    assert scopes == [RateLimitScope.BROWSER_LOGIN, RateLimitScope.ADMIN_LOGIN]
+    cookie = accepted.headers["set-cookie"]
+    assert "blindport_admin_session=" in cookie
+    assert "TESTADMIN0000" not in cookie
+    assert "HttpOnly" in cookie
+    assert "Max-Age=900" in cookie
+    assert "Path=/admin" in cookie
+    assert "SameSite=strict" in cookie
+    assert "Secure" in cookie
     assert client.get("/admin").status_code == 200
 
 
@@ -215,7 +229,7 @@ def test_admin_panel_hides_legacy_admin_rows_from_accounts_and_stats(app_client)
 
     assert customer["account_id"] in panel.text
     assert legacy_public_id not in panel.text
-    assert "<span>Accounts</span><strong>1</strong>" in panel.text
+    assert "<span>Active subscriptions</span><strong>0</strong>" in panel.text
 
 
 def test_admin_panel_can_suspend_and_restore_customer_accounts(app_client) -> None:
@@ -224,19 +238,19 @@ def test_admin_panel_can_suspend_and_restore_customer_accounts(app_client) -> No
     client.post("/admin/login", data={"token": "TESTADMIN0000"})
 
     panel = client.get("/admin")
-    assert f'/admin/accounts/{account["account_id"]}/suspend' in panel.text
+    assert f"/admin/accounts/{account['account_id']}/suspend" in panel.text
 
     suspended = client.post(
-        f'/admin/accounts/{account["account_id"]}/suspend',
+        f"/admin/accounts/{account['account_id']}/suspend",
         follow_redirects=False,
     )
     assert suspended.status_code == 303
     assert suspended.headers["location"] == "/admin#accounts-title"
     assert client.get("/api/v2/me", headers=_auth(account["token"])).status_code == 403
-    assert f'/admin/accounts/{account["account_id"]}/restore' in client.get("/admin").text
+    assert f"/admin/accounts/{account['account_id']}/restore" in client.get("/admin").text
 
     restored = client.post(
-        f'/admin/accounts/{account["account_id"]}/restore',
+        f"/admin/accounts/{account['account_id']}/restore",
         follow_redirects=False,
     )
     assert restored.status_code == 303
@@ -248,7 +262,7 @@ def test_admin_panel_mutation_requires_browser_session(app_client) -> None:
     account = client.post("/api/v2/signup").json()
 
     response = client.post(
-        f'/admin/accounts/{account["account_id"]}/suspend',
+        f"/admin/accounts/{account['account_id']}/suspend",
         follow_redirects=False,
     )
 

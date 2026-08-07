@@ -101,10 +101,19 @@ an image built for the deployed pre-`0013` schema requires restoring the matchin
 pre-migration database backup; the `0013` downgrade cannot reconstruct those fields.
 Apply migration `0012` before deploying agents that create orders from Docker
 labels. Existing agents and explicit subscription labels remain compatible.
-Set `ADMIN_PRIVATE_CIDRS` to an operator VPN or fixed management source. Requests to
-`/admin*`, `/api/v1/admin/*`, and `/api/v2/admin/*` from every other source receive `404`.
-Admin browser sessions expire after `ADMIN_SESSION_MAX_AGE_SECONDS` (15 minutes by default),
-and rotating `ADMIN_TOKEN` immediately invalidates both bearer access and existing sessions.
+The public `/admin*` browser path is protected by the `ADMIN_TOKEN` sign-in flow, not source
+CIDRs. Browser sessions are short-lived, signed, `HttpOnly`, `Secure`, `SameSite=Strict`, and
+scoped to `/admin`; `POST /admin/login` has the dedicated stricter direct-client rate limit.
+Rotating `ADMIN_TOKEN` immediately invalidates both browser sessions and bearer access.
+Set `ADMIN_PRIVATE_CIDRS` to an operator VPN or fixed management source. Only bearer admin APIs
+at `/api/v1/admin/*` and `/api/v2/admin/*` are allowed from those sources; every other source
+receives `404`. The onion route continues to return `404` for all admin browser and API paths.
+
+The admin operations summary reports active subscriptions, customers with an active
+subscription, lifetime settled gross sats (not revenue), open pending or processing payments,
+catalog capacity, and counts derived from the rate-limited `last_seen_at` account activity
+field. It intentionally does not report customer traffic, retention, churn, aggregate online
+connections, or edge health because those data are not persistently authoritative.
 
 Create secrets with restrictive permissions. Compose file-backed secret `uid`, `gid`,
 and `mode` are not implemented by every Compose runtime, so ownership on the host is

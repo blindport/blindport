@@ -33,6 +33,7 @@ from ..core.models import (
 from ..db import get_session
 from ..services import ip_leases
 from ..services import subscriptions as subs_svc
+from ..services.admin_dashboard import build_operations_summary
 from ..services.btc_usd_price import approximate_usd, price_cache
 from ..services.catalog import get_catalog
 from ..services.rate_limits import (
@@ -359,15 +360,9 @@ def login(
 ) -> Response:
     _enforce_login_rate_limit(request, session, RateLimitScope.BROWSER_LOGIN)
 
-    is_admin = is_exact_admin_token(token)
+    if is_exact_admin_token(token):
+        return _invalid_login(request, "login.html")
     user = _get_user_by_token(session, token)
-    if is_admin:
-        response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
-        _clear_customer_session(response, request)
-        _clear_legacy_admin_session(response, request)
-        _set_admin_session(response, request)
-        response.headers["Cache-Control"] = "no-store"
-        return response
     if user is not None:
         response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
         _clear_admin_session(response, request)
@@ -435,7 +430,7 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
             account_by_user_id=account_by_user_id,
             account_by_payment_id=account_by_payment_id,
             subscription_public_id_by_pk=subscription_public_id_by_pk,
-            active_count=sum(1 for s in subs if s.status == SubscriptionStatus.ACTIVE),
+            operations=build_operations_summary(session),
             smtp_fee_sats=settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
         ),
     )
