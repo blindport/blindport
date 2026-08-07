@@ -268,6 +268,25 @@ assert "relay_acme" not in config
 PY
 }
 
+canary_relay_internal_policy_check() {
+    python3 - \
+        "$root/deploy/canary/Caddyfile" \
+        "$root/deploy/canary/compose.yaml" \
+        "$root/deploy/canary/.env.example" <<'PY'
+from pathlib import Path
+import sys
+
+caddy, compose, environment = (
+    Path(path).read_text(encoding="utf-8") for path in sys.argv[1:]
+)
+assert "path /internal/v1/* /internal/v2/*" in caddy
+assert "remote_ip {$RELAY_PRIVATE_CIDRS}" in caddy
+assert caddy.index("handle @relay_internal") < caddy.index("handle @internal")
+assert "RELAY_PRIVATE_CIDRS: ${RELAY_PRIVATE_CIDRS}" in compose
+assert "RELAY_PRIVATE_CIDRS=198.51.100.30/32" in environment
+PY
+}
+
 caddy_runtime_policy_check() {
     docker run --rm \
         --user 1000:1000 \
@@ -512,6 +531,7 @@ caddy_log_policy_check deploy/split/control
 haproxy_check deploy/canary
 haproxy_check deploy/ha-lab
 canary_http_routing_check
+canary_relay_internal_policy_check
 caddy_runtime_policy_check
 caddy_admin_policy_check deploy/canary
 caddy_admin_policy_check deploy/canary Caddyfile.internal

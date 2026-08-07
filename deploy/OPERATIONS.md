@@ -287,6 +287,11 @@ the total ingress limit while retaining the total and SNI-peek bounds. HTTP ingr
 rate limits also see HAProxy as one source and are explicitly sized for redirects and
 multi-vantage ACME retries.
 
+For independently hosted Relay edges, set `RELAY_PRIVATE_CIDRS` to their fixed source
+addresses. Caddy permits those sources to reach `/internal/v1/*` and `/internal/v2/*`;
+the backend still requires the Relay shared secret on every request. Every other
+source receives 404 for internal routes. Keep the onion route blocked.
+
 The Caddy `servers` selector must remain the exact `127.0.0.1:8443` listener produced
 by `default_bind`; a port-only selector silently omits the PROXY protocol wrapper.
 HTTP/3 remains disabled on this listener because the HAProxy frontend proxies only
@@ -314,7 +319,8 @@ docker compose --env-file .env -f compose.yaml ps
 
 Point `API_DOMAIN` at `CONTROL_BIND_IP`. PostgreSQL and backend have no published
 ports. Caddy publishes only `:80/:443`. `RELAY_PRIVATE_CIDRS` is a space-separated
-allowlist for `/internal/v1/*`; all other clients receive 404 for internal routes.
+allowlist for `/internal/v1/*` and `/internal/v2/*`; all other clients receive 404
+for internal routes.
 Route `API_DOMAIN` to the control host's private IP from the relay host, while keeping
 normal public DNS for users. TLS still authenticates the API hostname.
 

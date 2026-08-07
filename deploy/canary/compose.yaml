@@ -303,6 +303,7 @@ services:
       API_DOMAIN: ${API_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL}
       ADMIN_PRIVATE_CIDRS: ${ADMIN_PRIVATE_CIDRS}
+      RELAY_PRIVATE_CIDRS: ${RELAY_PRIVATE_CIDRS}
       ONION_HOST: ${ONION_HOST}
     volumes:
       - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
