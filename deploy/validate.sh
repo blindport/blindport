@@ -214,6 +214,20 @@ assert "option httplog" not in haproxy
 PY
 }
 
+relay_host_sysctl_check() {
+    python3 - "$root/deploy/sysctl-blindport-relay.conf" <<'PY'
+from pathlib import Path
+import sys
+
+lines = [
+    line.strip()
+    for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+    if line.strip() and not line.startswith("#")
+]
+assert lines == ["net.ipv4.ip_unprivileged_port_start=80"]
+PY
+}
+
 caddy_check() {
     directory="$1"
     config="${2:-Caddyfile}"
@@ -522,6 +536,7 @@ provider_edge_policy_check deploy/split/control
 wireguard_production_policy_check deploy/canary deploy/canary
 wireguard_production_policy_check deploy/split/control deploy/split/relay
 address_log_policy_check
+relay_host_sysctl_check
 caddy_check deploy/canary
 caddy_check deploy/canary Caddyfile.internal
 caddy_check deploy/split/control

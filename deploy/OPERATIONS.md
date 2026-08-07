@@ -59,6 +59,15 @@ sudo journalctl --rotate
 sudo journalctl --vacuum-time=30d
 ```
 
+Relay containers run as UID 10001 and bind TCP 80 and 443. Persist the minimum
+unprivileged port at 80 on every Relay host before starting the stack:
+
+```sh
+sudo install -m 0644 deploy/sysctl-blindport-relay.conf \
+  /etc/sysctl.d/99-blindport-relay.conf
+sudo sysctl --system
+```
+
 This host policy applies to Blindport container output and other journal records.
 It also disables journal forwarding to syslog so a second host-local copy cannot
 bypass the limit. Keep proxy and Uvicorn access logging disabled. Configure firewall,
