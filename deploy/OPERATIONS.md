@@ -5,6 +5,20 @@ one dedicated host. The split stack separates control and relay
 failure domains, but neither stack provides database, proxy, relay, or API high
 availability.
 
+Provider-edge Relay deployments may use `deploy/split/relay` independently of the
+control stack. Keep one provider-specific control hostname per edge. Before enabling
+backend mappings, deploy and verify every relay with only that site's shared and framed
+addresses bound. Keep `PORT_HA_EDGES`, `PORT_HOSTNAME_SUFFIX`, and
+`FRAMED_IP_ENDPOINTS` only on the control backend. Roll out the current agent before
+representing Port service as redundant, and treat `PORT_HOSTNAME_SUFFIX` as immutable
+after publishing customer hostnames.
+
+An additional Relay edge does not make the website or control plane highly
+available. Publishing a second website A or AAAA record requires a backend replica,
+one fenced PostgreSQL writer endpoint, shared signer and secrets, redundant payment
+connectivity, and readiness-based DNS steering. Do not use two writable databases or
+automatic two-node promotion without an external quorum and fencing mechanism.
+
 The disposable [HA lab](../docs/ha.md) exercises application-level failure behavior
 on one Docker host. It is not a production manifest and does not change the availability
 claims of the canary or split stacks.

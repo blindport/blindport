@@ -447,6 +447,43 @@ assert "server backend-b backend-b:8000" in haproxy
 ' "$root/deploy/ha-lab/haproxy.cfg"
 }
 
+provider_edge_policy_check() {
+    control_directory="$1"
+    docker compose \
+        --env-file "$root/$control_directory/.env.example" \
+        -f "$root/$control_directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+environment = json.load(sys.stdin)["services"]["backend"]["environment"]
+for name in (
+    "FRAMED_IP_ENDPOINTS",
+    "PORT_HA_EDGES",
+    "PORT_HOSTNAME_SUFFIX",
+    "RELAY_CONTROL_URLS",
+    "RELAY_PUBLIC_IPS",
+):
+    assert name in environment
+'
+
+    docker compose \
+        --env-file "$root/deploy/split/relay/.env.example" \
+        -f "$root/deploy/split/relay/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+relay = json.load(sys.stdin)["services"]["relay"]
+assert relay["environment"]["BLINDPORT_RELAY_IPS"] == ""
+assert relay["environment"]["BLINDPORT_RELAY_PORTS"] == "443"
+assert relay["mem_limit"] == "402653184"
+assert relay["cpus"] == 1.0
+'
+}
+
 compose_check deploy/canary
 compose_check deploy/split/control
 compose_check deploy/split/relay
@@ -461,6 +498,8 @@ migration_credential_scope_check deploy/split/control
 logging_policy_check deploy/canary
 logging_policy_check deploy/split/control
 logging_policy_check deploy/split/relay
+provider_edge_policy_check deploy/canary
+provider_edge_policy_check deploy/split/control
 wireguard_production_policy_check deploy/canary deploy/canary
 wireguard_production_policy_check deploy/split/control deploy/split/relay
 address_log_policy_check

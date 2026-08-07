@@ -19,8 +19,8 @@ services:
     environment:
       BLINDPORT_BACKEND_URL: ${BACKEND_INTERNAL_URL}
       BLINDPORT_RELAY_SECRET_FILE: /run/secrets/relay-secret
-      BLINDPORT_RELAY_IPS: ""
-      BLINDPORT_RELAY_PORTS: ""
+      BLINDPORT_RELAY_IPS: ${RELAY_FRAMED_IPS:-}
+      BLINDPORT_RELAY_PORTS: ${RELAY_FRAMED_PORTS:-443}
       BLINDPORT_RELAY_SHARED_IPS: ${RELAY_PUBLIC_IP}
       BLINDPORT_RELAY_SHARED_TCP_PORTS: ${PORT_TCP_RANGE}
       BLINDPORT_RELAY_SHARED_UDP_PORTS: ${PORT_UDP_RANGE}
@@ -52,8 +52,8 @@ services:
     tmpfs:
       - /tmp:size=32m,mode=1777
     pids_limit: 500
-    mem_limit: 1g
-    cpus: 4.0
+    mem_limit: ${RELAY_MEMORY_LIMIT:-1g}
+    cpus: ${RELAY_CPU_LIMIT:-4.0}
     ulimits:
       nofile:
         soft: 262144
