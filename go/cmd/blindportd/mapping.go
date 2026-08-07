@@ -284,15 +284,21 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 		if item.TLSMode == tlsModeAutomatic && claim.Kind != protocol.ClaimRelay {
 			return nil, fmt.Errorf("subscription %s: automatic TLS is only valid for Blindport Relay", item.SubscriptionID)
 		}
-		endpoints, err := provisioningEndpoints(row, relayOverride)
+		assignments, err := provisioningAssignments(row, relayOverride)
 		if err != nil {
 			return nil, fmt.Errorf("subscription %s: %w", item.SubscriptionID, err)
 		}
-		for _, endpoint := range endpoints {
+		for _, assignment := range assignments {
 			claimCopy := *claim
+			if assignment.AssignedIP != "" {
+				claimCopy.IP = assignment.AssignedIP
+			}
+			if err := protocol.ValidateClaim(&claimCopy); err != nil {
+				return nil, fmt.Errorf("subscription %s has invalid edge claim: %w", item.SubscriptionID, err)
+			}
 			plans = append(plans, workerPlan{
 				SubscriptionID:        item.SubscriptionID,
-				RelayAddr:             endpoint,
+				RelayAddr:             assignment.RelayEndpoint,
 				Upstream:              item.Upstream,
 				HTTPChallengeUpstream: item.HTTPChallengeUpstream,
 				TLSMode:               normalizedTLSMode(item.TLSMode),
@@ -307,6 +313,52 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 		return plans[i].RelayAddr < plans[j].RelayAddr
 	})
 	return plans, nil
+}
+
+func provisioningAssignments(row provisioning, relayOverride string) ([]relayAssignment, error) {
+	if relayOverride != "" {
+		for _, assignment := range row.RelayAssignments {
+			if assignment.RelayEndpoint == relayOverride {
+				return validateRelayAssignments([]relayAssignment{assignment})
+			}
+		}
+		return validateRelayAssignments([]relayAssignment{{RelayEndpoint: relayOverride, AssignedIP: row.AssignedIP}})
+	}
+	if len(row.RelayAssignments) > 0 {
+		return validateRelayAssignments(row.RelayAssignments)
+	}
+	endpoints, err := provisioningEndpoints(row, "")
+	if err != nil {
+		return nil, err
+	}
+	assignments := make([]relayAssignment, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		assignments = append(assignments, relayAssignment{RelayEndpoint: endpoint, AssignedIP: row.AssignedIP})
+	}
+	return assignments, nil
+}
+
+func validateRelayAssignments(assignments []relayAssignment) ([]relayAssignment, error) {
+	seen := make(map[string]struct{}, len(assignments))
+	result := make([]relayAssignment, 0, len(assignments))
+	for _, assignment := range assignments {
+		if err := validateHostPort(assignment.RelayEndpoint); err != nil {
+			return nil, fmt.Errorf("invalid relay assignment endpoint %q: %w", assignment.RelayEndpoint, err)
+		}
+		if assignment.AssignedIP != "" && net.ParseIP(assignment.AssignedIP) == nil {
+			return nil, fmt.Errorf("invalid relay assignment IP %q", assignment.AssignedIP)
+		}
+		key := assignment.RelayEndpoint + "\x00" + assignment.AssignedIP
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, assignment)
+	}
+	if len(result) == 0 {
+		return nil, errors.New("provisioning returned no relay assignments")
+	}
+	return result, nil
 }
 
 func normalizedTLSMode(mode string) string {

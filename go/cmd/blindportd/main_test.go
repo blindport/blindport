@@ -198,6 +198,24 @@ func TestFetchConfigRejectsOversizedMalformedAndTrailingResponses(t *testing.T) 
 	}
 }
 
+func TestFetchConfigAdvertisesRelayAssignmentsCapability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Blindport-Agent-Capabilities"); got != relayAssignmentsCapability {
+			t.Errorf("Blindport-Agent-Capabilities = %q", got)
+		}
+		_, _ = io.WriteString(w, `[{"relay_endpoint":"primary.example:5443","relay_endpoints":["primary.example:5443"],"relay_assignments":[{"relay_endpoint":"secondary.example:5443","assigned_ip":"203.0.113.21"}],"assigned_ip":"203.0.113.20","assigned_port":10000,"transport":"tcp","product":"port","subscription_id":"`+testSubscriptionID1+`"}]`)
+	}))
+	defer server.Close()
+
+	cfg, err := fetchConfigWithClient(context.Background(), server.Client(), server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg) != 1 || len(cfg[0].RelayAssignments) != 1 || cfg[0].RelayAssignments[0].AssignedIP != "203.0.113.21" {
+		t.Fatalf("config = %+v", cfg)
+	}
+}
+
 func TestFetchClientCertRejectsOversizedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.CopyN(w, strings.NewReader(strings.Repeat("x", maxCertificateResponse+1)), maxCertificateResponse+1)

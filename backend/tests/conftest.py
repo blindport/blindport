@@ -54,6 +54,7 @@ def app_client(monkeypatch, tmp_path):
     from blindport.services import payment_reconciliation as payment_reconciliation_mod
     from blindport.services import payments as payments_mod
     from blindport.services import rate_limits as rate_limits_mod
+    from blindport.services import relay_routing as relay_routing_mod
     from blindport.services import reminder_reconciliation as reminder_reconciliation_mod
     from blindport.services import subscriptions as subs_mod
 
@@ -64,6 +65,7 @@ def app_client(monkeypatch, tmp_path):
     importlib.reload(client_enrollment_mod)
     importlib.reload(domain_verification_mod)
     importlib.reload(subs_mod)
+    importlib.reload(relay_routing_mod)
     importlib.reload(btc_usd_price_mod)
     importlib.reload(payments_mod)
     importlib.reload(agent_orders_mod)

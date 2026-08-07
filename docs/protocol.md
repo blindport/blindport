@@ -195,12 +195,16 @@ resolution. A compromised token plus enrolled private key remains sufficient,
 and an established TLS connection is not terminated solely because its leaf
 certificate later expires.
 
-The provisioning response retains v0 `relay_endpoint` and also returns
-`relay_endpoints`. The singular value is the first list entry. Blindport Relay receives
-all configured edges. Framed Blindport IP and Blindport Port receive only their primary edge
-because their leased socket identity is provider-specific. A multi-edge agent
-derives TLS ServerName independently from each endpoint unless configured with
-one explicit override.
+The provisioning response retains v0 `relay_endpoint` and returns
+`relay_endpoints`. Agents that send
+`Blindport-Agent-Capabilities: relay-assignments-v1` also receive
+`relay_assignments`. The capability gate keeps the new field absent for older agents
+that strictly reject unknown response fields. The singular endpoint is the first list
+entry. Blindport Relay receives all configured edges. Each assignment pairs a control
+endpoint with the provider-local claim IP. Blindport Port uses one assignment per
+provider; framed Blindport IP uses the edge that owns its address. Older agents
+continue using the primary Port edge. A multi-edge agent derives TLS ServerName
+independently from each endpoint unless configured with one explicit override.
 
 The relay reauthorizes established tunnels periodically. A successful response
 that removes the claim closes the tunnel. Temporary backend failures retain it

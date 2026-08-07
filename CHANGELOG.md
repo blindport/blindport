@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A checksum-verifying Linux installer and an interactive first-run token prompt.
 - Per-account NWC connection setup with explicit automatic-renewal consent and a
   public-relay egress policy for wallet-provided connection URIs.
+- Provider-edge Port assignments with a stable hostname and explicit ingress IPs,
+  plus owner-edge routing for framed dedicated IP inventory.
 
 ### Changed
 

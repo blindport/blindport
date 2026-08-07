@@ -48,13 +48,13 @@
               <header>
                 <div>
                   <p class="endpoint-kind">{% if s.product.value == "ip" %}Dedicated IP{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% else %}Hostname relay{% endif %}</p>
-                  <h3>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
+                  <h3>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
                 </div>
                 <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
               </header>
 
               <div class="route-line" aria-label="Traffic route">
-                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{{ s.domain }}:443</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
+                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{{ s.domain }}:443</code>{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}<code>{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
                 <span class="route-arrow" aria-hidden="true">&rarr;</span>
                 <span><small>Origin</small><strong>{% if s.status.value == "active" %}Set in blindportd{% else %}Connect after activation{% endif %}</strong></span>
               </div>
@@ -65,6 +65,10 @@
                 <div><dt>Price</dt><dd><span class="cardPrice">{{ card_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days<span class="cardUsd">{% if card_usd %} (about {{ card_usd }} USD){% endif %}</span></dd></div>
                 {% if s.current_period_end %}<div><dt>Active until</dt><dd>{{ s.current_period_end }}</dd></div>{% endif %}
                 <div><dt>Transport</dt><dd>{% if s.product.value == "port" %}{{ s.transport.value | upper }}{% elif s.delivery.value == "wireguard" %}WireGuard /32{% else %}TCP tunnel{% endif %}</dd></div>
+                {% if s.product.value == "port" and s.assigned_port and port_hostname_suffix %}
+                  <div><dt>CNAME target</dt><dd><code>{{ s.public_id }}.{{ port_hostname_suffix }}</code></dd></div>
+                  <div><dt>Provider IPs</dt><dd>{% for ip in port_ha_ips %}<code>{{ ip }}:{{ s.assigned_port }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</dd></div>
+                {% endif %}
               </dl>
 
               <div class="task-area">

@@ -343,6 +343,8 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
             token=raw_token,
             catalog=catalog,
             catalog_by_product={p.product.value: p for p in catalog.products},
+            port_hostname_suffix=settings.PORT_HOSTNAME_SUFFIX,
+            port_ha_ips=[edge.ip for edge in settings.port_ha_edges_list],
         ),
     )
     response.headers["Cache-Control"] = "no-store"

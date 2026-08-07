@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlmodel import Session, select
@@ -47,6 +47,7 @@ from ..core.schemas import (
     NwcStatusResponse,
     PaymentConflictResponse,
     PaymentResponse,
+    RelayAssignmentResponse,
     RelayProvisioningResponse,
     ReminderEmailStatusResponse,
     SetNwcRequest,
@@ -57,7 +58,7 @@ from ..core.schemas import (
 )
 from ..db import get_session
 from ..services import agent_orders as agent_orders_svc
-from ..services import ip_leases
+from ..services import ip_leases, relay_routing
 from ..services import payments as payments_svc
 from ..services import subscriptions as subs_svc
 from ..services.allocator import NoCapacityError
@@ -168,6 +169,11 @@ def _sub_to_response(sub: Subscription) -> SubscriptionResponse:
         record_type = "CNAME"
         record_name = sub.domain
         record_target = sub.relay_pool_domain
+    port_edges = (
+        relay_routing.port_edges(sub.assigned_ip)
+        if sub.product == ProductType.PORT and sub.assigned_ip
+        else []
+    )
     return SubscriptionResponse(
         id=sub.public_id,
         product=sub.product,
@@ -175,6 +181,10 @@ def _sub_to_response(sub: Subscription) -> SubscriptionResponse:
         status=sub.status,
         assigned_ip=sub.assigned_ip,
         assigned_port=sub.assigned_port,
+        port_hostname=(
+            relay_routing.port_hostname(sub.public_id) if sub.product == ProductType.PORT else None
+        ),
+        port_ips=[edge.ip for edge in port_edges],
         transport=sub.transport,
         domain=sub.domain,
         relay_pool_domain=sub.relay_pool_domain,
@@ -1088,16 +1098,30 @@ def client_version(_: User = Depends(current_user)) -> ClientVersionResponse:
     return ClientVersionResponse(version=settings.BLINDPORTD_VERSION)
 
 
-@router.get("/client/config", response_model=list[RelayProvisioningResponse])
+_RELAY_ASSIGNMENTS_CAPABILITY = "relay-assignments-v1"
+
+
+@router.get(
+    "/client/config",
+    response_model=list[RelayProvisioningResponse],
+    response_model_exclude_unset=True,
+)
 def client_config(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
+    blindport_agent_capabilities: str = Header(default="", alias="Blindport-Agent-Capabilities"),
 ) -> list[RelayProvisioningResponse]:
     """Returned to the Linux daemon. Lists relay endpoints + resource bindings
     for every active subscription the user has.
     """
     subs_svc.reap_expired_domain_claims(session)
     out: list[RelayProvisioningResponse] = []
+    agent_capabilities = {
+        capability.strip()
+        for capability in blindport_agent_capabilities.split(",")
+        if capability.strip()
+    }
+    supports_relay_assignments = _RELAY_ASSIGNMENTS_CAPABILITY in agent_capabilities
     rows = session.exec(
         select(Subscription).where(
             Subscription.user_id == user.id,
@@ -1110,23 +1134,34 @@ def client_config(
             continue
         if s.product == ProductType.IP and s.delivery == DeliveryMode.WIREGUARD:
             continue
-        relay_endpoints = (
-            settings.relay_control_urls_list
-            if s.product == ProductType.RELAY
-            else [settings.RELAY_CONTROL_URL]
+        relay_assignments = []
+        if s.product == ProductType.RELAY:
+            relay_endpoints = settings.relay_control_urls_list
+        elif s.product == ProductType.PORT and s.assigned_ip:
+            relay_assignments = relay_routing.port_edges(s.assigned_ip)
+            # Older agents must keep using the canonical claim on the primary edge.
+            relay_endpoints = [settings.RELAY_CONTROL_URL]
+        elif s.product == ProductType.IP and s.assigned_ip:
+            relay_assignments = [relay_routing.framed_ip_edge(s.assigned_ip)]
+            relay_endpoints = [relay_assignments[0].endpoint]
+        else:
+            relay_endpoints = [settings.RELAY_CONTROL_URL]
+        response = RelayProvisioningResponse(
+            relay_endpoint=relay_endpoints[0],
+            relay_endpoints=relay_endpoints,
+            assigned_ip=s.assigned_ip,
+            assigned_port=s.assigned_port,
+            transport=s.transport,
+            domain=s.domain,
+            product=s.product,
+            subscription_id=s.public_id,
         )
-        out.append(
-            RelayProvisioningResponse(
-                relay_endpoint=relay_endpoints[0],
-                relay_endpoints=relay_endpoints,
-                assigned_ip=s.assigned_ip,
-                assigned_port=s.assigned_port,
-                transport=s.transport,
-                domain=s.domain,
-                product=s.product,
-                subscription_id=s.public_id,
-            )
-        )
+        if supports_relay_assignments:
+            response.relay_assignments = [
+                RelayAssignmentResponse(relay_endpoint=edge.endpoint, assigned_ip=edge.ip)
+                for edge in relay_assignments
+            ]
+        out.append(response)
     return out
 
 

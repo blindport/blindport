@@ -14,7 +14,9 @@ from blindport.config import (
     EnvironmentMode,
     Settings,
     canonicalize_relay_endpoint,
+    parse_framed_ip_endpoints,
     parse_managed_suffixes,
+    parse_port_ha_edges,
     parse_relay_endpoints,
     parse_relay_pool_domains,
     parse_tcp_port_pool,
@@ -631,6 +633,106 @@ def test_relay_control_urls_are_canonical_and_unique() -> None:
 def test_relay_control_urls_fall_back_to_primary() -> None:
     settings = Settings(_env_file=None, RELAY_CONTROL_URL="primary.example:5443")
     assert settings.relay_control_urls_list == ["primary.example:5443"]
+
+
+def test_port_ha_edges_are_canonical_and_bound_to_primary_inventory() -> None:
+    settings = Settings(
+        _env_file=None,
+        RELAY_CONTROL_URL="primary.example:5443",
+        RELAY_CONTROL_URLS="primary.example:5443,secondary.example:5443",
+        RELAY_SHARED_IPS="203.0.113.20",
+        PORT_HOSTNAME_SUFFIX="Ports.Example.",
+        PORT_HA_EDGES=(
+            '[{"endpoint":"Primary.Example:5443","ip":"203.0.113.20"},'
+            '{"endpoint":"secondary.example:5443","ip":"203.0.113.21"}]'
+        ),
+    )
+
+    assert settings.PORT_HOSTNAME_SUFFIX == "ports.example"
+    assert settings.port_ha_edges_list == parse_port_ha_edges(settings.PORT_HA_EDGES)
+    assert [edge.ip for edge in settings.port_ha_edges_list] == [
+        "203.0.113.20",
+        "203.0.113.21",
+    ]
+
+
+def test_port_hostname_suffix_must_leave_room_for_subscription_id() -> None:
+    suffix = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 24])
+    assert len(suffix) == 216
+
+    with pytest.raises(ValidationError, match="UUID child label"):
+        Settings(_env_file=None, PORT_HOSTNAME_SUFFIX=f"x.{suffix}")
+
+
+def test_production_port_hostname_suffix_must_be_public() -> None:
+    with pytest.raises(ValidationError, match="PORT_HOSTNAME_SUFFIX"):
+        _production_settings(
+            RELAY_CONTROL_URLS="relay.blindport.com:5443,relay-b.blindport.com:5443",
+            PORT_HA_EDGES=(
+                '[{"endpoint":"relay.blindport.com:5443","ip":"1.1.1.1"},'
+                '{"endpoint":"relay-b.blindport.com:5443","ip":"9.9.9.9"}]'
+            ),
+            PORT_HOSTNAME_SUFFIX="ports.localhost",
+        )
+
+
+@pytest.mark.parametrize(
+    "edges,suffix,match",
+    [
+        (
+            '[{"endpoint":"primary.example:5443","ip":"203.0.113.20"}]',
+            "ports.example",
+            "at least two",
+        ),
+        (
+            '[{"endpoint":"primary.example:5443","ip":"203.0.113.21"},'
+            '{"endpoint":"secondary.example:5443","ip":"203.0.113.22"}]',
+            "ports.example",
+            "map RELAY_CONTROL_URL",
+        ),
+        (
+            '[{"endpoint":"primary.example:5443","ip":"203.0.113.20"},'
+            '{"endpoint":"missing.example:5443","ip":"203.0.113.21"}]',
+            "ports.example",
+            "RELAY_CONTROL_URLS",
+        ),
+        (
+            '[{"endpoint":"primary.example:5443","ip":"203.0.113.20"},'
+            '{"endpoint":"secondary.example:5443","ip":"203.0.113.21"}]',
+            "",
+            "PORT_HOSTNAME_SUFFIX",
+        ),
+    ],
+)
+def test_port_ha_edges_reject_incomplete_topologies(edges: str, suffix: str, match: str) -> None:
+    with pytest.raises(ValidationError, match=match):
+        Settings(
+            _env_file=None,
+            RELAY_CONTROL_URL="primary.example:5443",
+            RELAY_CONTROL_URLS="primary.example:5443,secondary.example:5443",
+            RELAY_SHARED_IPS="203.0.113.20",
+            PORT_HA_EDGES=edges,
+            PORT_HOSTNAME_SUFFIX=suffix,
+        )
+
+
+def test_framed_ip_endpoints_must_cover_inventory() -> None:
+    raw = '{"203.0.113.10":"Edge.Example:5443","203.0.113.11":"edge.example:5443"}'
+    settings = Settings(
+        _env_file=None,
+        RELAY_PUBLIC_IPS="203.0.113.10,203.0.113.11",
+        RELAY_CONTROL_URLS="edge.example:5443",
+        FRAMED_IP_ENDPOINTS=raw,
+    )
+    assert settings.framed_ip_endpoints_map == parse_framed_ip_endpoints(raw)
+
+    with pytest.raises(ValidationError, match="map every"):
+        Settings(
+            _env_file=None,
+            RELAY_PUBLIC_IPS="203.0.113.10,203.0.113.11",
+            RELAY_CONTROL_URLS="edge.example:5443",
+            FRAMED_IP_ENDPOINTS='{"203.0.113.10":"edge.example:5443"}',
+        )
 
 
 @pytest.mark.parametrize(

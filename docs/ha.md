@@ -112,8 +112,16 @@ move the same address between providers, but requires an ASN or sponsoring netwo
 ROAs/RPKI, routing policy, health-based announcement withdrawal, anti-spoofing support,
 and operational expertise.
 
-Blindport Port and framed or routed Blindport IP are address/socket products, not DNS
-identities. Honest HA choices are two separately assigned provider-specific endpoints,
+Blindport Port can map one logical allocation to provider-local claims when
+`PORT_HA_EDGES` is configured. The agent opens the same allocated port through each
+provider endpoint, and the customer receives one wildcard-backed hostname plus every
+explicit provider IP. This is new-connection redundancy, not socket mobility: DNS may
+continue returning a failed edge and established streams are not resumed. The current
+model intentionally supports one canonical shared address pool; multiple pools need
+the future site-aware inventory model to prevent mirrored socket collisions.
+
+Framed and routed Blindport IP remain address products rather than portable DNS
+identities. Honest HA choices are two separately assigned provider-specific addresses,
 a provider-local floating IP with only provider-local HA, or portable BGP space. One
 provider-assigned `/32` routed to one VPS does not provide cross-provider HA, and this
 documentation does not claim that it does. Routed WireGuard failover additionally

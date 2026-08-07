@@ -177,6 +177,8 @@ class SubscriptionResponse(BaseModel):
     status: SubscriptionStatus
     assigned_ip: str | None = None
     assigned_port: int | None = None
+    port_hostname: str | None = None
+    port_ips: list[str] = Field(default_factory=list)
     transport: Transport
     domain: str | None = None
     relay_pool_domain: str | None = None
@@ -348,6 +350,13 @@ class ReminderEmailStatusResponse(BaseModel):
     configured: bool
 
 
+class RelayAssignmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    relay_endpoint: str
+    assigned_ip: str | None = None
+
+
 class RelayProvisioningResponse(BaseModel):
     """Returned to the Linux client at /api/v1/client/config.
 
@@ -357,6 +366,7 @@ class RelayProvisioningResponse(BaseModel):
 
     relay_endpoint: str  # host:port
     relay_endpoints: list[str]
+    relay_assignments: list[RelayAssignmentResponse] = Field(default_factory=list)
     assigned_ip: str | None = None
     assigned_port: int | None = None
     transport: Transport

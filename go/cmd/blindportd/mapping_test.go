@@ -170,6 +170,60 @@ func TestBuildMappingPlansExpandsOneMappingAcrossRelayEndpoints(t *testing.T) {
 	}
 }
 
+func TestBuildMappingPlansUsesPerEdgePortClaims(t *testing.T) {
+	mappings := []mapping{{SubscriptionID: testSubscriptionID123, Upstream: "app:8080"}}
+	cfg := []provisioning{{
+		SubscriptionID: testSubscriptionID123,
+		Product:        "port",
+		AssignedIP:     "203.0.113.20",
+		AssignedPort:   10000,
+		Transport:      "tcp",
+		RelayEndpoint:  "primary.example:5443",
+		RelayEndpoints: []string{"primary.example:5443"},
+		RelayAssignments: []relayAssignment{
+			{RelayEndpoint: "primary.example:5443", AssignedIP: "203.0.113.20"},
+			{RelayEndpoint: "secondary.example:5443", AssignedIP: "203.0.113.21"},
+		},
+	}}
+
+	plans, err := buildMappingPlans(mappings, cfg, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("len(plans) = %d, want 2: %+v", len(plans), plans)
+	}
+	if plans[0].RelayAddr != "primary.example:5443" || plans[0].Claim.IP != "203.0.113.20" {
+		t.Fatalf("primary plan = %+v", plans[0])
+	}
+	if plans[1].RelayAddr != "secondary.example:5443" || plans[1].Claim.IP != "203.0.113.21" {
+		t.Fatalf("secondary plan = %+v", plans[1])
+	}
+}
+
+func TestBuildMappingPlansMatchesOverrideToEdgeClaim(t *testing.T) {
+	mappings := []mapping{{SubscriptionID: testSubscriptionID123, Upstream: "app:8080"}}
+	cfg := []provisioning{{
+		SubscriptionID: testSubscriptionID123,
+		Product:        "port",
+		AssignedIP:     "203.0.113.20",
+		AssignedPort:   10000,
+		Transport:      "tcp",
+		RelayAssignments: []relayAssignment{
+			{RelayEndpoint: "primary.example:5443", AssignedIP: "203.0.113.20"},
+			{RelayEndpoint: "secondary.example:5443", AssignedIP: "203.0.113.21"},
+		},
+	}}
+
+	plans, err := buildMappingPlans(mappings, cfg, "secondary.example:5443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans) != 1 || plans[0].Claim.IP != "203.0.113.21" {
+		t.Fatalf("plans = %+v", plans)
+	}
+}
+
 func TestBuildMappingPlansRejectsChallengeUpstreamForNonRelay(t *testing.T) {
 	mappings := []mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:443", HTTPChallengeUpstream: "solver:80"}}
 	cfg := []provisioning{{

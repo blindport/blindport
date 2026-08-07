@@ -34,16 +34,24 @@ const (
 
 var version = "dev"
 
+const relayAssignmentsCapability = "relay-assignments-v1"
+
 // provisioning is one row from /api/v1/client/config.
 type provisioning struct {
-	RelayEndpoint  string   `json:"relay_endpoint"`
-	RelayEndpoints []string `json:"relay_endpoints"`
-	AssignedIP     string   `json:"assigned_ip,omitempty"`
-	AssignedPort   uint16   `json:"assigned_port,omitempty"`
-	Transport      string   `json:"transport"`
-	Domain         string   `json:"domain,omitempty"`
-	Product        string   `json:"product"`
-	SubscriptionID string   `json:"subscription_id"`
+	RelayEndpoint    string            `json:"relay_endpoint"`
+	RelayEndpoints   []string          `json:"relay_endpoints"`
+	RelayAssignments []relayAssignment `json:"relay_assignments"`
+	AssignedIP       string            `json:"assigned_ip,omitempty"`
+	AssignedPort     uint16            `json:"assigned_port,omitempty"`
+	Transport        string            `json:"transport"`
+	Domain           string            `json:"domain,omitempty"`
+	Product          string            `json:"product"`
+	SubscriptionID   string            `json:"subscription_id"`
+}
+
+type relayAssignment struct {
+	RelayEndpoint string `json:"relay_endpoint"`
+	AssignedIP    string `json:"assigned_ip,omitempty"`
 }
 
 type agentVersionResponse struct {
@@ -661,6 +669,7 @@ func fetchConfigWithClient(ctx context.Context, client *http.Client, backend, to
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Blindport-Agent-Capabilities", relayAssignmentsCapability)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

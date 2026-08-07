@@ -388,6 +388,104 @@ def test_provisioning_endpoints_are_product_specific(app_client, monkeypatch) ->
     ]
 
 
+def test_port_provisioning_and_authorization_expand_provider_edges(app_client, monkeypatch) -> None:
+    from blindport.services import relay_routing
+
+    client, factory = app_client
+    monkeypatch.setattr(relay_routing.settings, "RELAY_CONTROL_URL", "primary.example:5443")
+    monkeypatch.setattr(
+        relay_routing.settings,
+        "RELAY_CONTROL_URLS",
+        "primary.example:5443,secondary.example:5443",
+    )
+    monkeypatch.setattr(relay_routing.settings, "PORT_HOSTNAME_SUFFIX", "ports.example")
+    monkeypatch.setattr(
+        relay_routing.settings,
+        "PORT_HA_EDGES",
+        '[{"endpoint":"primary.example:5443","ip":"203.0.113.20"},'
+        '{"endpoint":"secondary.example:5443","ip":"203.0.113.21"}]',
+    )
+    token = client.post("/api/v1/signup").json()["token"]
+    sub = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": sub["id"], "method": "lightning"},
+        headers=_auth(token),
+    ).json()
+    factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
+    client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token))
+
+    account = client.get("/api/v1/me", headers=_auth(token)).json()
+    active = account["subscriptions"][0]
+    assert active["port_hostname"] == f"{sub['id']}.ports.example"
+    assert active["port_ips"] == ["203.0.113.20", "203.0.113.21"]
+
+    legacy_config = client.get("/api/v1/client/config", headers=_auth(token)).json()[0]
+    assert legacy_config["relay_endpoint"] == "primary.example:5443"
+    assert legacy_config["relay_endpoints"] == ["primary.example:5443"]
+    assert "relay_assignments" not in legacy_config
+
+    config = client.get(
+        "/api/v1/client/config",
+        headers={**_auth(token), "Blindport-Agent-Capabilities": "relay-assignments-v1"},
+    ).json()[0]
+    assert config["relay_endpoints"] == ["primary.example:5443"]
+    assert config["relay_assignments"] == [
+        {"relay_endpoint": "primary.example:5443", "assigned_ip": "203.0.113.20"},
+        {"relay_endpoint": "secondary.example:5443", "assigned_ip": "203.0.113.21"},
+    ]
+    resolved = client.post(
+        "/internal/v1/resolve",
+        json={"token": token},
+        headers={"X-Relay-Secret": "test-secret"},
+    ).json()
+    assert resolved["port_leases"] == [
+        {"assigned_ip": "203.0.113.20", "assigned_port": 10000, "transport": "tcp"},
+        {"assigned_ip": "203.0.113.21", "assigned_port": 10000, "transport": "tcp"},
+    ]
+    dashboard = client.get("/dashboard", cookies={"blindport_token": token})
+    assert dashboard.status_code == 200
+    assert f"{sub['id']}.ports.example:10000" in dashboard.text
+    assert "203.0.113.20:10000" in dashboard.text
+    assert "203.0.113.21:10000" in dashboard.text
+
+
+def test_framed_ip_provisioning_uses_inventory_owner_edge(app_client, monkeypatch) -> None:
+    from blindport.services import relay_routing
+
+    client, factory = app_client
+    monkeypatch.setattr(
+        relay_routing.settings,
+        "FRAMED_IP_ENDPOINTS",
+        '{"203.0.113.10":"secondary.example:5443","203.0.113.11":"secondary.example:5443"}',
+    )
+    token = client.post("/api/v1/signup").json()["token"]
+    sub = client.post("/api/v1/subscriptions", json={"product": "ip"}, headers=_auth(token)).json()
+    payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": sub["id"], "method": "lightning"},
+        headers=_auth(token),
+    ).json()
+    factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
+    client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token))
+
+    legacy_config = client.get("/api/v1/client/config", headers=_auth(token)).json()[0]
+    assert legacy_config["relay_endpoint"] == "secondary.example:5443"
+    assert legacy_config["relay_endpoints"] == ["secondary.example:5443"]
+    assert "relay_assignments" not in legacy_config
+
+    config = client.get(
+        "/api/v1/client/config",
+        headers={**_auth(token), "Blindport-Agent-Capabilities": "relay-assignments-v1"},
+    ).json()[0]
+    assert config["relay_endpoint"] == "secondary.example:5443"
+    assert config["relay_assignments"] == [
+        {"relay_endpoint": "secondary.example:5443", "assigned_ip": "203.0.113.10"}
+    ]
+
+
 def test_port_capacity_is_rejected_before_invoice_creation(app_client, monkeypatch) -> None:
     client, factory = app_client
     adapter = factory.get_lightning_adapter()

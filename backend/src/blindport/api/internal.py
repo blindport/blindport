@@ -30,6 +30,7 @@ from ..core.models import (
     User,
 )
 from ..db import get_session
+from ..services import relay_routing
 from ..services import subscriptions as subs_svc
 from ..services.wireguard import desired_state as wireguard_desired_state
 from ..services.wireguard import desired_state_v2 as wireguard_desired_state_v2
@@ -113,12 +114,13 @@ def _resolve(
         elif s.product == ProductType.RELAY and s.domain:
             domains.append(s.domain)
         elif s.product == ProductType.PORT and s.assigned_ip and s.assigned_port:
-            port_leases.append(
+            port_leases.extend(
                 AuthorizedPortLease(
-                    assigned_ip=s.assigned_ip,
+                    assigned_ip=edge.ip,
                     assigned_port=s.assigned_port,
                     transport=s.transport,
                 )
+                for edge in relay_routing.port_edges(s.assigned_ip)
             )
     return user, ips, domains, port_leases
 

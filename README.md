@@ -34,8 +34,10 @@ The three products use distinct ingress identities:
   ICMP, arbitrary ports, and outbound traffic, to a privileged Linux customer
   host. New outbound TCP connections to port 25 are blocked unless the operator
   approves a paid exception for the current lease.
-- **Blindport Port** leases exactly one `(shared public IP, port, TCP or UDP)` socket.
-  Shared addresses are separate inventory from dedicated Blindport IP addresses.
+- **Blindport Port** leases one canonical `(shared public IP, port, TCP or UDP)`
+  socket. An optional provider-edge topology mirrors that port through distinct
+  provider-local public IPs and advertises one stable hostname. Shared addresses
+  are separate inventory from dedicated Blindport IP addresses.
 - **Blindport Relay** leases one hostname. By default, `blindportd` obtains and
   renews a Let's Encrypt certificate, terminates TLS on the customer host, and
   forwards plaintext to the configured local app. Advanced passthrough keeps TLS

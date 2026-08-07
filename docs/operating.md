@@ -153,8 +153,9 @@ Relay control endpoints use strict `host:port` syntax without a URL scheme or
 path. DNS names and IP literals are canonicalized, IPv6 uses `[address]:port`,
 scoped IPv6 addresses are rejected, and canonical duplicates in
 `RELAY_CONTROL_URLS` are removed. An empty `RELAY_CONTROL_URLS` uses the
-primary `RELAY_CONTROL_URL` value. Framed Blindport IP and Blindport Port receive only that
-primary endpoint.
+primary `RELAY_CONTROL_URL` value. Framed Blindport IP and Blindport Port retain
+that primary endpoint for older agents. Current agents also consume provider-edge
+assignments when configured as described below.
 
 The default control endpoint is now `relay:5443`. Existing settings using URL
 syntax, such as `http://relay:9000`, must migrate to a plain `host:port` value;
@@ -252,6 +253,49 @@ operator responsibilities.
 Each backend transport pool uses one inclusive decimal range. Ports must be within
 `1-65535`, ordered, and no more than 4096 entries. Keep pools much smaller when
 each port is a separate listener.
+
+### Provider edge assignments
+
+Use `FRAMED_IP_ENDPOINTS` when framed dedicated IP inventory belongs to more than
+one relay host. It is a JSON object containing every `RELAY_PUBLIC_IPS` address
+exactly once. Each value is the owning relay control endpoint:
+
+```text
+RELAY_PUBLIC_IPS=198.51.100.20,203.0.113.20
+FRAMED_IP_ENDPOINTS={"198.51.100.20":"relay-a.example.net:5443","203.0.113.20":"relay-b.example.net:5443"}
+```
+
+The owner binds the address through `BLINDPORT_RELAY_IPS`; other relay nodes must
+not bind or advertise it. This maps inventory to a provider but does not make one
+provider-assigned dedicated IP portable between providers.
+
+Cross-provider Blindport Port uses one canonical shared inventory address and the
+same allocated TCP or UDP port at every edge. Configure every provider-specific
+control endpoint and public ingress address in `PORT_HA_EDGES`:
+
+```text
+RELAY_SHARED_IPS=198.51.100.30
+RELAY_CONTROL_URL=relay-a.example.net:5443
+RELAY_CONTROL_URLS=relay-a.example.net:5443,relay-b.example.net:5443
+PORT_HOSTNAME_SUFFIX=port.example.net
+PORT_HA_EDGES=[{"endpoint":"relay-a.example.net:5443","ip":"198.51.100.30"},{"endpoint":"relay-b.example.net:5443","ip":"203.0.113.30"}]
+```
+
+The current bounded model requires exactly one `RELAY_SHARED_IPS` address and at
+least two unique edge addresses. The primary mapping must pair
+`RELAY_CONTROL_URL` with that canonical address. The backend authorizes one claim
+per edge, while old agents continue opening only the primary claim. Upgrade agents
+before treating a Port subscription as redundant. Bind and verify each edge's local
+inventory before enabling these backend mappings. Treat `PORT_HOSTNAME_SUFFIX` as
+immutable after customer hostnames have been published because it is not stored per
+subscription.
+
+Publish wildcard A and AAAA records below `PORT_HOSTNAME_SUFFIX` with one healthy
+address per provider. A Port subscription exposes
+`<subscription-id>.<PORT_HOSTNAME_SUFFIX>` as its stable CNAME target and lists all
+explicit provider IP and port pairs. DNS round robin is not health steering: a
+failed answer may remain cached, existing streams are not migrated, and client
+retry behavior determines convergence.
 
 ## DNS
 

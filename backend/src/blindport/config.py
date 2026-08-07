@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import re
 from contextlib import suppress
+from dataclasses import dataclass
 from email.headerregistry import Address
 from enum import StrEnum
 from ipaddress import ip_address
@@ -19,6 +21,12 @@ from sqlalchemy.engine import make_url
 from .core.hostnames import canonicalize_hostname
 from .core.models import PaymentMethod
 from .core.wireguard import canonical_wireguard_key
+
+
+@dataclass(frozen=True)
+class RelayEdge:
+    endpoint: str
+    ip: str
 
 
 def validate_v3_onion_hostname(value: str) -> str:
@@ -234,6 +242,62 @@ def parse_relay_endpoints(value: str) -> list[str]:
     return endpoints
 
 
+def parse_port_ha_edges(value: str) -> list[RelayEdge]:
+    """Parse the JSON list that maps each Port relay endpoint to its public IP."""
+    if not value:
+        return []
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError("PORT_HA_EDGES must be valid JSON") from error
+    if not isinstance(raw, list):
+        raise ValueError("PORT_HA_EDGES must be a JSON list")
+    edges: list[RelayEdge] = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"endpoint", "ip"}:
+            raise ValueError("PORT_HA_EDGES entries must contain only endpoint and ip")
+        endpoint = item["endpoint"]
+        address = item["ip"]
+        if not isinstance(endpoint, str) or not isinstance(address, str):
+            raise ValueError("PORT_HA_EDGES endpoint and ip values must be strings")
+        try:
+            canonical_ip = str(ip_address(address))
+        except ValueError as error:
+            raise ValueError(f"PORT_HA_EDGES contains invalid IP address {address!r}") from error
+        edges.append(RelayEdge(canonicalize_relay_endpoint(endpoint), canonical_ip))
+    if len({edge.endpoint for edge in edges}) != len(edges):
+        raise ValueError("PORT_HA_EDGES contains duplicate relay endpoints")
+    if len({edge.ip for edge in edges}) != len(edges):
+        raise ValueError("PORT_HA_EDGES contains duplicate public IPs")
+    return edges
+
+
+def parse_framed_ip_endpoints(value: str) -> dict[str, str]:
+    """Parse the JSON object mapping framed dedicated IPs to their owning edge."""
+    if not value:
+        return {}
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError("FRAMED_IP_ENDPOINTS must be valid JSON") from error
+    if not isinstance(raw, dict):
+        raise ValueError("FRAMED_IP_ENDPOINTS must be a JSON object")
+    mappings: dict[str, str] = {}
+    for address, endpoint in raw.items():
+        if not isinstance(address, str) or not isinstance(endpoint, str):
+            raise ValueError("FRAMED_IP_ENDPOINTS keys and values must be strings")
+        try:
+            canonical_ip = str(ip_address(address))
+        except ValueError as error:
+            raise ValueError(
+                f"FRAMED_IP_ENDPOINTS contains invalid IP address {address!r}"
+            ) from error
+        if canonical_ip in mappings:
+            raise ValueError("FRAMED_IP_ENDPOINTS contains duplicate canonical IPs")
+        mappings[canonical_ip] = canonicalize_relay_endpoint(endpoint)
+    return mappings
+
+
 class Settings(BaseSettings):
     """Blindport backend settings."""
 
@@ -376,6 +440,9 @@ class Settings(BaseSettings):
     # Relay control plane
     RELAY_CONTROL_URL: str = "relay:5443"
     RELAY_CONTROL_URLS: str = ""
+    PORT_HA_EDGES: str = ""  # JSON [{"endpoint":"edge:5443","ip":"203.0.113.20"}]
+    PORT_HOSTNAME_SUFFIX: str = ""
+    FRAMED_IP_ENDPOINTS: str = ""  # JSON {"203.0.113.10":"edge:5443"}
     RELAY_PUBLIC_IPS: str = "203.0.113.10,203.0.113.11"  # comma-separated, allocated pool
     WIREGUARD_PUBLIC_IPS: str = ""  # provider-routed /32 inventory, never locally bound
     RELAY_SHARED_IPS: str = "203.0.113.20"  # separate Blindport Port/SNI ingress inventory
@@ -450,6 +517,14 @@ class Settings(BaseSettings):
         return endpoints or [self.RELAY_CONTROL_URL]
 
     @property
+    def port_ha_edges_list(self) -> list[RelayEdge]:
+        return parse_port_ha_edges(self.PORT_HA_EDGES)
+
+    @property
+    def framed_ip_endpoints_map(self) -> dict[str, str]:
+        return parse_framed_ip_endpoints(self.FRAMED_IP_ENDPOINTS)
+
+    @property
     def cashu_mints_list(self) -> list[str]:
         return [s.strip() for s in self.CASHU_MINTS.split(",") if s.strip()]
 
@@ -479,7 +554,11 @@ class Settings(BaseSettings):
     @property
     def relay_certificate_hostnames(self) -> set[str]:
         hostnames: set[str] = set()
-        for endpoint in {self.RELAY_CONTROL_URL, *self.relay_control_urls_list}:
+        mapped_endpoints = {
+            *(edge.endpoint for edge in self.port_ha_edges_list),
+            *self.framed_ip_endpoints_map.values(),
+        }
+        for endpoint in {self.RELAY_CONTROL_URL, *self.relay_control_urls_list, *mapped_endpoints}:
             host = endpoint.rsplit(":", 1)[0].strip("[]")
             try:
                 ip_address(host)
@@ -493,8 +572,13 @@ class Settings(BaseSettings):
             *self.relay_public_ips_list,
             *self.relay_shared_ips_list,
             *self.wireguard_public_ips_list,
+            *(edge.ip for edge in self.port_ha_edges_list),
         }
-        for endpoint in {self.RELAY_CONTROL_URL, *self.relay_control_urls_list}:
+        mapped_endpoints = {
+            *(edge.endpoint for edge in self.port_ha_edges_list),
+            *self.framed_ip_endpoints_map.values(),
+        }
+        for endpoint in {self.RELAY_CONTROL_URL, *self.relay_control_urls_list, *mapped_endpoints}:
             host = endpoint.rsplit(":", 1)[0].strip("[]")
             with suppress(ValueError):
                 addresses.add(str(ip_address(host)))
@@ -618,6 +702,27 @@ class Settings(BaseSettings):
     def validate_relay_control_urls(cls, value: str) -> str:
         return ",".join(parse_relay_endpoints(value))
 
+    @field_validator("PORT_HA_EDGES")
+    @classmethod
+    def validate_port_ha_edges(cls, value: str) -> str:
+        edges = parse_port_ha_edges(value)
+        return json.dumps([{"endpoint": edge.endpoint, "ip": edge.ip} for edge in edges])
+
+    @field_validator("FRAMED_IP_ENDPOINTS")
+    @classmethod
+    def validate_framed_ip_endpoints(cls, value: str) -> str:
+        return json.dumps(parse_framed_ip_endpoints(value), sort_keys=True) if value else ""
+
+    @field_validator("PORT_HOSTNAME_SUFFIX")
+    @classmethod
+    def validate_port_hostname_suffix(cls, value: str) -> str:
+        if not value:
+            return ""
+        hostname = canonicalize_hostname(value)
+        if len(hostname) > 216:
+            raise ValueError("PORT_HOSTNAME_SUFFIX must allow a UUID child label")
+        return hostname
+
     @field_validator("PAYMENT_ENABLED_METHODS")
     @classmethod
     def validate_enabled_payment_methods(cls, value: str) -> str:
@@ -718,6 +823,8 @@ class Settings(BaseSettings):
         framed = set(self.relay_public_ips_list)
         shared = set(self.relay_shared_ips_list)
         routed = set(self.wireguard_public_ips_list)
+        port_edges = self.port_ha_edges_list
+        framed_endpoints = self.framed_ip_endpoints_map
         overlap = framed & shared
         if overlap:
             raise ValueError(
@@ -730,6 +837,37 @@ class Settings(BaseSettings):
                 "WIREGUARD_PUBLIC_IPS must be disjoint from relay listener inventory; overlap: "
                 + ", ".join(sorted(routed_overlap))
             )
+        if port_edges:
+            if len(port_edges) < 2:
+                raise ValueError("PORT_HA_EDGES requires at least two provider edges")
+            if len(shared) != 1:
+                raise ValueError(
+                    "PORT_HA_EDGES currently requires exactly one RELAY_SHARED_IPS entry"
+                )
+            primary_ip = next(iter(shared))
+            if RelayEdge(self.RELAY_CONTROL_URL, primary_ip) not in port_edges:
+                raise ValueError(
+                    "PORT_HA_EDGES must map RELAY_CONTROL_URL to the RELAY_SHARED_IPS address"
+                )
+            if not self.PORT_HOSTNAME_SUFFIX:
+                raise ValueError(
+                    "PORT_HOSTNAME_SUFFIX is required when PORT_HA_EDGES is configured"
+                )
+            configured_endpoints = set(self.relay_control_urls_list)
+            missing_endpoints = {edge.endpoint for edge in port_edges} - configured_endpoints
+            if missing_endpoints:
+                raise ValueError("every PORT_HA_EDGES endpoint must appear in RELAY_CONTROL_URLS")
+            edge_inventory_overlap = ({edge.ip for edge in port_edges} - shared) & (framed | routed)
+            if edge_inventory_overlap:
+                raise ValueError(
+                    "PORT_HA_EDGES provider IPs must be disjoint from dedicated IP inventory"
+                )
+        elif self.PORT_HOSTNAME_SUFFIX:
+            raise ValueError("PORT_HA_EDGES is required when PORT_HOSTNAME_SUFFIX is configured")
+        if framed_endpoints and set(framed_endpoints) != framed:
+            raise ValueError("FRAMED_IP_ENDPOINTS must map every RELAY_PUBLIC_IPS address exactly")
+        if set(framed_endpoints.values()) - set(self.relay_control_urls_list):
+            raise ValueError("every FRAMED_IP_ENDPOINTS value must appear in RELAY_CONTROL_URLS")
         if self.wireguard_enabled:
             if any(ip_address(address).version != 4 for address in routed):
                 raise ValueError("WIREGUARD_PUBLIC_IPS currently supports IPv4 addresses only")
@@ -965,6 +1103,7 @@ class Settings(BaseSettings):
             "RELAY_PUBLIC_IPS": self.relay_public_ips_list,
             "RELAY_SHARED_IPS": self.relay_shared_ips_list,
             "WIREGUARD_PUBLIC_IPS": self.wireguard_public_ips_list,
+            "PORT_HA_EDGES": [edge.ip for edge in self.port_ha_edges_list],
         }
         for field_name, addresses in public_ip_fields.items():
             invalid = [address for address in addresses if not _is_global_unicast_address(address)]
@@ -976,6 +1115,7 @@ class Settings(BaseSettings):
             "RELAY_CONTROL_URL": [self.RELAY_CONTROL_URL],
             "RELAY_CONTROL_URLS": parse_relay_endpoints(self.RELAY_CONTROL_URLS),
             "WIREGUARD_ENDPOINT": [self.WIREGUARD_ENDPOINT] if self.WIREGUARD_ENDPOINT else [],
+            "FRAMED_IP_ENDPOINTS": list(self.framed_ip_endpoints_map.values()),
         }
         for field_name, endpoints in relay_endpoint_fields.items():
             for endpoint in endpoints:
@@ -992,6 +1132,9 @@ class Settings(BaseSettings):
         public_domain_fields = {
             "RELAY_POOL_DOMAINS": self.relay_pool_domains_list,
             "RELAY_MANAGED_SUFFIXES": self.relay_managed_suffixes_list,
+            "PORT_HOSTNAME_SUFFIX": [self.PORT_HOSTNAME_SUFFIX]
+            if self.PORT_HOSTNAME_SUFFIX
+            else [],
         }
         for field_name, domains in public_domain_fields.items():
             if any(not _is_production_relay_hostname(domain) for domain in domains):
