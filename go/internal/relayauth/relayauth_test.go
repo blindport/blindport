@@ -2,6 +2,7 @@ package relayauth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,44 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func TestFetchRelayCertEncodesNilSANListsAsArrays(t *testing.T) {
+	tests := []struct {
+		name      string
+		hostnames []string
+		ips       []string
+	}{
+		{name: "IP-only relay", ips: []string{"203.0.113.20"}},
+		{name: "hostname-only relay", hostnames: []string{"relay.example"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Hostnames []string `json:"hostnames"`
+					IPs       []string `json:"ips"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if body.Hostnames == nil || body.IPs == nil {
+					t.Fatalf("SAN lists = %#v/%#v, want JSON arrays", body.Hostnames, body.IPs)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"ca_cert_pem":"ca","server_cert_pem":"cert","server_key_pem":"key","not_after":"2026-08-08T00:00:00Z"}`))
+			}))
+			defer server.Close()
+
+			resolver, err := New(server.URL, "secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resolver.FetchRelayCert(context.Background(), tt.hostnames, tt.ips); err != nil {
+				t.Fatalf("FetchRelayCert() error = %v", err)
+			}
+		})
+	}
+}
 
 func TestResolveDecodesPortLeases(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -168,6 +168,12 @@ type RelayCert struct {
 
 // FetchRelayCert asks the backend to issue a server cert for the given SANs.
 func (r *Resolver) FetchRelayCert(ctx context.Context, hostnames, ips []string) (*RelayCert, error) {
+	if hostnames == nil {
+		hostnames = []string{}
+	}
+	if ips == nil {
+		ips = []string{}
+	}
 	body, err := json.Marshal(map[string]any{"hostnames": hostnames, "ips": ips})
 	if err != nil {
 		return nil, infrastructure("encode certificate request", err)
