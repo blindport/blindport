@@ -107,17 +107,23 @@ def test_customer_login_rejects_admin_token_and_admin_login_uses_dedicated_scope
 
     client, _ = app_client
     scopes: list[RateLimitScope] = []
+    looked_up: list[str] = []
+    original_lookup = pages._get_user_by_token
 
     def tracking_limit(request, session, scope):
         scopes.append(scope)
 
-    def unexpected_customer_lookup(session, token):
-        raise AssertionError("customer login must not look up the configured admin token")
+    def tracking_lookup(session, token):
+        looked_up.append(token)
+        return original_lookup(session, token)
 
     monkeypatch.setattr(pages, "_enforce_login_rate_limit", tracking_limit)
-    monkeypatch.setattr(pages, "_get_user_by_token", unexpected_customer_lookup)
+    monkeypatch.setattr(pages, "_get_user_by_token", tracking_lookup)
     monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
     rejected = client.post("/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
+    ordinary_invalid = client.post(
+        "/login", data={"token": "INVALIDTOKEN0000"}, follow_redirects=False
+    )
 
     assert rejected.status_code == 401
     assert rejected.headers["Cache-Control"] == "no-store"
@@ -125,12 +131,19 @@ def test_customer_login_rejects_admin_token_and_admin_login_uses_dedicated_scope
     assert "TESTADMIN0000" not in rejected.text
     assert "blindport_admin_session=" not in rejected.headers.get("set-cookie", "")
     assert client.cookies.get("blindport_admin_session") is None
+    assert ordinary_invalid.status_code == rejected.status_code
+    assert ordinary_invalid.text == rejected.text
+    assert looked_up == ["TESTADMIN0000", "INVALIDTOKEN0000"]
 
     accepted = client.post("/admin/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
 
     assert accepted.status_code == 303
     assert accepted.headers["location"] == "/admin"
-    assert scopes == [RateLimitScope.BROWSER_LOGIN, RateLimitScope.ADMIN_LOGIN]
+    assert scopes == [
+        RateLimitScope.BROWSER_LOGIN,
+        RateLimitScope.BROWSER_LOGIN,
+        RateLimitScope.ADMIN_LOGIN,
+    ]
     cookie = accepted.headers["set-cookie"]
     assert "blindport_admin_session=" in cookie
     assert "TESTADMIN0000" not in cookie

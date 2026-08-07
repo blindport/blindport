@@ -360,9 +360,10 @@ def login(
 ) -> Response:
     _enforce_login_rate_limit(request, session, RateLimitScope.BROWSER_LOGIN)
 
-    if is_exact_admin_token(token):
-        return _invalid_login(request, "login.html")
+    is_admin = is_exact_admin_token(token)
     user = _get_user_by_token(session, token)
+    if is_admin:
+        return _invalid_login(request, "login.html")
     if user is not None:
         response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
         _clear_admin_session(response, request)
