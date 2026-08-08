@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 )
+
+const testHeartbeatToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestFetchRelayCertEncodesNilSANListsAsArrays(t *testing.T) {
 	tests := []struct {
@@ -46,6 +49,98 @@ func TestFetchRelayCertEncodesNilSANListsAsArrays(t *testing.T) {
 				t.Fatalf("FetchRelayCert() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestReportHeartbeatSendsStrictAcceptedSnapshot(t *testing.T) {
+	heartbeat := Heartbeat{
+		EdgeID: "relay-1", Ready: true,
+		Components:    HealthComponents{Authorization: "ok", Certificate: "ok", Lifecycle: "serving", Listeners: "ok", WireGuard: "disabled"},
+		ActiveTunnels: 2, ActiveStreams: 3, AcceptedConnectionsTotal: 4, ForwardedBytesTotal: 5,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/relay/heartbeat" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Relay-Secret"); got != "secret" {
+			t.Fatalf("X-Relay-Secret = %q", got)
+		}
+		if got := r.Header.Get("X-Relay-Heartbeat-Token"); got != testHeartbeatToken {
+			t.Fatalf("X-Relay-Heartbeat-Token = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("Content-Type = %q", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantBody := `{"edge_id":"relay-1","ready":true,"components":{"authorization":"ok","certificate":"ok","lifecycle":"serving","listeners":"ok","wireguard":"disabled"},"active_tunnels":2,"active_streams":3,"accepted_connections_total":4,"forwarded_bytes_total":5}`
+		if got := string(body); got != wantBody {
+			t.Fatalf("request body = %s, want %s", got, wantBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+	defer server.Close()
+
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolver.ReportHeartbeat(context.Background(), testHeartbeatToken, heartbeat); err != nil {
+		t.Fatalf("ReportHeartbeat() error = %v", err)
+	}
+}
+
+func TestReportHeartbeatReturnsTypedBackendAndProtocolErrors(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		status     int
+		body       string
+		kind       ErrorKind
+		wantStatus int
+	}{
+		{name: "backend failure", status: http.StatusServiceUnavailable, kind: ErrorInfrastructure, wantStatus: http.StatusServiceUnavailable},
+		{name: "unexpected acknowledgment", status: http.StatusOK, body: `{"status":"rejected"}`, kind: ErrorProtocol},
+		{name: "unknown acknowledgment field", status: http.StatusOK, body: `{"status":"accepted","extra":true}`, kind: ErrorProtocol},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			resolver, err := New(server.URL, "secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = resolver.ReportHeartbeat(context.Background(), testHeartbeatToken, Heartbeat{})
+			var typed *Error
+			if !errors.As(err, &typed) || typed.Kind != test.kind || typed.Status != test.wantStatus {
+				t.Fatalf("ReportHeartbeat() error = %v, want kind %q and status %d", err, test.kind, test.wantStatus)
+			}
+		})
+	}
+}
+
+func TestReportHeartbeatRejectsInvalidTokenBeforeNetwork(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls.Add(1)
+	}))
+	defer server.Close()
+
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = resolver.ReportHeartbeat(context.Background(), "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF", Heartbeat{})
+	if !IsKind(err, ErrorProtocol) {
+		t.Fatalf("ReportHeartbeat() error = %v, want protocol error", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("heartbeat requests = %d, want 0", calls.Load())
 	}
 }
 

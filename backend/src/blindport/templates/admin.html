@@ -16,6 +16,30 @@
     <div><span>Settled gross sats</span><strong>{{ operations.settled_gross_sats }}</strong></div>
     <div><span>Pending / processing</span><strong>{{ operations.open_payments }}</strong></div>
     <div><span>Oldest pending / processing</span><strong>{{ operations.oldest_open_payment_age or "None" }}</strong></div>
+    <div><span>Ever paying customers</span><strong>{{ operations.ever_paying_customers }}</strong></div>
+    <div><span>Active paying customers</span><strong>{{ operations.active_paying_customers }}</strong></div>
+    <div><span>Lapsed paying customers</span><strong>{{ operations.lapsed_paying_customers }}</strong></div>
+    <div><span>New paying (30d)</span><strong>{{ operations.new_paying_customers_30d }}</strong></div>
+  </section>
+
+  <section class="operations-detail" aria-label="Production observations">
+    <div>
+      <h2>Relay edges</h2>
+      <dl class="operations-list">
+        {% for edge in operations.relay_edges %}
+        <div><dt>{{ edge.edge_id }} <span>{{ edge.state | capitalize }}</span></dt><dd><code>{{ edge.endpoint }}</code><br><span class="muted">Age {{ edge.age or "Never" }}, tunnels {{ edge.active_tunnels if edge.active_tunnels is not none else "" }}, streams {{ edge.active_streams if edge.active_streams is not none else "" }}</span></dd></div>
+        {% endfor %}
+        <div><dt>Fresh totals</dt><dd>{{ operations.active_relay_tunnels }} tunnels, {{ operations.active_relay_streams }} streams</dd></div>
+      </dl>
+    </div>
+    <div>
+      <h2>DNS targets</h2>
+      <dl class="operations-list">
+        {% for target in operations.dns_targets %}
+        <div><dt>{{ target.hostname }} <span>{{ target.state | capitalize }}</span></dt><dd>Expected <code>{{ target.expected_ips }}</code><br>Observed <code>{{ target.observed_ips or "" }}</code><br><span class="muted">Age {{ target.age or "Never" }}</span></dd></div>
+        {% endfor %}
+      </dl>
+    </div>
   </section>
 
   <section class="operations-detail" aria-label="Capacity and account activity">

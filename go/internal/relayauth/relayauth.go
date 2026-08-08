@@ -167,6 +167,26 @@ type RelayCert struct {
 	NotAfter      string `json:"not_after"`
 }
 
+// HealthComponents reports the relay's fixed health component states.
+type HealthComponents struct {
+	Authorization string `json:"authorization"`
+	Certificate   string `json:"certificate"`
+	Lifecycle     string `json:"lifecycle"`
+	Listeners     string `json:"listeners"`
+	WireGuard     string `json:"wireguard"`
+}
+
+// Heartbeat is a fixed-cardinality relay health and traffic snapshot.
+type Heartbeat struct {
+	EdgeID                   string           `json:"edge_id"`
+	Ready                    bool             `json:"ready"`
+	Components               HealthComponents `json:"components"`
+	ActiveTunnels            int64            `json:"active_tunnels"`
+	ActiveStreams            int64            `json:"active_streams"`
+	AcceptedConnectionsTotal int64            `json:"accepted_connections_total"`
+	ForwardedBytesTotal      int64            `json:"forwarded_bytes_total"`
+}
+
 // FetchRelayCert asks the backend to issue a server cert for the given SANs.
 func (r *Resolver) FetchRelayCert(ctx context.Context, hostnames, ips []string) (*RelayCert, error) {
 	if hostnames == nil {
@@ -186,13 +206,57 @@ func (r *Resolver) FetchRelayCert(ctx context.Context, hostnames, ips []string) 
 	return &out, nil
 }
 
+// ReportHeartbeat sends a relay health and traffic snapshot to the backend.
+func (r *Resolver) ReportHeartbeat(ctx context.Context, token string, heartbeat Heartbeat) error {
+	if !isLowerHexToken(token) {
+		return protocolFailure("validate heartbeat token", errors.New("heartbeat token must be exactly 64 lowercase hexadecimal characters"))
+	}
+	if heartbeat.ActiveTunnels < 0 || heartbeat.ActiveStreams < 0 || heartbeat.AcceptedConnectionsTotal < 0 || heartbeat.ForwardedBytesTotal < 0 {
+		return protocolFailure("validate heartbeat request", errors.New("heartbeat values must be nonnegative"))
+	}
+	body, err := json.Marshal(heartbeat)
+	if err != nil {
+		return infrastructure("encode heartbeat request", err)
+	}
+	var acknowledgment struct {
+		Status string `json:"status"`
+	}
+	if err := r.postJSONWithHeader(ctx, "/internal/v1/relay/heartbeat", body, &acknowledgment, false, "X-Relay-Heartbeat-Token", token); err != nil {
+		return err
+	}
+	if acknowledgment.Status != "accepted" {
+		return protocolFailure("validate heartbeat response", errors.New("unexpected heartbeat status"))
+	}
+	return nil
+}
+
 func (r *Resolver) postJSON(ctx context.Context, path string, body []byte, out any, resolve bool) error {
+	return r.postJSONWithHeader(ctx, path, body, out, resolve, "", "")
+}
+
+func (r *Resolver) postJSONWithHeader(ctx context.Context, path string, body []byte, out any, resolve bool, header, value string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.backendURL+path, bytes.NewReader(body))
 	if err != nil {
 		return infrastructure("create request", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if header != "" {
+		req.Header.Set(header, value)
+	}
 	return r.doJSON(req, out, resolve)
+}
+
+func isLowerHexToken(token string) bool {
+	if len(token) != 64 {
+		return false
+	}
+	for index := range token {
+		character := token[index]
+		if !(character >= '0' && character <= '9' || character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Resolver) getJSON(ctx context.Context, path string, out any) error {

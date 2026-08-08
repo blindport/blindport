@@ -7,6 +7,7 @@ from enum import StrEnum
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     Column,
     DateTime,
@@ -518,3 +519,49 @@ class RateLimitMaintenance(SQLModel, table=True):
     name: str = Field(primary_key=True, max_length=64)
     next_cleanup_at: datetime = Field(sa_type=DateTime(timezone=True))
     bucket_count: int = 0
+
+
+class RelayHeartbeat(SQLModel, table=True):
+    """Latest health and connection counters reported by one relay edge."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "active_tunnels >= 0 AND active_streams >= 0 AND "
+            "accepted_connections_total >= 0 AND forwarded_bytes_total >= 0",
+            name="ck_relayheartbeat_counters_nonnegative",
+        ),
+    )
+
+    edge_id: str = Field(primary_key=True, max_length=63)
+    ready: bool
+    authorization: str = Field(max_length=16)
+    certificate: str = Field(max_length=16)
+    lifecycle: str = Field(max_length=16)
+    listeners: str = Field(max_length=16)
+    wireguard: str = Field(max_length=16)
+    active_tunnels: int = Field(sa_type=BigInteger)
+    active_streams: int = Field(sa_type=BigInteger)
+    accepted_connections_total: int = Field(sa_type=BigInteger)
+    forwarded_bytes_total: int = Field(sa_type=BigInteger)
+    received_at: datetime = Field(sa_type=DateTime(timezone=True), index=True)
+
+
+class DnsObservation(SQLModel, table=True):
+    """Latest DNS supervision result for one configured hostname."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "resolver_count >= 0 AND successful_resolvers >= 0 AND "
+            "successful_resolvers <= resolver_count",
+            name="ck_dnsobservation_resolver_counts_nonnegative",
+        ),
+    )
+
+    hostname: str = Field(primary_key=True, max_length=253)
+    expected_ips: str = Field(sa_type=Text)
+    observed_ips: str = Field(sa_type=Text)
+    healthy: bool
+    resolver_count: int
+    successful_resolvers: int
+    error_code: str | None = Field(default=None, max_length=32)
+    checked_at: datetime = Field(sa_type=DateTime(timezone=True), index=True)

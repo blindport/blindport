@@ -18,6 +18,7 @@ from .config import settings
 from .core.models import PaymentMethod
 from .db import prepare_database
 from .services.btc_usd_price import run_btc_usd_price_refresh
+from .services.dns_supervision import run_dns_supervisor
 from .services.payment_reconciliation import reconciler_health, run_payment_reconciler
 from .services.rate_limits import DirectRateLimiter
 from .services.reminder_reconciliation import get_smtp_adapter
@@ -52,10 +53,18 @@ async def lifespan(app: FastAPI):
             name="btc-usd-price-refresh",
         )
     app.state.btc_usd_price_task = price_task
+    dns_stop_event = asyncio.Event()
+    dns_task: asyncio.Task[None] | None = None
+    if settings.DNS_SUPERVISION_ENABLED:
+        dns_task = asyncio.create_task(run_dns_supervisor(dns_stop_event), name="dns-supervisor")
+    app.state.dns_supervisor_task = dns_task
     logger.info("Blindport backend ready")
     try:
         yield
     finally:
+        if dns_task is not None:
+            dns_stop_event.set()
+            await dns_task
         if price_task is not None:
             price_stop_event.set()
             await price_task

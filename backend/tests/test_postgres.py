@@ -302,7 +302,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0018")
+    assert database_revisions(engine) == ("0008", "0019")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -355,7 +355,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0018", "0018")
+    assert database_revisions(engine) == ("0019", "0019")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -1073,7 +1073,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0018", "0018")
+        assert database_revisions(engine) == ("0019", "0019")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

@@ -41,7 +41,16 @@ class StableRelayEdge:
     endpoint: str
 
 
+@dataclass(frozen=True)
+class DnsSupervisionTarget:
+    """One public A-record set monitored by the DNS supervisor."""
+
+    hostname: str
+    expected_ips: tuple[str, ...]
+
+
 _OFFLINE_EDGE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}\Z")
+_RELAY_HEARTBEAT_TOKEN_RE = re.compile(r"[0-9a-f]{64}\Z")
 _OFFLINE_ENTITLEMENT_PRIVATE_KEY_MAX_BYTES = 16 * 1024
 
 
@@ -200,6 +209,71 @@ def _is_global_unicast_address(value: str) -> bool:
     )
 
 
+def _canonical_public_ipv4(value: str, field_name: str) -> str:
+    try:
+        address = ip_address(value)
+    except ValueError as error:
+        raise ValueError(f"{field_name} contains an invalid IP address") from error
+    if address.version != 4 or not _is_global_unicast_address(str(address)):
+        raise ValueError(f"{field_name} must contain public unicast IPv4 addresses")
+    return str(address)
+
+
+def parse_dns_supervision_targets(value: str) -> list[DnsSupervisionTarget]:
+    """Parse the strict JSON DNS target list into canonical public A-record sets."""
+    if not value:
+        return []
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError("DNS_SUPERVISION_TARGETS must be valid JSON") from error
+    if not isinstance(raw, list):
+        raise ValueError("DNS_SUPERVISION_TARGETS must be a JSON list")
+    if len(raw) > 32:
+        raise ValueError("DNS_SUPERVISION_TARGETS cannot contain more than 32 targets")
+    targets: list[DnsSupervisionTarget] = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"hostname", "expected_ips"}:
+            raise ValueError(
+                "DNS_SUPERVISION_TARGETS entries must contain only hostname and expected_ips"
+            )
+        hostname = item["hostname"]
+        expected_ips = item["expected_ips"]
+        if not isinstance(hostname, str) or not isinstance(expected_ips, list) or not expected_ips:
+            raise ValueError("DNS_SUPERVISION_TARGETS entries require hostname and expected_ips")
+        canonical_hostname = canonicalize_hostname(hostname)
+        if hostname != canonical_hostname:
+            raise ValueError("DNS_SUPERVISION_TARGETS hostnames must be canonical")
+        if any(not isinstance(address, str) for address in expected_ips):
+            raise ValueError("DNS_SUPERVISION_TARGETS expected_ips values must be strings")
+        canonical_ips = tuple(
+            _canonical_public_ipv4(address, "DNS_SUPERVISION_TARGETS") for address in expected_ips
+        )
+        if list(canonical_ips) != expected_ips or list(canonical_ips) != sorted(set(canonical_ips)):
+            raise ValueError(
+                "DNS_SUPERVISION_TARGETS expected_ips must be sorted unique canonical public IPv4 addresses"
+            )
+        targets.append(DnsSupervisionTarget(canonical_hostname, canonical_ips))
+    if len({target.hostname for target in targets}) != len(targets):
+        raise ValueError("DNS_SUPERVISION_TARGETS contains duplicate hostnames")
+    return targets
+
+
+def parse_dns_supervision_resolvers(value: str) -> list[str]:
+    """Parse the configured public recursive resolver addresses."""
+    if not value:
+        return []
+    values = value.split(",")
+    if any(not address or address.strip() != address for address in values):
+        raise ValueError("DNS_SUPERVISION_RESOLVERS contains whitespace or an empty address")
+    canonical = [_canonical_public_ipv4(address, "DNS_SUPERVISION_RESOLVERS") for address in values]
+    if canonical != values:
+        raise ValueError("DNS_SUPERVISION_RESOLVERS addresses must be canonical")
+    if len(canonical) != len(set(canonical)):
+        raise ValueError("DNS_SUPERVISION_RESOLVERS contains duplicate addresses")
+    return canonical
+
+
 def _is_production_relay_hostname(value: str) -> bool:
     return bool(
         "." in value
@@ -341,6 +415,30 @@ def parse_relay_edges(value: str) -> list[StableRelayEdge]:
     if len({edge.endpoint for edge in edges}) != len(edges):
         raise ValueError("RELAY_EDGES contains duplicate canonical endpoints")
     return edges
+
+
+def parse_relay_heartbeat_keys(value: str) -> dict[str, str]:
+    """Parse a canonical map of relay edge identifiers to heartbeat tokens."""
+    if not value:
+        return {}
+    try:
+        keys = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError("RELAY_HEARTBEAT_KEYS must be valid JSON") from error
+    if not isinstance(keys, dict):
+        raise ValueError("RELAY_HEARTBEAT_KEYS must be a JSON object")
+    if value != json.dumps(keys, sort_keys=True, separators=(",", ":"), ensure_ascii=True):
+        raise ValueError("RELAY_HEARTBEAT_KEYS must use canonical JSON")
+    if any(
+        not _OFFLINE_EDGE_ID_RE.fullmatch(edge_id)
+        or not isinstance(token, str)
+        or not _RELAY_HEARTBEAT_TOKEN_RE.fullmatch(token)
+        for edge_id, token in keys.items()
+    ):
+        raise ValueError("RELAY_HEARTBEAT_KEYS contains invalid edge identifiers or tokens")
+    if len(set(keys.values())) != len(keys):
+        raise ValueError("RELAY_HEARTBEAT_KEYS tokens must be unique")
+    return keys
 
 
 def load_offline_entitlement_private_key(path_value: str) -> Ed25519PrivateKey:
@@ -538,6 +636,7 @@ class Settings(BaseSettings):
     OFFLINE_ENTITLEMENT_KEY_ID: str = ""
     OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: str = ""
     RELAY_EDGES: str = ""  # JSON [{"id":"edge-a","endpoint":"edge-a:5443"}]
+    RELAY_HEARTBEAT_KEYS: str = ""  # Canonical JSON {"edge-a":"64 lowercase hex characters"}
     RELAY_PUBLIC_IPS: str = "203.0.113.10,203.0.113.11"  # comma-separated, allocated pool
     WIREGUARD_PUBLIC_IPS: str = ""  # provider-routed /32 inventory, never locally bound
     RELAY_SHARED_IPS: str = "203.0.113.20"  # separate Blindport Port/SNI ingress inventory
@@ -560,6 +659,12 @@ class Settings(BaseSettings):
         le=2592000,
     )
     RELAY_DNS_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0, le=30)
+    RELAY_HEARTBEAT_STALE_SECONDS: int = Field(default=90, ge=30, le=3600)
+    DNS_SUPERVISION_ENABLED: bool = False
+    DNS_SUPERVISION_INTERVAL_SECONDS: int = Field(default=60, ge=30, le=3600)
+    DNS_SUPERVISION_STALE_SECONDS: int = Field(default=180, ge=30, le=3600)
+    DNS_SUPERVISION_TARGETS: str = ""
+    DNS_SUPERVISION_RESOLVERS: str = "1.1.1.1,8.8.8.8"
     RESOURCE_RESERVATION_TTL_SECONDS: int = Field(default=1800, ge=60, le=86400)
     RESOURCE_REUSE_QUARANTINE_SECONDS: int = Field(default=180, ge=60, le=7776000)
     IP_REUSE_QUARANTINE_SECONDS: int = Field(default=604800, ge=3600, le=7776000)
@@ -622,6 +727,18 @@ class Settings(BaseSettings):
     @property
     def relay_edges_list(self) -> list[StableRelayEdge]:
         return parse_relay_edges(self.RELAY_EDGES)
+
+    @property
+    def relay_heartbeat_keys(self) -> dict[str, str]:
+        return parse_relay_heartbeat_keys(self.RELAY_HEARTBEAT_KEYS)
+
+    @property
+    def dns_supervision_targets_list(self) -> list[DnsSupervisionTarget]:
+        return parse_dns_supervision_targets(self.DNS_SUPERVISION_TARGETS)
+
+    @property
+    def dns_supervision_resolvers_list(self) -> list[str]:
+        return parse_dns_supervision_resolvers(self.DNS_SUPERVISION_RESOLVERS)
 
     @property
     def cashu_mints_list(self) -> list[str]:
@@ -822,6 +939,32 @@ class Settings(BaseSettings):
             else ""
         )
 
+    @field_validator("RELAY_HEARTBEAT_KEYS")
+    @classmethod
+    def validate_relay_heartbeat_keys(cls, value: str) -> str:
+        parse_relay_heartbeat_keys(value)
+        return value
+
+    @field_validator("DNS_SUPERVISION_TARGETS")
+    @classmethod
+    def validate_dns_supervision_targets(cls, value: str) -> str:
+        targets = parse_dns_supervision_targets(value)
+        return (
+            json.dumps(
+                [
+                    {"hostname": target.hostname, "expected_ips": list(target.expected_ips)}
+                    for target in targets
+                ]
+            )
+            if targets
+            else ""
+        )
+
+    @field_validator("DNS_SUPERVISION_RESOLVERS")
+    @classmethod
+    def validate_dns_supervision_resolvers(cls, value: str) -> str:
+        return ",".join(parse_dns_supervision_resolvers(value))
+
     @field_validator("PORT_HOSTNAME_SUFFIX")
     @classmethod
     def validate_port_hostname_suffix(cls, value: str) -> str:
@@ -922,6 +1065,27 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_separate_ip_inventory(self) -> Settings:
+        edge_ids = {edge.id for edge in self.relay_edges_list}
+        heartbeat_key_ids = set(self.relay_heartbeat_keys)
+        if not edge_ids and self.RELAY_HEARTBEAT_KEYS:
+            raise ValueError("RELAY_HEARTBEAT_KEYS must be empty when RELAY_EDGES is empty")
+        if edge_ids and edge_ids != heartbeat_key_ids:
+            raise ValueError("RELAY_HEARTBEAT_KEYS must match configured RELAY_EDGES exactly")
+        if self.DNS_SUPERVISION_STALE_SECONDS < self.DNS_SUPERVISION_INTERVAL_SECONDS:
+            raise ValueError(
+                "DNS_SUPERVISION_STALE_SECONDS must be at least DNS_SUPERVISION_INTERVAL_SECONDS"
+            )
+        if self.DNS_SUPERVISION_ENABLED:
+            target_count = len(self.dns_supervision_targets_list)
+            if not target_count:
+                raise ValueError(
+                    "DNS_SUPERVISION_TARGETS is required when DNS supervision is enabled"
+                )
+            resolver_count = len(self.dns_supervision_resolvers_list)
+            if not 2 <= resolver_count <= 4:
+                raise ValueError(
+                    "DNS_SUPERVISION_RESOLVERS requires two to four resolvers when DNS supervision is enabled"
+                )
         for product in ("IP", "PORT", "RELAY"):
             monthly = getattr(self, f"{product}_MONTHLY_SATS")
             yearly = getattr(self, f"{product}_YEARLY_SATS")

@@ -19,6 +19,7 @@ from blindport.config import (
     parse_port_ha_edges,
     parse_relay_edges,
     parse_relay_endpoints,
+    parse_relay_heartbeat_keys,
     parse_relay_pool_domains,
     parse_tcp_port_pool,
     parse_udp_port_pool,
@@ -871,6 +872,7 @@ def test_offline_entitlement_quarantine_and_relay_hold_must_strictly_exceed_grac
         "OFFLINE_ENTITLEMENT_KEY_ID": "offline-a",
         "OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE": "/tmp/offline-key.pem",
         "RELAY_EDGES": '[{"id":"edge-a","endpoint":"relay:5443"}]',
+        "RELAY_HEARTBEAT_KEYS": '{"edge-a":"' + "a" * 64 + '"}',
     }
     with pytest.raises(ValidationError, match="RESOURCE_REUSE_QUARANTINE_SECONDS"):
         Settings(_env_file=None, **common, RESOURCE_REUSE_QUARANTINE_SECONDS=604920)
@@ -893,6 +895,45 @@ def test_relay_edges_are_canonicalized_and_unique() -> None:
         )
 
 
+def test_relay_heartbeat_keys_are_canonical_unique_and_match_edges() -> None:
+    token_a = "a" * 64
+    token_b = "b" * 64
+    keys = f'{{"edge-a":"{token_a}","edge-b":"{token_b}"}}'
+    settings = Settings(
+        _env_file=None,
+        RELAY_EDGES=(
+            '[{"id":"edge-a","endpoint":"relay-a:5443"},{"id":"edge-b","endpoint":"relay-b:5443"}]'
+        ),
+        RELAY_HEARTBEAT_KEYS=keys,
+    )
+
+    assert settings.relay_heartbeat_keys == {"edge-a": token_a, "edge-b": token_b}
+    assert parse_relay_heartbeat_keys(keys) == settings.relay_heartbeat_keys
+    with pytest.raises(ValidationError, match="must be empty when RELAY_EDGES is empty"):
+        Settings(_env_file=None, RELAY_HEARTBEAT_KEYS="{}")
+    with pytest.raises(ValidationError, match="canonical JSON"):
+        Settings(
+            _env_file=None,
+            RELAY_EDGES='[{"id":"edge-a","endpoint":"relay-a:5443"}]',
+            RELAY_HEARTBEAT_KEYS=f'{{ "edge-a":"{token_a}"}}',
+        )
+    with pytest.raises(ValidationError, match="match configured RELAY_EDGES exactly"):
+        Settings(
+            _env_file=None,
+            RELAY_EDGES='[{"id":"edge-a","endpoint":"relay-a:5443"}]',
+            RELAY_HEARTBEAT_KEYS=f'{{"edge-b":"{token_b}"}}',
+        )
+    with pytest.raises(ValidationError, match="tokens must be unique"):
+        Settings(
+            _env_file=None,
+            RELAY_EDGES=(
+                '[{"id":"edge-a","endpoint":"relay-a:5443"},'
+                '{"id":"edge-b","endpoint":"relay-b:5443"}]'
+            ),
+            RELAY_HEARTBEAT_KEYS=f'{{"edge-a":"{token_a}","edge-b":"{token_a}"}}',
+        )
+
+
 @pytest.mark.parametrize("key_id", ["", "UPPER", "has space", "x" * 33])
 def test_enabled_offline_entitlements_require_a_stable_key_id(key_id: str) -> None:
     with pytest.raises(ValidationError, match="OFFLINE_ENTITLEMENT_KEY_ID"):
@@ -902,6 +943,7 @@ def test_enabled_offline_entitlements_require_a_stable_key_id(key_id: str) -> No
             OFFLINE_ENTITLEMENT_KEY_ID=key_id,
             OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE="/tmp/offline.pem",
             RELAY_EDGES='[{"id":"edge-a","endpoint":"relay:5443"}]',
+            RELAY_HEARTBEAT_KEYS='{"edge-a":"' + "a" * 64 + '"}',
             RESOURCE_REUSE_QUARANTINE_SECONDS=604921,
             RELAY_RENEWAL_GRACE_SECONDS=604921,
         )
@@ -916,6 +958,7 @@ def test_production_offline_entitlement_key_path_must_be_absolute() -> None:
             OFFLINE_ENTITLEMENT_KEY_ID="offline-a",
             OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE="offline.pem",
             RELAY_EDGES='[{"id":"edge-a","endpoint":"relay.blindport.com:5443"}]',
+            RELAY_HEARTBEAT_KEYS='{"edge-a":"' + "a" * 64 + '"}',
             RESOURCE_REUSE_QUARANTINE_SECONDS=604921,
             RELAY_RENEWAL_GRACE_SECONDS=604921,
         )

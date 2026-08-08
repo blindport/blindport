@@ -8,7 +8,16 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from ..core.models import Payment, PaymentStatus, Subscription, SubscriptionStatus, User
+from ..config import settings
+from ..core.models import (
+    DnsObservation,
+    Payment,
+    PaymentStatus,
+    RelayHeartbeat,
+    Subscription,
+    SubscriptionStatus,
+    User,
+)
 from .catalog import get_catalog
 
 
@@ -23,6 +32,25 @@ class ProductCapacity:
 
 
 @dataclass(frozen=True, slots=True)
+class RelayOperationsState:
+    edge_id: str
+    endpoint: str
+    state: str
+    age: str | None
+    active_tunnels: int | None
+    active_streams: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DnsOperationsState:
+    hostname: str
+    state: str
+    expected_ips: str
+    observed_ips: str | None
+    age: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class OperationsSummary:
     """Authoritative aggregate values available from the current database model."""
 
@@ -33,6 +61,14 @@ class OperationsSummary:
     oldest_open_payment_age: str | None
     active_accounts_24h: int
     active_accounts_7d: int
+    ever_paying_customers: int
+    active_paying_customers: int
+    lapsed_paying_customers: int
+    new_paying_customers_30d: int
+    active_relay_tunnels: int
+    active_relay_streams: int
+    relay_edges: tuple[RelayOperationsState, ...]
+    dns_targets: tuple[DnsOperationsState, ...]
     capacities: tuple[ProductCapacity, ...]
 
 
@@ -89,6 +125,82 @@ def _capacity_rows(session: Session) -> tuple[ProductCapacity, ...]:
         else:
             sales_state = "Available"
         rows.append(ProductCapacity(product, availability, detail, sales_state))
+    return tuple(rows)
+
+
+def _relay_state(heartbeat: RelayHeartbeat | None, current: datetime) -> str:
+    if heartbeat is None:
+        return "never"
+    if _utc_datetime(heartbeat.received_at) < current - timedelta(
+        seconds=settings.RELAY_HEARTBEAT_STALE_SECONDS
+    ):
+        return "stale"
+    if (
+        not heartbeat.ready
+        or heartbeat.authorization == "unavailable"
+        or heartbeat.certificate == "unavailable"
+        or heartbeat.listeners == "unavailable"
+        or heartbeat.wireguard == "unavailable"
+    ):
+        return "unavailable"
+    if (
+        heartbeat.authorization in {"degraded", "starting"}
+        or heartbeat.lifecycle == "draining"
+        or heartbeat.wireguard == "starting"
+    ):
+        return "degraded"
+    return "healthy"
+
+
+def _relay_rows(session: Session, current: datetime) -> tuple[RelayOperationsState, ...]:
+    heartbeats = {row.edge_id: row for row in session.exec(select(RelayHeartbeat)).all()}
+    rows: list[RelayOperationsState] = []
+    for edge in settings.relay_edges_list:
+        heartbeat = heartbeats.get(edge.id)
+        state = _relay_state(heartbeat, current)
+        rows.append(
+            RelayOperationsState(
+                edge_id=edge.id,
+                endpoint=edge.endpoint,
+                state=state,
+                age=_format_age(current - _utc_datetime(heartbeat.received_at))
+                if heartbeat
+                else None,
+                active_tunnels=heartbeat.active_tunnels if heartbeat and state != "stale" else None,
+                active_streams=heartbeat.active_streams if heartbeat and state != "stale" else None,
+            )
+        )
+    return tuple(rows)
+
+
+def _dns_rows(session: Session, current: datetime) -> tuple[DnsOperationsState, ...]:
+    observations = {row.hostname: row for row in session.exec(select(DnsObservation)).all()}
+    rows: list[DnsOperationsState] = []
+    for target in settings.dns_supervision_targets_list:
+        observation = observations.get(target.hostname)
+        if observation is None:
+            state = "never"
+        elif _utc_datetime(observation.checked_at) < current - timedelta(
+            seconds=settings.DNS_SUPERVISION_STALE_SECONDS
+        ):
+            state = "stale"
+        elif observation.healthy:
+            state = "healthy"
+        else:
+            state = "unavailable"
+        rows.append(
+            DnsOperationsState(
+                hostname=target.hostname,
+                state=state,
+                expected_ips=", ".join(target.expected_ips),
+                observed_ips=(observation.observed_ips.replace(",", ", ") if observation else None),
+                age=(
+                    _format_age(current - _utc_datetime(observation.checked_at))
+                    if observation
+                    else None
+                ),
+            )
+        )
     return tuple(rows)
 
 
@@ -153,6 +265,44 @@ def build_operations_summary(
         .select_from(User)
         .where(customer, User.last_seen_at >= current - timedelta(days=7)),  # type: ignore[operator]
     )
+    ever_paid_users = (
+        select(Subscription.user_id.label("user_id"))
+        .select_from(Payment)
+        .join(Subscription)
+        .join(User)
+        .where(customer, Payment.status == PaymentStatus.PAID)
+        .distinct()
+        .subquery()
+    )
+    ever_paying_customers = _scalar_count(
+        session, select(func.count()).select_from(ever_paid_users)
+    )
+    active_paying_customers = _scalar_count(
+        session,
+        select(func.count(func.distinct(ever_paid_users.c.user_id)))
+        .select_from(ever_paid_users)
+        .join(Subscription, Subscription.user_id == ever_paid_users.c.user_id)
+        .where(Subscription.status == SubscriptionStatus.ACTIVE),
+    )
+    first_paid_users = (
+        select(
+            Subscription.user_id.label("user_id"), func.min(Payment.paid_at).label("first_paid_at")
+        )
+        .select_from(Payment)
+        .join(Subscription)
+        .join(User)
+        .where(customer, Payment.status == PaymentStatus.PAID, Payment.paid_at.is_not(None))
+        .group_by(Subscription.user_id)
+        .subquery()
+    )
+    new_paying_customers_30d = _scalar_count(
+        session,
+        select(func.count())
+        .select_from(first_paid_users)
+        .where(first_paid_users.c.first_paid_at >= current - timedelta(days=30)),
+    )
+    relay_edges = _relay_rows(session, current)
+    fresh_relay_edges = [row for row in relay_edges if row.state not in {"stale", "never"}]
     return OperationsSummary(
         active_subscriptions=active_subscriptions,
         active_customers=active_customers,
@@ -161,5 +311,13 @@ def build_operations_summary(
         oldest_open_payment_age=oldest_open_payment_age,
         active_accounts_24h=active_accounts_24h,
         active_accounts_7d=active_accounts_7d,
+        ever_paying_customers=ever_paying_customers,
+        active_paying_customers=active_paying_customers,
+        lapsed_paying_customers=ever_paying_customers - active_paying_customers,
+        new_paying_customers_30d=new_paying_customers_30d,
+        active_relay_tunnels=sum(row.active_tunnels or 0 for row in fresh_relay_edges),
+        active_relay_streams=sum(row.active_streams or 0 for row in fresh_relay_edges),
+        relay_edges=relay_edges,
+        dns_targets=_dns_rows(session, current),
         capacities=_capacity_rows(session),
     )

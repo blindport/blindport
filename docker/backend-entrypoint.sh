@@ -16,6 +16,7 @@ load_secret DATABASE_URL
 load_secret SECRET_KEY
 load_secret TOKEN_HASH_KEY
 load_secret RELAY_SECRET
+load_secret RELAY_HEARTBEAT_KEYS
 load_secret ADMIN_TOKEN
 load_secret LND_INVOICE_HMAC_KEY
 load_secret CREDENTIAL_ENCRYPTION_KEY

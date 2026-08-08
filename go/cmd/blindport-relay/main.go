@@ -111,6 +111,8 @@ func main() {
 	offlineEntitlementPublicKeys := flag.String("offline-entitlement-public-keys", os.Getenv("OFFLINE_ENTITLEMENT_PUBLIC_KEYS"), "canonical JSON offline entitlement Ed25519 public keyring")
 	offlineEntitlementMaxGrace := flag.Int("offline-entitlement-max-grace-seconds", envIntDefault("OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS", 604800), "maximum accepted offline entitlement grace period in seconds")
 	relayEdgeID := flag.String("relay-edge-id", os.Getenv("RELAY_EDGE_ID"), "stable relay edge ID for offline entitlement verification")
+	heartbeatToken := flag.String("heartbeat-token", os.Getenv("BLINDPORT_RELAY_HEARTBEAT_TOKEN"), "relay heartbeat authentication token")
+	heartbeatInterval := flag.Duration("heartbeat-interval", envDurationDefault("BLINDPORT_RELAY_HEARTBEAT_INTERVAL", 30*time.Second), "relay heartbeat reporting interval")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -120,6 +122,11 @@ func main() {
 	}
 	if err := validateReauthorizationConfig(*reauthInterval, *reauthMaxStale); err != nil {
 		logger.Error("invalid reauthorization configuration", "err", err)
+		os.Exit(2)
+	}
+	heartbeatEnabled, err := validateHeartbeatConfig(*relayEdgeID, *heartbeatToken, *heartbeatInterval)
+	if err != nil {
+		logger.Error("invalid heartbeat configuration", "err", err)
 		os.Exit(2)
 	}
 	offlineEntitlements, err := parseOfflineEntitlementConfig(*offlineEntitlementsEnabled, *offlineEntitlementPublicKeys, *relayEdgeID, *offlineEntitlementMaxGrace)
@@ -291,6 +298,12 @@ func main() {
 		}
 	}
 	health.listenersUp.Store(true)
+	if heartbeatEnabled {
+		reporter := newHeartbeatReporter(logger, metrics, *relayEdgeID, *heartbeatInterval, func(ctx context.Context, heartbeat relayauth.Heartbeat) error {
+			return resolver.ReportHeartbeat(ctx, *heartbeatToken, heartbeat)
+		})
+		go reporter.run(ctx)
+	}
 
 	<-ctx.Done()
 	health.draining.Store(true)

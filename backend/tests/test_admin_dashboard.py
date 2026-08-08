@@ -22,16 +22,26 @@ def test_operations_summary_is_zero_for_an_empty_customer_database(app_client) -
     assert summary.oldest_open_payment_age is None
     assert summary.active_accounts_24h == 0
     assert summary.active_accounts_7d == 0
+    assert summary.ever_paying_customers == 0
+    assert summary.active_paying_customers == 0
+    assert summary.lapsed_paying_customers == 0
+    assert summary.new_paying_customers_30d == 0
+    assert summary.active_relay_tunnels == 0
+    assert summary.active_relay_streams == 0
+    assert summary.relay_edges == ()
+    assert summary.dns_targets == ()
 
 
 def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
     app_client, monkeypatch
 ) -> None:
     from blindport.core.models import (
+        DnsObservation,
         Payment,
         PaymentMethod,
         PaymentStatus,
         ProductType,
+        RelayHeartbeat,
         Subscription,
         SubscriptionStatus,
         Transport,
@@ -44,6 +54,18 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
     _client, _ = app_client
     now = datetime(2026, 1, 8, 12, 0, tzinfo=UTC)
     monkeypatch.setattr(catalog.settings, "RELAY_MANAGED_DOMAIN_CAP", 2)
+    from blindport.services import admin_dashboard
+
+    monkeypatch.setattr(
+        admin_dashboard.settings,
+        "RELAY_EDGES",
+        '[{"id":"edge-a","endpoint":"edge-a.test:5443"},{"id":"edge-b","endpoint":"edge-b.test:5443"}]',
+    )
+    monkeypatch.setattr(
+        admin_dashboard.settings,
+        "DNS_SUPERVISION_TARGETS",
+        '[{"hostname":"edge.example.com","expected_ips":["1.1.1.1"]}]',
+    )
     with Session(engine) as session:
         recently_active = User(
             hashed_token="operations-recently-active",
@@ -106,12 +128,14 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
                     method=PaymentMethod.LIGHTNING,
                     status=PaymentStatus.PAID,
                     amount_sats=100,
+                    paid_at=now - timedelta(days=5),
                 ),
                 Payment(
                     subscription_id=port.id,
                     method=PaymentMethod.LIGHTNING,
                     status=PaymentStatus.PAID,
                     amount_sats=200,
+                    paid_at=now - timedelta(days=35),
                 ),
                 Payment(
                     subscription_id=relay.id,
@@ -133,6 +157,43 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
                     status=PaymentStatus.PAID,
                     amount_sats=9_999,
                 ),
+                RelayHeartbeat(
+                    edge_id="edge-a",
+                    ready=True,
+                    authorization="ok",
+                    certificate="ok",
+                    lifecycle="serving",
+                    listeners="ok",
+                    wireguard="disabled",
+                    active_tunnels=2,
+                    active_streams=3,
+                    accepted_connections_total=4,
+                    forwarded_bytes_total=5,
+                    received_at=now - timedelta(seconds=10),
+                ),
+                RelayHeartbeat(
+                    edge_id="edge-b",
+                    ready=True,
+                    authorization="ok",
+                    certificate="ok",
+                    lifecycle="serving",
+                    listeners="ok",
+                    wireguard="disabled",
+                    active_tunnels=99,
+                    active_streams=99,
+                    accepted_connections_total=4,
+                    forwarded_bytes_total=5,
+                    received_at=now - timedelta(seconds=91),
+                ),
+                DnsObservation(
+                    hostname="edge.example.com",
+                    expected_ips="1.1.1.1",
+                    observed_ips="1.1.1.1",
+                    healthy=True,
+                    resolver_count=2,
+                    successful_resolvers=2,
+                    checked_at=now - timedelta(seconds=5),
+                ),
             ]
         )
         session.commit()
@@ -147,6 +208,15 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
     assert summary.oldest_open_payment_age == "2h 0m"
     assert summary.active_accounts_24h == 1
     assert summary.active_accounts_7d == 2
+    assert summary.ever_paying_customers == 2
+    assert summary.active_paying_customers == 2
+    assert summary.lapsed_paying_customers == 0
+    assert summary.new_paying_customers_30d == 1
+    assert summary.active_relay_tunnels == 2
+    assert summary.active_relay_streams == 3
+    assert [edge.state for edge in summary.relay_edges] == ["healthy", "stale"]
+    assert summary.relay_edges[1].active_tunnels is None
+    assert summary.dns_targets[0].state == "healthy"
     assert capacities["ip"].availability == "1 of 2 addresses available"
     assert capacities["port"].availability == "3 of 4 mappings available"
     assert capacities["relay"].availability == "1 of 2 managed names available"

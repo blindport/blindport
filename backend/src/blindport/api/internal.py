@@ -9,12 +9,15 @@ relay.
 from __future__ import annotations
 
 import hmac
-from datetime import datetime
+from datetime import UTC, datetime
 from ipaddress import ip_address
+from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
 from ..config import settings
@@ -24,6 +27,7 @@ from ..core.hostnames import canonicalize_hostname
 from ..core.models import (
     DeliveryMode,
     ProductType,
+    RelayHeartbeat,
     Subscription,
     SubscriptionStatus,
     Transport,
@@ -48,6 +52,62 @@ def _require_relay_secret(x_relay_secret: str = Header(default="")) -> None:
 
 class ResolveRequest(BaseModel):
     token: str
+
+
+class RelayHealthComponents(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    authorization: Literal["ok", "degraded", "starting", "unavailable"]
+    certificate: Literal["ok", "disabled", "unavailable"]
+    lifecycle: Literal["serving", "draining"]
+    listeners: Literal["ok", "unavailable"]
+    wireguard: Literal["ok", "disabled", "starting", "unavailable"]
+
+
+class RelayHeartbeatRequest(BaseModel):
+    """Strict relay process health emitted by the Go relay daemon."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    edge_id: str = Field(min_length=1, max_length=63)
+    ready: bool
+    components: RelayHealthComponents
+    active_tunnels: int = Field(ge=0, le=9_223_372_036_854_775_807)
+    active_streams: int = Field(ge=0, le=9_223_372_036_854_775_807)
+    accepted_connections_total: int = Field(ge=0, le=9_223_372_036_854_775_807)
+    forwarded_bytes_total: int = Field(ge=0, le=9_223_372_036_854_775_807)
+
+
+class RelayHeartbeatResponse(BaseModel):
+    status: Literal["accepted"] = "accepted"
+
+
+def _relay_heartbeat_insert(session: Session) -> Any:
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        return postgresql_insert(RelayHeartbeat)
+    if dialect == "sqlite":
+        return sqlite_insert(RelayHeartbeat)
+    raise RuntimeError(f"relay heartbeat storage does not support database dialect {dialect!r}")
+
+
+def persist_relay_heartbeat(
+    session: Session,
+    body: RelayHeartbeatRequest,
+    *,
+    received_at: datetime,
+) -> None:
+    """Atomically retain the newest server-received heartbeat for one edge."""
+    values = body.model_dump(exclude={"edge_id", "components"}) | body.components.model_dump()
+    values["received_at"] = received_at
+    insert = _relay_heartbeat_insert(session).values(edge_id=body.edge_id, **values)
+    session.execute(
+        insert.on_conflict_do_update(
+            index_elements=["edge_id"],
+            set_=values,
+            where=RelayHeartbeat.received_at < received_at,  # type: ignore[arg-type]
+        )
+    )
 
 
 class AuthorizedPortLease(BaseModel):
@@ -139,6 +199,31 @@ def resolve(body: ResolveRequest, session: Session = Depends(get_session)) -> Re
         relay_domains=domains,
         port_leases=port_leases,
     )
+
+
+@router.post(
+    "/relay/heartbeat",
+    response_model=RelayHeartbeatResponse,
+    dependencies=[Depends(_require_relay_secret)],
+)
+def relay_heartbeat(
+    body: RelayHeartbeatRequest,
+    session: Session = Depends(get_session),
+    x_relay_heartbeat_token: str = Header(default=""),
+) -> RelayHeartbeatResponse:
+    """Store the latest authenticated health report for one configured relay edge."""
+    expected_token = settings.relay_heartbeat_keys.get(body.edge_id)
+    if (
+        not x_relay_heartbeat_token
+        or expected_token is None
+        or not hmac.compare_digest(
+            x_relay_heartbeat_token.encode("utf-8"), expected_token.encode("utf-8")
+        )
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid relay heartbeat token")
+    persist_relay_heartbeat(session, body, received_at=datetime.now(UTC))
+    session.commit()
+    return RelayHeartbeatResponse()
 
 
 @v2_router.post(

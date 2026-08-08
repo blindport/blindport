@@ -75,6 +75,7 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "RELAY_SHARED_UDP_PORTS": "10000-10015",
             "RELAY_POOL_DOMAINS": "relay1.test,relay2.test",
             "RELAY_MANAGED_SUFFIXES": "relay.test",
+            "RATE_LIMIT_SIGNUP_REQUESTS": "1000",
             "ONION_HOST": ONION_HOST,
         }
     )
@@ -382,6 +383,9 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
         assert "blindport_token" not in cookies
         assert "blindport_admin_session" in cookies
         assert "BROWSERCIADMIN0000" not in cookies["blindport_admin_session"]
+        assert page.get_by_role("heading", name="Relay edges", exact=True).is_visible()
+        assert page.get_by_role("heading", name="DNS targets", exact=True).is_visible()
+        assert page.get_by_text("Ever paying customers", exact=True).is_visible()
 
         account_row = page.locator("tr", has_text=account["account_id"])
         account_row.get_by_role("button", name="Suspend").click()
