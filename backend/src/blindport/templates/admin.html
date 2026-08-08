@@ -1,66 +1,162 @@
 {% extends "base.html" %}
+{% macro pagination(pager, parameter, anchor, label) %}
+{% if pager.total_items %}
+<nav class="pagination" aria-label="{{ label }} pagination">
+  <p>Showing {{ pager.start }} to {{ pager.end }} of {{ pager.total_items }}</p>
+  <div>
+    {% if pager.has_previous %}<a class="button-link button-secondary" href="/admin?page_size={{ page_size }}&{{ parameter }}={{ pager.page - 1 }}#{{ anchor }}">Previous</a>{% endif %}
+    <span>Page {{ pager.page }} of {{ pager.total_pages }}</span>
+    {% if pager.has_next %}<a class="button-link button-secondary" href="/admin?page_size={{ page_size }}&{{ parameter }}={{ pager.page + 1 }}#{{ anchor }}">Next</a>{% endif %}
+  </div>
+</nav>
+{% endif %}
+{% endmacro %}
 {% block title %}Admin | {{ brand_name }}{% endblock %}
 {% block content %}
 <div class="admin-page content-wide">
-  <header class="dashboard-header">
+  <header class="dashboard-header admin-header">
     <div>
       <p class="eyebrow">Operations</p>
       <h1>Admin</h1>
+      <p>Subscription health, customer activity, and service operations.</p>
     </div>
     <form method="post" action="/admin/logout"><button type="submit" class="button-secondary">Sign out</button></form>
   </header>
 
-  <section class="metric-strip" aria-label="Service summary">
-    <div><span>Active subscriptions</span><strong>{{ operations.active_subscriptions }}</strong></div>
-    <div><span>Active customers</span><strong>{{ operations.active_customers }}</strong></div>
-    <div><span>Settled gross sats</span><strong>{{ operations.settled_gross_sats }}</strong></div>
-    <div><span>Pending / processing</span><strong>{{ operations.open_payments }}</strong></div>
-    <div><span>Oldest pending / processing</span><strong>{{ operations.oldest_open_payment_age or "None" }}</strong></div>
-    <div><span>Ever paying customers</span><strong>{{ operations.ever_paying_customers }}</strong></div>
-    <div><span>Active paying customers</span><strong>{{ operations.active_paying_customers }}</strong></div>
-    <div><span>Lapsed paying customers</span><strong>{{ operations.lapsed_paying_customers }}</strong></div>
-    <div><span>New paying (30d)</span><strong>{{ operations.new_paying_customers_30d }}</strong></div>
+  <section class="admin-summary" aria-labelledby="summary-title">
+    <h2 id="summary-title" class="visually-hidden">Subscription summary</h2>
+    <div class="metric-strip admin-metrics">
+      <div><span>Active subscriptions</span><strong>{{ operations.active_subscriptions }}</strong><small>{{ operations.active_customers }} customers</small></div>
+      <div class="metric-attention"><span>Pending subscriptions</span><strong>{{ operations.pending_subscriptions }}</strong><small>{{ operations.open_payments }} open payments</small></div>
+      <div class="metric-danger"><span>Expired subscriptions</span><strong>{{ operations.expired_subscriptions }}</strong><small>Need renewal</small></div>
+      <div><span>Active accounts seen 7d</span><strong>{{ operations.active_subscription_accounts_7d }}</strong><small>of {{ operations.active_customers }} active customers</small></div>
+      <div><span>Settled in 30d</span><strong>{{ operations.settled_gross_sats_30d }}</strong><small>sats</small></div>
+      <div><span>Without subscriptions</span><strong>{{ operations.accounts_without_subscriptions }}</strong><small>accounts</small></div>
+    </div>
   </section>
 
-  <section class="operations-detail" aria-label="Production observations">
+  <section class="admin-charts" aria-labelledby="charts-title">
+    <div class="section-heading">
+      <div><p class="eyebrow">At a glance</p><h2 id="charts-title">Subscription progress</h2></div>
+      <p class="muted">Eight-week acquisition and settled payment history.</p>
+    </div>
+    <div class="chart-grid">
+      <figure class="admin-chart status-chart">
+        <figcaption><strong>Subscription status</strong><span>{{ operations.total_subscriptions }} total</span></figcaption>
+        <div class="status-track" role="img" aria-label="Subscription status distribution">
+          {% for item in operations.status_breakdown %}
+          {% if item.value %}<span class="chart-tone-{{ item.key }}" data-segment-size="{{ item.percent }}" title="{{ item.label }}: {{ item.value }}"></span>{% endif %}
+          {% endfor %}
+        </div>
+        <dl class="chart-legend">
+          {% for item in operations.status_breakdown %}<div><dt><i class="chart-swatch chart-tone-{{ item.key }}"></i>{{ item.label }}</dt><dd>{{ item.value }} <span>{{ item.percent }}%</span></dd></div>{% endfor %}
+        </dl>
+      </figure>
+
+      <figure class="admin-chart product-chart">
+        <figcaption><strong>Active product mix</strong><span>{{ operations.active_subscriptions }} active</span></figcaption>
+        <dl class="horizontal-bars">
+          {% for item in operations.active_product_breakdown %}
+          <div>
+            <dt>{{ item.label }}</dt><dd><span class="product-bar chart-tone-{{ item.key }}" data-bar-size="{{ item.percent }}"></span></dd><strong>{{ item.value }}</strong>
+          </div>
+          {% endfor %}
+        </dl>
+      </figure>
+
+      <figure class="admin-chart trend-chart">
+        <figcaption>
+          <strong>Weekly progress</strong>
+          <span class="trend-legend"><i class="chart-swatch chart-tone-new"></i>New subscriptions <i class="chart-swatch chart-tone-revenue"></i>Settled sats</span>
+        </figcaption>
+        <div class="trend-plot" role="img" aria-label="New subscriptions and settled satoshis by week">
+          {% for point in operations.weekly_activity %}
+          <div class="trend-week">
+            <div class="trend-bars">
+              <span class="trend-bar chart-tone-new" data-bar-height="{{ point.subscription_percent }}" title="{{ point.label }}: {{ point.new_subscriptions }} new subscriptions"><i>{{ point.new_subscriptions }}</i></span>
+              <span class="trend-bar chart-tone-revenue" data-bar-height="{{ point.revenue_percent }}" title="{{ point.label }}: {{ point.paid_sats }} settled sats"><i>{{ point.paid_sats }}</i></span>
+            </div>
+            <small>{{ point.label }}</small>
+          </div>
+          {% endfor %}
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <section class="admin-section subscription-workspace" id="accounts-title" aria-labelledby="subscriptions-title">
+    <div class="section-heading workspace-heading">
+      <div><p class="eyebrow">Customers</p><h2 id="subscriptions-title">Accounts and subscriptions</h2></div>
+      <form method="get" action="/admin#accounts-title" class="page-size-form">
+        <label for="pageSize">Rows per page</label>
+        <select id="pageSize" name="page_size">
+          {% for option in page_size_options %}<option value="{{ option }}"{% if option == page_size %} selected{% endif %}>{{ option }}</option>{% endfor %}
+        </select>
+        <button type="submit" class="button-secondary">Apply</button>
+      </form>
+    </div>
+    <div class="admin-filters" aria-label="Filter visible subscriptions">
+      <label class="filter-search" for="adminSearch">Search this page<input id="adminSearch" type="search" placeholder="Account, subscription, or resource"></label>
+      <label for="adminStatusFilter">Status<select id="adminStatusFilter"><option value="">All statuses</option><option value="active">Active</option><option value="pending">Pending subscription</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="suspended">Suspended account</option><option value="account_only">No subscription</option></select></label>
+      <label for="adminProductFilter">Product<select id="adminProductFilter"><option value="">All products</option><option value="ip">Dedicated IP</option><option value="port">Port mapping</option><option value="relay">Relay</option><option value="none">No subscription</option></select></label>
+      <label for="adminActivityFilter">Activity<select id="adminActivityFilter"><option value="">All activity</option><option value="recent">Recent account activity</option><option value="idle">Idle 7d+</option><option value="never">Never seen</option></select></label>
+      <button id="clearAdminFilters" type="button" class="button-secondary">Clear filters</button>
+    </div>
+    <p class="workspace-note"><strong id="adminVisibleCount">{{ subscription_rows | length }}</strong> rows on this page. Activity is based on account API access, not per-subscription traffic.</p>
+    <div class="table-wrap admin-subscription-table-wrap">
+      <table class="responsive-table admin-subscription-table">
+        <caption>Account and subscription status in one operational view</caption>
+        <thead><tr><th scope="col">Account and subscription</th><th scope="col">Status</th><th scope="col">Account activity</th><th scope="col">Product and resource</th><th scope="col">Latest payment</th><th scope="col">Term</th><th scope="col">Action</th></tr></thead>
+        <tbody id="adminSubscriptionRows">
+        {% for row in subscription_rows %}
+          <tr data-admin-row data-status="{{ row.status_key }}" data-product="{{ row.product or 'none' }}" data-activity="{{ row.activity_key }}" data-suspended="{{ 'true' if row.account_suspended else 'false' }}">
+            <td data-label="Account and subscription">
+              <span class="id-label">Account</span><code>{{ row.account_public_id }}</code>
+              <span class="id-label">Subscription</span>{% if row.subscription_public_id %}<code>{{ row.subscription_public_id }}</code>{% else %}<span class="muted">None</span>{% endif %}
+              <span class="account-flags">{{ "NWC connected" if row.nwc_state == "configured" else "No NWC" }}</span>
+            </td>
+            <td data-label="Status"><span class="status-badge status-{{ 'suspended' if row.account_suspended else row.status_key }}">{{ "Suspended" if row.account_suspended else row.status_label }}</span><span class="cell-detail">{{ row.status_detail }}</span></td>
+            <td data-label="Account activity"><span class="activity-signal activity-{{ row.activity_key }}"><i></i>{{ row.activity_label }}</span></td>
+            <td data-label="Product and resource">{% if row.product %}<strong>{{ {"ip": "Dedicated IP", "port": "Port mapping", "relay": "Relay"}.get(row.product, row.product) }}</strong><code class="resource-value">{{ row.assigned_resource }}</code>{% else %}<span class="muted">No product</span>{% endif %}</td>
+            <td data-label="Latest payment">{% if row.latest_payment_status %}<span class="payment-state payment-{{ row.latest_payment_status }}">{{ row.latest_payment_status | replace('_', ' ') | capitalize }}</span><span class="cell-detail">{{ row.latest_payment_amount_sats }} sats via {{ row.latest_payment_method | replace('_', ' ') }}</span><time datetime="{{ row.latest_payment_at.isoformat() }}">{{ row.latest_payment_at.strftime("%Y-%m-%d") }}</time>{% else %}<span class="muted">No payment attempts</span>{% endif %}</td>
+            <td data-label="Term">{% if row.billing_term %}<strong>{{ row.billing_term | capitalize }}</strong><span class="cell-detail">{% if row.period_end %}Ends {{ row.period_end.strftime("%Y-%m-%d") }}{% else %}No active term{% endif %}</span>{% else %}<span class="muted">Not applicable</span>{% endif %}</td>
+            <td data-label="Action">
+              {% if row.account_suspended %}<form method="post" action="/admin/accounts/{{ row.account_public_id }}/restore"><button type="submit" class="button-secondary">Restore</button></form>
+              {% else %}<form method="post" action="/admin/accounts/{{ row.account_public_id }}/suspend"><button type="submit" class="button-secondary">Suspend</button></form>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p id="adminNoResults" class="empty-filter-state" hidden>No rows on this page match these filters.</p>
+    </div>
+    {{ pagination(account_pagination, "account_page", "accounts-title", "Accounts") }}
+  </section>
+
+  <section class="operations-detail admin-section" aria-label="Production observations">
     <div>
       <h2>Relay edges</h2>
       <dl class="operations-list">
-        {% for edge in operations.relay_edges %}
-        <div><dt>{{ edge.edge_id }} <span>{{ edge.state | capitalize }}</span></dt><dd><code>{{ edge.endpoint }}</code><br><span class="muted">Age {{ edge.age or "Never" }}, tunnels {{ edge.active_tunnels if edge.active_tunnels is not none else "" }}, streams {{ edge.active_streams if edge.active_streams is not none else "" }}</span></dd></div>
-        {% endfor %}
+        {% for edge in operations.relay_edges %}<div><dt>{{ edge.edge_id }} <span>{{ edge.state | capitalize }}</span></dt><dd><code>{{ edge.endpoint }}</code><br><span class="muted">Age {{ edge.age or "Never" }}, tunnels {{ edge.active_tunnels if edge.active_tunnels is not none else "" }}, streams {{ edge.active_streams if edge.active_streams is not none else "" }}</span></dd></div>{% endfor %}
         <div><dt>Fresh totals</dt><dd>{{ operations.active_relay_tunnels }} tunnels, {{ operations.active_relay_streams }} streams</dd></div>
       </dl>
     </div>
     <div>
       <h2>DNS targets</h2>
-      <dl class="operations-list">
-        {% for target in operations.dns_targets %}
-        <div><dt>{{ target.hostname }} <span>{{ target.state | capitalize }}</span></dt><dd>Expected <code>{{ target.expected_ips }}</code><br>Observed <code>{{ target.observed_ips or "" }}</code><br><span class="muted">Age {{ target.age or "Never" }}</span></dd></div>
-        {% endfor %}
-      </dl>
+      <dl class="operations-list">{% for target in operations.dns_targets %}<div><dt>{{ target.hostname }} <span>{{ target.state | capitalize }}</span></dt><dd>Expected <code>{{ target.expected_ips }}</code><br>Observed <code>{{ target.observed_ips or "" }}</code><br><span class="muted">Age {{ target.age or "Never" }}</span></dd></div>{% endfor %}</dl>
     </div>
-  </section>
-
-  <section class="operations-detail" aria-label="Capacity and account activity">
     <div>
       <h2>Capacity</h2>
-      <dl class="operations-list">
-        {% for capacity in operations.capacities %}
-        <div>
-          <dt>{{ capacity.product | capitalize }} <span>{{ capacity.sales_state }}</span></dt>
-          <dd>{{ capacity.availability }}<br><span class="muted">{{ capacity.detail }}</span></dd>
-        </div>
-        {% endfor %}
-      </dl>
+      <dl class="operations-list">{% for capacity in operations.capacities %}<div><dt>{{ capacity.product | capitalize }} <span>{{ capacity.sales_state }}</span></dt><dd>{{ capacity.availability }}<br><span class="muted">{{ capacity.detail }}</span></dd></div>{% endfor %}</dl>
     </div>
     <div>
-      <h2>Account activity</h2>
+      <h2>Customer health</h2>
       <dl class="operations-list">
-        <div><dt>Last 24 hours</dt><dd>{{ operations.active_accounts_24h }} accounts</dd></div>
-        <div><dt>Last 7 days</dt><dd>{{ operations.active_accounts_7d }} accounts</dd></div>
+        <div><dt>Ever paying customers</dt><dd>{{ operations.ever_paying_customers }}</dd></div>
+        <div><dt>Paying customers</dt><dd>{{ operations.active_paying_customers }} active, {{ operations.lapsed_paying_customers }} lapsed</dd></div>
+        <div><dt>New paying, 30d</dt><dd>{{ operations.new_paying_customers_30d }}</dd></div>
+        <div><dt>Oldest open payment</dt><dd>{{ operations.oldest_open_payment_age or "None" }}</dd></div>
       </dl>
-      <p class="muted operations-note">Based only on rate-limited account last-seen updates, not connection telemetry.</p>
     </div>
   </section>
 
@@ -68,189 +164,39 @@
   <section class="admin-section" aria-labelledby="announcements-title">
     <h2 id="announcements-title">Service announcements</h2>
     <form method="post" action="/admin/announcements" class="announcement-form">
-      <label for="announcementSubject">Subject</label>
-      <input id="announcementSubject" name="subject" maxlength="160" required>
-      <label for="announcementBody">Plain-text message</label>
-      <textarea id="announcementBody" name="body" maxlength="10000" rows="8" required></textarea>
+      <label for="announcementSubject">Subject</label><input id="announcementSubject" name="subject" maxlength="160" required>
+      <label for="announcementBody">Plain-text message</label><textarea id="announcementBody" name="body" maxlength="10000" rows="8" required></textarea>
       <div class="form-actions form-actions-end"><button type="submit">Save draft</button></div>
     </form>
     <p class="field-help">{{ announcement_eligible_count }} eligible accounts at this time. Queueing snapshots the recipient count and requires a separate action.</p>
-    {% if announcements %}
-    <div class="table-wrap">
-      <table class="responsive-table">
-        <caption>Service announcement campaigns</caption>
-        <thead><tr><th scope="col">Reference</th><th scope="col">Subject</th><th scope="col">State</th><th scope="col">Recipients</th><th scope="col">Delivery totals</th><th scope="col">Created</th><th scope="col">Action</th></tr></thead>
-        <tbody>
-        {% for announcement in announcements %}
-          {% set counts = announcement_delivery_counts.get(announcement.id, {}) %}
-          <tr>
-            <td data-label="Reference"><code>{{ announcement.id }}</code></td>
-            <td data-label="Subject">{{ announcement.subject }}</td>
-            <td data-label="State">{{ announcement.state.value }}</td>
-            <td data-label="Recipients">{{ announcement.recipient_count if announcement.state.value != "draft" else announcement_eligible_count }}</td>
-            <td data-label="Delivery totals">Queued {{ counts.get("queued", 0) }}, sending {{ counts.get("sending", 0) }}, sent {{ counts.get("sent", 0) }}, ambiguous {{ counts.get("delivery_ambiguous", 0) }}, failed {{ counts.get("failed", 0) }}, cancelled {{ counts.get("cancelled", 0) }}</td>
-            <td data-label="Created">{{ announcement.created_at }}</td>
-            <td data-label="Action">
-              {% if announcement.state.value == "draft" %}
-              <form method="post" action="/admin/announcements/{{ announcement.id }}/queue"><button type="submit" class="button-secondary">Queue campaign</button></form>
-              {% endif %}
-              {% if announcement.state.value in ("draft", "queued") %}
-              <form method="post" action="/admin/announcements/{{ announcement.id }}/cancel"><button type="submit" class="button-secondary button-danger">Cancel</button></form>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
+    {% if announcements %}<div class="table-wrap"><table class="responsive-table"><caption>Service announcement campaigns</caption><thead><tr><th scope="col">Reference</th><th scope="col">Subject</th><th scope="col">State</th><th scope="col">Recipients</th><th scope="col">Delivery totals</th><th scope="col">Created</th><th scope="col">Action</th></tr></thead><tbody>
+    {% for announcement in announcements %}{% set counts = announcement_delivery_counts.get(announcement.id, {}) %}<tr><td data-label="Reference"><code>{{ announcement.id }}</code></td><td data-label="Subject">{{ announcement.subject }}</td><td data-label="State">{{ announcement.state.value }}</td><td data-label="Recipients">{{ announcement.recipient_count if announcement.state.value != "draft" else announcement_eligible_count }}</td><td data-label="Delivery totals">Queued {{ counts.get("queued", 0) }}, sending {{ counts.get("sending", 0) }}, sent {{ counts.get("sent", 0) }}, ambiguous {{ counts.get("delivery_ambiguous", 0) }}, failed {{ counts.get("failed", 0) }}, cancelled {{ counts.get("cancelled", 0) }}</td><td data-label="Created">{{ announcement.created_at }}</td><td data-label="Action">{% if announcement.state.value == "draft" %}<form method="post" action="/admin/announcements/{{ announcement.id }}/queue"><button type="submit" class="button-secondary">Queue campaign</button></form>{% endif %}{% if announcement.state.value in ("draft", "queued") %}<form method="post" action="/admin/announcements/{{ announcement.id }}/cancel"><button type="submit" class="button-secondary button-danger">Cancel</button></form>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>{% endif %}
   </section>
   {% endif %}
 
-  <section class="admin-section" aria-labelledby="accounts-title">
-    <h2 id="accounts-title">Accounts</h2>
-    <div class="table-wrap">
-      <table class="responsive-table">
-        <caption>All bearer-token accounts</caption>
-        <thead><tr><th scope="col">Account ID</th><th scope="col">Status</th><th scope="col">Created</th><th scope="col">Last seen</th><th scope="col">NWC</th><th scope="col">Action</th></tr></thead>
-        <tbody>
-        {% for u in users %}
-          <tr>
-            <td data-label="Account ID"><code>{{ u.public_id }}</code></td>
-            <td data-label="Status">{{ "Suspended" if u.is_suspended else "Enabled" }}</td>
-            <td data-label="Created">{{ u.created_at }}</td>
-            <td data-label="Last seen">{{ u.last_seen_at or "Never" }}</td>
-            <td data-label="NWC">{{ "Connected" if u.has_nwc else "Not connected" }}</td>
-            <td data-label="Action">
-              {% if u.is_suspended %}
-              <form method="post" action="/admin/accounts/{{ u.public_id }}/restore"><button type="submit" class="button-secondary">Restore</button></form>
-              {% else %}
-              <form method="post" action="/admin/accounts/{{ u.public_id }}/suspend"><button type="submit" class="button-secondary">Suspend</button></form>
-              {% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
+  <details class="admin-disclosure admin-section" id="ip-leases-title"{% if request.query_params.get("lease_page") %} open{% endif %}>
+    <summary><span><strong>Dedicated IP lease history</strong><small>{{ lease_pagination.total_items }} records</small></span></summary>
+    <div class="table-wrap"><table class="responsive-table"><caption>Dedicated IP assignments and outbound SMTP review</caption><thead><tr><th scope="col">Lease</th><th scope="col">Subscription</th><th scope="col">Address</th><th scope="col">Delivery</th><th scope="col">State</th><th scope="col">Reserved</th><th scope="col">Released</th><th scope="col">SMTP status</th><th scope="col">SMTP review</th></tr></thead><tbody>
+    {% for lease, subscription_id in lease_rows %}<tr><td data-label="Lease"><code>{{ lease.public_id }}</code>{% if lease.imported %}<br><span class="muted">Imported</span>{% endif %}</td><td data-label="Subscription"><code>{{ subscription_id }}</code></td><td data-label="Address"><code>{{ lease.address }}</code></td><td data-label="Delivery">{{ lease.delivery.value }}</td><td data-label="State">{{ lease.state.value }}{% if lease.release_reason %}<br><span class="muted">{{ lease.release_reason }}</span>{% endif %}</td><td data-label="Reserved">{{ lease.reserved_at }}</td><td data-label="Released">{{ lease.released_at or "" }}</td><td data-label="SMTP status">{% if lease.smtp_enabled %}Approved{% elif lease.smtp_revoked_at %}Revoked{% else %}Default deny{% endif %}{% if lease.smtp_review_reference %}<br><span class="muted">{{ lease.smtp_review_reference }}</span>{% endif %}</td><td data-label="SMTP review">{% if lease.state.value == "active" and lease.delivery.value == "wireguard" and not lease.released_at %}{% if lease.smtp_enabled %}<form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/revoke"><label>Reason <input name="reason" required maxlength="255"></label><button type="submit" class="button-secondary">Revoke TCP/25</button></form>{% else %}<form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/approve"><label>Intended use <input name="intended_use" required maxlength="500"></label><label>Fee paid <input name="fee_paid_sats" type="number" min="{{ smtp_fee_sats }}" value="{{ smtp_fee_sats }}" required></label><label>Review reference <input name="review_reference" required maxlength="200"></label><button type="submit" class="button-secondary">Approve TCP/25</button></form>{% endif %}{% else %}Not eligible{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>{{ pagination(lease_pagination, "lease_page", "ip-leases-title", "Lease history") }}
+  </details>
 
-  <section class="admin-section" aria-labelledby="admin-subscriptions-title">
-    <h2 id="admin-subscriptions-title">Subscriptions</h2>
-    <div class="table-wrap">
-      <table class="responsive-table">
-        <caption>All product subscriptions</caption>
-        <thead><tr><th scope="col">Reference</th><th scope="col">Account ID</th><th scope="col">Product</th><th scope="col">Status</th><th scope="col">Billing term</th><th scope="col">Ingress</th><th scope="col">Domain</th><th scope="col">Term ends</th></tr></thead>
-        <tbody>
-        {% for s in subscriptions %}
-          <tr>
-            <td data-label="Reference"><code>{{ s.public_id }}</code></td>
-            <td data-label="Account ID"><code>{{ account_by_user_id.get(s.user_id, "Unknown") }}</code></td>
-            <td data-label="Product">{{ s.product.value }}</td>
-            <td data-label="Status">{{ s.status.value }}</td>
-            <td data-label="Billing term">{{ s.billing_term.value }}</td>
-            <td data-label="Ingress">{% if s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}/{{ s.transport.value }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}Pending{% endif %}</td>
-            <td data-label="Domain">{{ s.domain or "" }}{% if s.relay_pool_domain %}<br><span class="muted">via {{ s.relay_pool_domain }}</span>{% endif %}</td>
-            <td data-label="Term ends">{{ s.current_period_end or "" }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
+  <details class="admin-disclosure admin-section" id="payments-title"{% if request.query_params.get("payment_page") %} open{% endif %}>
+    <summary><span><strong>Payment history</strong><small>{{ payment_pagination.total_items }} attempts</small></span></summary>
+    <div class="table-wrap"><table class="responsive-table"><caption>Payment attempts, newest first</caption><thead><tr><th scope="col">Reference</th><th scope="col">Account ID</th><th scope="col">Subscription</th><th scope="col">Method</th><th scope="col">Status</th><th scope="col">Term</th><th scope="col">Amount</th><th scope="col">Payment hash</th></tr></thead><tbody>
+    {% for p, subscription_id, account_id in payment_rows %}<tr><td data-label="Reference"><code>{{ p.id }}</code></td><td data-label="Account ID"><code>{{ account_id }}</code></td><td data-label="Subscription"><code>{{ subscription_id }}</code></td><td data-label="Method">{{ p.method.value }}</td><td data-label="Status"><span class="payment-state payment-{{ p.status.value }}">{{ p.status.value }}</span></td><td data-label="Term">{{ p.billing_term.value }} ({{ p.period_days }} days)</td><td data-label="Amount">{{ p.amount_sats }} sats</td><td data-label="Payment hash"><code>{{ (p.payment_hash or "")[:20] }}</code></td></tr>{% endfor %}
+    </tbody></table></div>{{ pagination(payment_pagination, "payment_page", "payments-title", "Payment history") }}
+  </details>
 
-  <section class="admin-section" aria-labelledby="ip-leases-title">
-    <h2 id="ip-leases-title">Dedicated IP lease history</h2>
-    <div class="table-wrap">
-      <table class="responsive-table">
-        <caption>Every dedicated IP assignment episode and outbound SMTP review</caption>
-        <thead><tr><th scope="col">Lease</th><th scope="col">Subscription</th><th scope="col">Address</th><th scope="col">Delivery</th><th scope="col">State</th><th scope="col">Reserved</th><th scope="col">Released</th><th scope="col">SMTP status</th><th scope="col">SMTP review</th></tr></thead>
-        <tbody>
-        {% for lease in leases %}
-          <tr>
-            <td data-label="Lease"><code>{{ lease.public_id }}</code>{% if lease.imported %}<br><span class="muted">Imported</span>{% endif %}</td>
-            <td data-label="Subscription"><code>{{ subscription_public_id_by_pk.get(lease.subscription_id, "Unknown") }}</code></td>
-            <td data-label="Address"><code>{{ lease.address }}</code></td>
-            <td data-label="Delivery">{{ lease.delivery.value }}</td>
-            <td data-label="State">{{ lease.state.value }}{% if lease.release_reason %}<br><span class="muted">{{ lease.release_reason }}</span>{% endif %}</td>
-            <td data-label="Reserved">{{ lease.reserved_at }}</td>
-            <td data-label="Released">{{ lease.released_at or "" }}</td>
-            <td data-label="SMTP status">
-              {% if lease.smtp_enabled %}Approved{% elif lease.smtp_revoked_at %}Revoked{% else %}Default deny{% endif %}
-              {% if lease.smtp_review_reference %}<br><span class="muted">{{ lease.smtp_review_reference }}</span>{% endif %}
-            </td>
-            <td data-label="SMTP review">
-              {% if lease.state.value == "active" and lease.delivery.value == "wireguard" and not lease.released_at %}
-                {% if lease.smtp_enabled %}
-                <form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/revoke">
-                  <label>Reason <input name="reason" required maxlength="255"></label>
-                  <button type="submit" class="button-secondary">Revoke TCP/25</button>
-                </form>
-                {% else %}
-                <form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/approve">
-                  <label>Intended use <input name="intended_use" required maxlength="500"></label>
-                  <label>Fee paid <input name="fee_paid_sats" type="number" min="{{ smtp_fee_sats }}" value="{{ smtp_fee_sats }}" required></label>
-                  <label>Review reference <input name="review_reference" required maxlength="200"></label>
-                  <button type="submit" class="button-secondary">Approve TCP/25</button>
-                </form>
-                {% endif %}
-              {% else %}Not eligible{% endif %}
-            </td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="admin-section" aria-labelledby="payments-title">
-    <h2 id="payments-title">Payments</h2>
-    <div class="table-wrap">
-      <table class="responsive-table">
-        <caption>All payment attempts</caption>
-        <thead><tr><th scope="col">Reference</th><th scope="col">Account ID</th><th scope="col">Subscription</th><th scope="col">Method</th><th scope="col">Status</th><th scope="col">Term</th><th scope="col">Amount</th><th scope="col">Payment hash</th></tr></thead>
-        <tbody>
-        {% for p in payments %}
-          <tr>
-            <td data-label="Reference"><code>{{ p.id }}</code></td>
-            <td data-label="Account ID"><code>{{ account_by_payment_id.get(p.id, "Unknown") }}</code></td>
-            <td data-label="Subscription"><code>{{ subscription_public_id_by_pk.get(p.subscription_id, "Unknown") }}</code></td>
-            <td data-label="Method">{{ p.method.value }}</td>
-            <td data-label="Status">{{ p.status.value }}</td>
-            <td data-label="Term">{{ p.billing_term.value }} ({{ p.period_days }} days)</td>
-            <td data-label="Amount">{{ p.amount_sats }} sats</td>
-            <td data-label="Payment hash"><code>{{ (p.payment_hash or "")[:20] }}</code></td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  {% if reminders %}
-  <section class="admin-section" aria-labelledby="reminders-title">
-    <h2 id="reminders-title">Reminder deliveries</h2>
-    <div class="table-wrap">
-      <table class="responsive-table">
-        <caption>Expiration reminder outbox</caption>
-        <thead><tr><th scope="col">Reference</th><th scope="col">Subscription</th><th scope="col">Notice</th><th scope="col">State</th><th scope="col">Attempts</th><th scope="col">Sent</th><th scope="col">Error</th><th scope="col">Updated</th></tr></thead>
-        <tbody>
-        {% for reminder in reminders %}
-          <tr>
-            <td data-label="Reference"><code>{{ reminder.id }}</code></td>
-            <td data-label="Subscription"><code>{{ subscription_public_id_by_pk.get(reminder.subscription_id, "Unknown") }}</code></td>
-            <td data-label="Notice">{{ reminder.kind.value }}</td>
-            <td data-label="State">{{ reminder.state.value }}</td>
-            <td data-label="Attempts">{{ reminder.attempt_count }}</td>
-            <td data-label="Sent">{{ reminder.sent_at or "" }}</td>
-            <td data-label="Error"><code>{{ reminder.error_code or "" }}</code></td>
-            <td data-label="Updated">{{ reminder.updated_at }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
+  {% if reminder_pagination.total_items %}
+  <details class="admin-disclosure admin-section" id="reminders-title"{% if request.query_params.get("reminder_page") %} open{% endif %}>
+    <summary><span><strong>Reminder deliveries</strong><small>{{ reminder_pagination.total_items }} records</small></span></summary>
+    <div class="table-wrap"><table class="responsive-table"><caption>Expiration reminder outbox</caption><thead><tr><th scope="col">Reference</th><th scope="col">Subscription</th><th scope="col">Notice</th><th scope="col">State</th><th scope="col">Attempts</th><th scope="col">Sent</th><th scope="col">Error</th><th scope="col">Updated</th></tr></thead><tbody>
+    {% for reminder, subscription_id in reminder_rows %}<tr><td data-label="Reference"><code>{{ reminder.id }}</code></td><td data-label="Subscription"><code>{{ subscription_id }}</code></td><td data-label="Notice">{{ reminder.kind.value }}</td><td data-label="State">{{ reminder.state.value }}</td><td data-label="Attempts">{{ reminder.attempt_count }}</td><td data-label="Sent">{{ reminder.sent_at or "" }}</td><td data-label="Error"><code>{{ reminder.error_code or "" }}</code></td><td data-label="Updated">{{ reminder.updated_at }}</td></tr>{% endfor %}
+    </tbody></table></div>{{ pagination(reminder_pagination, "reminder_page", "reminders-title", "Reminder deliveries") }}
+  </details>
   {% endif %}
 </div>
+<script src="/static/admin.js"></script>
 {% endblock %}

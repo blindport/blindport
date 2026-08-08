@@ -386,14 +386,29 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
         assert page.get_by_role("heading", name="Relay edges", exact=True).is_visible()
         assert page.get_by_role("heading", name="DNS targets", exact=True).is_visible()
         assert page.get_by_text("Ever paying customers", exact=True).is_visible()
+        assert page.get_by_role(
+            "heading", name="Subscription progress", exact=True
+        ).is_visible()
+        assert page.get_by_role(
+            "heading", name="Accounts and subscriptions", exact=True
+        ).is_visible()
+        assert page.locator("figure.admin-chart").count() == 3
 
         account_row = page.locator("tr", has_text=account["account_id"])
         account_row.get_by_role("button", name="Suspend").click()
         page.wait_for_url("**/admin#accounts-title")
         assert (
-            "Suspended"
-            in page.locator("tr", has_text=account["account_id"]).inner_text()
+            "suspended"
+            in page.locator("tr", has_text=account["account_id"]).inner_text().lower()
         )
+        page.locator("#adminStatusFilter").select_option("suspended")
+        assert page.locator("[data-admin-row]:visible").count() == 1
+        assert (
+            account["account_id"]
+            in page.locator("[data-admin-row]:visible").inner_text()
+        )
+        page.locator("#clearAdminFilters").click()
+        assert page.locator("[data-admin-row]:visible").count() == 1
         request = playwright_runtime.request.new_context(
             base_url=browser_server.base_url
         )
@@ -405,6 +420,9 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
             assert suspended.status == 403
         finally:
             request.dispose()
+        _assert_layout(page)
+        page.set_viewport_size({"width": 1440, "height": 900})
+        page.reload(wait_until="networkidle")
         _assert_layout(page)
     finally:
         context.close()

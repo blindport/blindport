@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import shlex
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from math import ceil
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
@@ -36,7 +39,7 @@ from ..core.models import (
 from ..db import get_session
 from ..services import ip_leases
 from ..services import subscriptions as subs_svc
-from ..services.admin_dashboard import build_operations_summary
+from ..services.admin_dashboard import build_operations_summary, build_subscription_rows
 from ..services.announcements import (
     AnnouncementError,
     cancel_announcement,
@@ -60,6 +63,38 @@ _CUSTOMER_COOKIE = "blindport_token"
 _LEGACY_ADMIN_COOKIE = "blindport_admin"
 
 templates: Jinja2Templates | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PageWindow:
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+    start: int
+    end: int
+
+    @property
+    def has_previous(self) -> bool:
+        return self.page > 1
+
+    @property
+    def has_next(self) -> bool:
+        return self.page < self.total_pages
+
+
+def _page_window(requested_page: int, page_size: int, total_items: int) -> _PageWindow:
+    total_pages = max(1, ceil(total_items / page_size))
+    page = min(requested_page, total_pages)
+    offset = (page - 1) * page_size
+    return _PageWindow(
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+        start=offset + 1 if total_items else 0,
+        end=min(offset + page_size, total_items),
+    )
 
 
 def init_templates(directory: str) -> None:
@@ -392,7 +427,15 @@ def login(
 
 
 @router.get("/admin", response_class=HTMLResponse)
-def admin_panel(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
+def admin_panel(
+    request: Request,
+    account_page: int = Query(1, ge=1),
+    payment_page: int = Query(1, ge=1),
+    lease_page: int = Query(1, ge=1),
+    reminder_page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=25, le=100),
+    session: Session = Depends(get_session),
+) -> HTMLResponse:
     assert templates is not None
     admin_cookie = request.cookies.get(_ADMIN_SESSION_COOKIE, "")
     if not validate_admin_browser_session(admin_cookie):
@@ -400,17 +443,97 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
         response.headers["Cache-Control"] = "no-store"
         _clear_legacy_admin_session(response, request)
         return response
-    users = session.exec(select(User).where(User.is_admin.is_(False))).all()  # type: ignore[union-attr]
+    if page_size not in {25, 50, 100}:
+        page_size = 25
+    customer = User.is_admin.is_(False)  # type: ignore[union-attr]
     subs_svc.reap_expired_domain_claims(session)
-    subs = session.exec(
-        select(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
+    elapsed_subscriptions = session.exec(
+        select(Subscription)
+        .join(User)
+        .where(
+            customer,
+            Subscription.status == SubscriptionStatus.ACTIVE,
+            Subscription.current_period_end <= datetime.now(UTC),  # type: ignore[operator]
+        )
     ).all()
-    subs_svc.expire_elapsed_subscriptions(session, subs)
-    payments = session.exec(
-        select(Payment).join(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
+    subs_svc.expire_elapsed_subscriptions(session, elapsed_subscriptions)
+
+    account_total = int(
+        session.exec(select(func.count()).select_from(User).where(customer)).one() or 0
+    )
+    account_pagination = _page_window(account_page, page_size, account_total)
+    account_offset = (account_pagination.page - 1) * page_size
+    users = session.exec(
+        select(User)
+        .where(customer)
+        .order_by(User.created_at.desc(), User.id.desc())
+        .offset(account_offset)
+        .limit(page_size)
     ).all()
-    reminders = session.exec(
-        select(ReminderDelivery).join(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
+    user_ids = [user.id for user in users if user.id is not None]
+    subs = (
+        session.exec(
+            select(Subscription)
+            .where(Subscription.user_id.in_(user_ids))  # type: ignore[union-attr]
+            .order_by(Subscription.updated_at.desc())
+        ).all()
+        if user_ids
+        else []
+    )
+    subscription_ids = [subscription.id for subscription in subs if subscription.id is not None]
+    latest_payment_ids = (
+        select(func.max(Payment.id))
+        .where(Payment.subscription_id.in_(subscription_ids))  # type: ignore[union-attr]
+        .group_by(Payment.subscription_id)
+    )
+    subscription_payments = (
+        session.exec(
+            select(Payment).where(Payment.id.in_(latest_payment_ids))  # type: ignore[union-attr]
+        ).all()
+        if subscription_ids
+        else []
+    )
+
+    payment_total = int(
+        session.exec(
+            select(func.count()).select_from(Payment).join(Subscription).join(User).where(customer)
+        ).one()
+        or 0
+    )
+    payment_pagination = _page_window(payment_page, page_size, payment_total)
+    payment_offset = (payment_pagination.page - 1) * page_size
+    payment_rows = session.exec(
+        select(Payment, Subscription.public_id, User.public_id)
+        .select_from(Payment)
+        .join(Subscription, Payment.subscription_id == Subscription.id)
+        .join(User, Subscription.user_id == User.id)
+        .where(customer)
+        .order_by(Payment.created_at.desc(), Payment.id.desc())
+        .offset(payment_offset)
+        .limit(page_size)
+    ).all()
+
+    reminder_total = int(
+        session.exec(
+            select(func.count())
+            .select_from(ReminderDelivery)
+            .join(Subscription)
+            .join(User)
+            .where(customer)
+        ).one()
+        or 0
+    )
+    reminder_pagination = _page_window(reminder_page, page_size, reminder_total)
+    reminder_offset = (reminder_pagination.page - 1) * page_size
+    reminder_rows = session.exec(
+        select(ReminderDelivery, Subscription.public_id)
+        .select_from(ReminderDelivery)
+        .join(Subscription, ReminderDelivery.subscription_id == Subscription.id)
+        .join(User, Subscription.user_id == User.id)
+        .where(customer)
+        .order_by(ReminderDelivery.updated_at.desc(), ReminderDelivery.id.desc())
+        .offset(reminder_offset)
+        .limit(page_size)
     ).all()
     announcements = (
         session.exec(select(Announcement).order_by(Announcement.created_at.desc())).all()
@@ -428,42 +551,45 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
         }
         for announcement in announcements
     }
-    leases = session.exec(
-        select(IPLease)
-        .join(Subscription)
-        .join(User)
-        .where(User.is_admin.is_(False))  # type: ignore[union-attr]
-        .order_by(IPLease.created_at.desc())
+    lease_total = int(
+        session.exec(
+            select(func.count()).select_from(IPLease).join(Subscription).join(User).where(customer)
+        ).one()
+        or 0
+    )
+    lease_pagination = _page_window(lease_page, page_size, lease_total)
+    lease_offset = (lease_pagination.page - 1) * page_size
+    lease_rows = session.exec(
+        select(IPLease, Subscription.public_id)
+        .select_from(IPLease)
+        .join(Subscription, IPLease.subscription_id == Subscription.id)
+        .join(User, Subscription.user_id == User.id)
+        .where(customer)
+        .order_by(IPLease.created_at.desc(), IPLease.id.desc())
+        .offset(lease_offset)
+        .limit(page_size)
     ).all()
-    account_by_user_id = {user.id: user.public_id for user in users}
-    subscription_by_pk = {subscription.id: subscription for subscription in subs}
-    account_by_payment_id = {
-        payment.id: account_by_user_id.get(subscription_by_pk[payment.subscription_id].user_id)
-        for payment in payments
-        if payment.subscription_id in subscription_by_pk
-    }
-    subscription_public_id_by_pk = {
-        subscription.id: subscription.public_id for subscription in subs
-    }
     response = templates.TemplateResponse(
         request,
         "admin.html",
         _ctx(
             request,
-            users=users,
-            subscriptions=subs,
-            payments=payments,
-            reminders=reminders,
+            subscription_rows=build_subscription_rows(users, subs, subscription_payments),
+            payment_rows=payment_rows,
+            reminder_rows=reminder_rows,
             announcements=announcements,
             announcement_delivery_counts=announcement_delivery_counts,
             announcement_eligible_count=(
                 eligible_recipient_count(session) if settings.ANNOUNCEMENT_EMAIL_ENABLED else 0
             ),
-            leases=leases,
-            account_by_user_id=account_by_user_id,
-            account_by_payment_id=account_by_payment_id,
-            subscription_public_id_by_pk=subscription_public_id_by_pk,
+            lease_rows=lease_rows,
             operations=build_operations_summary(session),
+            account_pagination=account_pagination,
+            payment_pagination=payment_pagination,
+            lease_pagination=lease_pagination,
+            reminder_pagination=reminder_pagination,
+            page_size=page_size,
+            page_size_options=(25, 50, 100),
             smtp_fee_sats=settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
         ),
     )

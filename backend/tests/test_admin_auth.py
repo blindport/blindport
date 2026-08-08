@@ -270,6 +270,48 @@ def test_admin_panel_can_suspend_and_restore_customer_accounts(app_client) -> No
     assert client.get("/api/v2/me", headers=_auth(account["token"])).status_code == 200
 
 
+def test_admin_panel_paginates_combined_account_rows(app_client) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from blindport.core.models import User
+    from blindport.db import engine
+
+    client, _ = app_client
+    created: list[User] = []
+    with Session(engine) as session:
+        for index in range(30):
+            user = User(
+                hashed_token=f"admin-pagination-{index}",
+                created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index),
+            )
+            session.add(user)
+            created.append(user)
+        session.commit()
+        for user in created:
+            session.refresh(user)
+        newest_id = str(created[-1].public_id)
+        oldest_id = str(created[0].public_id)
+
+    client.post("/admin/login", data={"token": "TESTADMIN0000"})
+    first_page = client.get("/admin")
+    second_page = client.get("/admin?account_page=2")
+    expanded_page = client.get("/admin?page_size=50")
+
+    assert first_page.status_code == 200
+    assert first_page.text.count("data-admin-row") == 25
+    assert newest_id in first_page.text
+    assert oldest_id not in first_page.text
+    assert "Showing 1 to 25 of 30" in first_page.text
+    assert "account_page=2#accounts-title" in first_page.text
+    assert second_page.text.count("data-admin-row") == 5
+    assert newest_id not in second_page.text
+    assert oldest_id in second_page.text
+    assert "Showing 26 to 30 of 30" in second_page.text
+    assert expanded_page.text.count("data-admin-row") == 30
+    assert "Accounts and subscriptions" in expanded_page.text
+    assert "Subscription progress" in expanded_page.text
+
+
 def test_admin_panel_mutation_requires_browser_session(app_client) -> None:
     client, _ = app_client
     account = client.post("/api/v2/signup").json()
