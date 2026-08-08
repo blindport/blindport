@@ -417,6 +417,14 @@ split relay host, apply `compose.wireguard-control.yaml` on the production host 
 overlay does not grant `NET_ADMIN`, mount the relay private key, or enable WireGuard
 on the production host's local Relay.
 
+Persist IPv4 forwarding only on each routed relay host before enabling its overlay:
+
+```sh
+sudo install -m 0644 deploy/sysctl-blindport-routed-relay.conf \
+  /etc/sysctl.d/99-blindport-routed-relay.conf
+sudo sysctl --system
+```
+
 Run `nft list table inet blindport` after startup and verify the input, active
 source, non-global destination, and TCP/25 rules before activating sales. Test
 both directions from an external network and confirm the outbound observer sees

@@ -249,16 +249,21 @@ PY
 }
 
 relay_host_sysctl_check() {
-    python3 - "$root/deploy/sysctl-blindport-relay.conf" <<'PY'
+    python3 - \
+        "$root/deploy/sysctl-blindport-relay.conf" \
+        "$root/deploy/sysctl-blindport-routed-relay.conf" <<'PY'
 from pathlib import Path
 import sys
 
-lines = [
-    line.strip()
-    for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-    if line.strip() and not line.startswith("#")
-]
-assert lines == ["net.ipv4.ip_unprivileged_port_start=80"]
+def settings(path: str) -> list[str]:
+    return [
+        line.strip()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+
+assert settings(sys.argv[1]) == ["net.ipv4.ip_unprivileged_port_start=80"]
+assert settings(sys.argv[2]) == ["net.ipv4.ip_forward=1"]
 PY
 }
 
