@@ -28,6 +28,8 @@ services:
       BLINDPORT_RELAY_HTTP_CHALLENGE: ${RELAY_PUBLIC_IP}:80
       BLINDPORT_RELAY_MTLS_HOSTS: ${RELAY_CONTROL_HOST}
       BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR: /var/lib/blindport
+      BLINDPORT_RELAY_HEARTBEAT_INTERVAL: ${RELAY_HEARTBEAT_INTERVAL:-30s}
+      BLINDPORT_RELAY_HEARTBEAT_TOKEN_FILE: ${RELAY_HEARTBEAT_TOKEN_FILE:-}
       BLINDPORT_RELAY_ADMIN: 127.0.0.1:9090
       BLINDPORT_RELAY_MAX_CONTROL_HANDSHAKES: ${RELAY_MAX_CONTROL_HANDSHAKES:-256}
       BLINDPORT_RELAY_MAX_INGRESS: ${RELAY_MAX_INGRESS:-4096}
@@ -50,6 +52,11 @@ services:
         uid: "10001"
         gid: "10001"
         mode: 0400
+      - source: relay-heartbeat-token
+        target: relay-heartbeat-token
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes:
       - relay-state:/var/lib/blindport
     command: ["-control", "${RELAY_PUBLIC_IP}:5443"]
@@ -69,6 +76,8 @@ services:
 secrets:
   relay-secret:
     file: ${SECRETS_DIR:-./secrets}/relay-secret
+  relay-heartbeat-token:
+    file: ${SECRETS_DIR:-./secrets}/relay-heartbeat-token
 
 volumes:
   relay-state:

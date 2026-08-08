@@ -19,6 +19,7 @@ x-backend-environment: &backend-environment
   SECRET_KEY_FILE: /run/secrets/secret-key
   TOKEN_HASH_KEY_FILE: /run/secrets/token-hash-key
   RELAY_SECRET_FILE: /run/secrets/relay-secret
+  RELAY_HEARTBEAT_KEYS_FILE: ${RELAY_HEARTBEAT_KEYS_FILE:-}
   ADMIN_TOKEN_FILE: /run/secrets/admin-token
   LND_INVOICE_HMAC_KEY_FILE: /run/secrets/lnd-invoice-hmac-key
   CREDENTIAL_ENCRYPTION_KEY_FILE: ${CREDENTIAL_ENCRYPTION_KEY_FILE:-}
@@ -107,6 +108,12 @@ x-backend-environment: &backend-environment
   PORT_HOSTNAME_SUFFIX: ${PORT_HOSTNAME_SUFFIX:-}
   FRAMED_IP_ENDPOINTS: ${FRAMED_IP_ENDPOINTS:-}
   RELAY_EDGES: ${RELAY_EDGES:-}
+  RELAY_HEARTBEAT_STALE_SECONDS: ${RELAY_HEARTBEAT_STALE_SECONDS:-90}
+  DNS_SUPERVISION_ENABLED: ${DNS_SUPERVISION_ENABLED:-false}
+  DNS_SUPERVISION_INTERVAL_SECONDS: ${DNS_SUPERVISION_INTERVAL_SECONDS:-60}
+  DNS_SUPERVISION_STALE_SECONDS: ${DNS_SUPERVISION_STALE_SECONDS:-180}
+  DNS_SUPERVISION_TARGETS: ${DNS_SUPERVISION_TARGETS:-}
+  DNS_SUPERVISION_RESOLVERS: ${DNS_SUPERVISION_RESOLVERS:-1.1.1.1,8.8.8.8}
   RELAY_MANAGED_SUFFIXES: ${RELAY_MANAGED_SUFFIXES}
   RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS: ${RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS:-1800}
   RELAY_DOMAIN_CLAIM_TTL_SECONDS: ${RELAY_DOMAIN_CLAIM_TTL_SECONDS:-3600}
@@ -123,6 +130,11 @@ x-backend-secrets: &backend-secrets
     mode: 0400
   - source: relay-secret
     target: relay-secret
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+  - source: relay-heartbeat-keys
+    target: relay-heartbeat-keys
     uid: "10001"
     gid: "10001"
     mode: 0400
@@ -357,6 +369,8 @@ services:
       BLINDPORT_RELAY_HTTP_CHALLENGE: 127.0.0.1:4080
       BLINDPORT_RELAY_MTLS_HOSTS: ${RELAY_CONTROL_HOST}
       BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR: /var/lib/blindport
+      BLINDPORT_RELAY_HEARTBEAT_INTERVAL: ${RELAY_HEARTBEAT_INTERVAL:-30s}
+      BLINDPORT_RELAY_HEARTBEAT_TOKEN_FILE: ${LOCAL_RELAY_HEARTBEAT_TOKEN_FILE:-}
       BLINDPORT_RELAY_ADMIN: 127.0.0.1:9090
       BLINDPORT_RELAY_MAX_CONTROL_HANDSHAKES: ${RELAY_MAX_CONTROL_HANDSHAKES:-128}
       BLINDPORT_RELAY_MAX_INGRESS: ${RELAY_MAX_INGRESS:-1024}
@@ -370,9 +384,15 @@ services:
       BLINDPORT_RELAY_MAX_STREAMS_PER_TUNNEL: ${RELAY_MAX_STREAMS_PER_TUNNEL:-128}
       BLINDPORT_RELAY_SHUTDOWN_TIMEOUT: 25s
       BLINDPORT_RELAY_WIREGUARD: "0"
+      RELAY_EDGE_ID: ${LOCAL_RELAY_EDGE_ID:-}
     secrets:
       - source: relay-secret
         target: relay-secret
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: relay-heartbeat-token
+        target: relay-heartbeat-token
         uid: "10001"
         gid: "10001"
         mode: 0400
@@ -445,6 +465,10 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/postgres-password
   relay-secret:
     file: ${SECRETS_DIR:-./secrets}/relay-secret
+  relay-heartbeat-keys:
+    file: ${SECRETS_DIR:-./secrets}/relay-heartbeat-keys
+  relay-heartbeat-token:
+    file: ${SECRETS_DIR:-./secrets}/relay-heartbeat-token
   secret-key:
     file: ${SECRETS_DIR:-./secrets}/secret-key
   token-hash-key:

@@ -48,6 +48,7 @@ x-backend-environment: &backend-environment
   OFFLINE_ENTITLEMENT_KEY_ID: offline-a
   OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: /run/offline-key/key.pem
   RELAY_EDGES: '[{"id":"edge-a","endpoint":"relay-a:5443"},{"id":"edge-b","endpoint":"relay-b:5443"}]'
+  RELAY_HEARTBEAT_KEYS: '{"edge-a":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","edge-b":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
   RESOURCE_REUSE_QUARANTINE_SECONDS: "604921"
   RELAY_RENEWAL_GRACE_SECONDS: "604921"
   RATE_LIMIT_SIGNUP_REQUESTS: "1000"
@@ -231,7 +232,7 @@ services:
         ipv4_address: 10.253.241.10
     volumes:
       - relay-cache-a:/var/lib/blindport
-    command: ["-control", ":5443", "-shared-ips", "10.253.241.10", "-shared-ports", "12000-12004", "-shared-udp-ports", "12000-12004", "-relay-edge-id", "edge-a"]
+    command: ["-control", ":5443", "-shared-ips", "10.253.241.10", "-shared-ports", "12000-12004", "-shared-udp-ports", "12000-12004", "-relay-edge-id", "edge-a", "-heartbeat-token", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
 
   relay-b:
     <<: *relay-service
@@ -241,7 +242,7 @@ services:
         ipv4_address: 10.253.242.10
     volumes:
       - relay-cache-b:/var/lib/blindport
-    command: ["-control", ":5443", "-shared-ips", "10.253.242.10", "-shared-ports", "12000-12004", "-shared-udp-ports", "12000-12004", "-relay-edge-id", "edge-b"]
+    command: ["-control", ":5443", "-shared-ips", "10.253.242.10", "-shared-ports", "12000-12004", "-shared-udp-ports", "12000-12004", "-relay-edge-id", "edge-b", "-heartbeat-token", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
 
   origin:
     <<: *service-defaults

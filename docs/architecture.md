@@ -319,9 +319,11 @@ Blindport Relay has three DNS operating models:
    resolver search disabled and requires the one returned absolute target to
    equal the assigned target after canonicalization. It does not follow CNAME
    chains or accept A/AAAA flattening, another pool target, or failed lookups.
-3. **Future DNS automation:** a registrar or authoritative-DNS integration may
-   create records and invoke the same control-plane subscription and
-   verification endpoints. No such automation is implemented yet.
+3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
+   sets through multiple explicit recursive resolvers and retains one latest sanitized
+   observation per name. It does not mutate authoritative DNS. A future fenced registrar or
+   authoritative-DNS adapter may create or withdraw records and invoke the same control-plane
+   subscription and verification endpoints.
 
 Blindport is not currently authoritative for customer DNS. Its backend only
 queries an external recursive resolver, and operators remain responsible for

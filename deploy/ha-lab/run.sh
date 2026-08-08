@@ -28,6 +28,13 @@ $compose stop relay-a
 $compose --profile tools run --rm tester forwarding relay-b
 $compose up -d --wait relay-a
 $compose --profile tools run --rm tester forwarding relay-a relay-b
+for _ in $(seq 1 30); do
+    heartbeat_count="$($compose exec -T postgres psql -U blindport -d blindport -Atc 'select count(*) from relayheartbeat')"
+    [ "$heartbeat_count" = "2" ] && break
+    sleep 1
+done
+[ "$heartbeat_count" = "2" ] || { echo "FAIL Relay heartbeats were not persisted" >&2; exit 1; }
+echo "PASS latest heartbeat persisted for both Relay edges"
 
 $compose exec -T relay-a test -s /var/lib/blindport/certificate.json
 $compose exec -T relay-b test -s /var/lib/blindport/certificate.json

@@ -113,9 +113,11 @@ receives `404`. The onion route continues to return `404` for all admin browser 
 
 The admin operations summary reports active subscriptions, customers with an active
 subscription, lifetime settled gross sats (not revenue), open pending or processing payments,
-catalog capacity, and counts derived from the rate-limited `last_seen_at` account activity
-field. It intentionally does not report customer traffic, retention, churn, aggregate online
-connections, or edge health because those data are not persistently authoritative.
+catalog capacity, counts derived from the rate-limited `last_seen_at` account activity field,
+current paying-customer lifecycle counts, and latest Relay/DNS observations. Relay reports
+contain fixed-cardinality aggregate counters only and no customer identifiers. Treat stale or
+missing observations as unavailable; the database is not a metrics store, and DNS observation
+does not perform authoritative record changes.
 
 Create secrets with restrictive permissions. Compose file-backed secret `uid`, `gid`,
 and `mode` are not implemented by every Compose runtime, so ownership on the host is
@@ -130,6 +132,8 @@ install -o 10001 -g 10001 -m 0400 /dev/null secrets/database-url
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/secret-key
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/token-hash-key
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/relay-secret
+install -o 10001 -g 10001 -m 0400 /dev/null secrets/relay-heartbeat-keys
+install -o 10001 -g 10001 -m 0400 /dev/null secrets/relay-heartbeat-token
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/admin-token
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/lnd-invoice-hmac-key
 install -o 10001 -g 10001 -m 0400 /path/to/tls.cert secrets/lnd-tls-cert

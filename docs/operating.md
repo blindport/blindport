@@ -154,6 +154,14 @@ secrets, protocol errors, malformed successful responses, changed exact DNS/IP S
 expired certificates, unsafe files, and changed certificate authorities remain terminal.
 The official Compose definitions mount `/var/lib/blindport` as the `relay-state` volume.
 Treat that volume as private key material and include it in protected edge-state backups.
+Set one stable `RELAY_EDGE_ID` per Relay and keep the default 30-second
+`BLINDPORT_RELAY_HEARTBEAT_INTERVAL`. Generate one unique 32-byte token per edge. Mount only
+that edge's token through `BLINDPORT_RELAY_HEARTBEAT_TOKEN_FILE`, and mount the canonical
+edge-to-token JSON map only on the backend through `RELAY_HEARTBEAT_KEYS_FILE`. The Relay
+posts a fixed-cardinality readiness and aggregate counter snapshot through the
+secret-authenticated control API. The backend retains only the latest row per configured
+edge. Heartbeat failures never alter Relay readiness; admin fleet state becomes stale after
+`RELAY_HEARTBEAT_STALE_SECONDS`.
 This fallback is limited to framed tunnels. It does not alter routed WireGuard,
 which continues using its enrolled desired-state reconciliation path and never
 uses an entitlement cache or proof. Framed agents refresh provisioning every 30
@@ -369,9 +377,11 @@ operating models:
    does not extend it. Existing pending rows with a TXT
    token continue using their returned `_blindport-challenge.<hostname>` TXT
    record only until the existing claim deadline. New claims have no TXT token.
-3. **Future registrar or authoritative-DNS automation:** an integration may
-   publish the required records and use the same control-plane API. Blindport
-   does not currently implement this automation.
+3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
+   sets through multiple explicit recursive resolvers and retains one latest sanitized
+   observation per name. It does not mutate authoritative DNS. A future fenced registrar or
+   authoritative-DNS adapter may publish or withdraw records and use the same control-plane
+   API.
 
 ### Blindport Relay certificates
 
@@ -408,6 +418,12 @@ records for its generated children. A pool base can contain at most 220 ASCII
 characters so the generated 32-character label and separator remain a valid DNS
 hostname. The allocator balances retained apex assignments and child targets by
 their configured base.
+
+Configure strict canonical `DNS_SUPERVISION_TARGETS` and at least two explicit public
+`DNS_SUPERVISION_RESOLVERS` before setting `DNS_SUPERVISION_ENABLED=true`. Keep
+`DNS_SUPERVISION_STALE_SECONDS` at or above the check interval. The admin view treats
+missing or stale observations as unavailable. Observation does not perform health steering,
+change authoritative records, or provide a fencing lease.
 
 An active Blindport Relay subscription loses authorization exactly at
 `current_period_end`. Its domain remains reserved to that subscription until

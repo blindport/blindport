@@ -551,9 +551,14 @@ for name in (
     "PORT_HA_EDGES",
     "PORT_HOSTNAME_SUFFIX",
     "RELAY_CONTROL_URLS",
+    "RELAY_EDGES",
+    "RELAY_HEARTBEAT_STALE_SECONDS",
     "RELAY_PUBLIC_IPS",
+    "DNS_SUPERVISION_ENABLED",
+    "DNS_SUPERVISION_TARGETS",
 ):
     assert name in environment
+assert environment["RELAY_HEARTBEAT_KEYS_FILE"] == ""
 '
 
     docker compose \
@@ -568,6 +573,8 @@ relay = json.load(sys.stdin)["services"]["relay"]
 assert relay["environment"]["BLINDPORT_RELAY_IPS"] == ""
 assert relay["environment"]["BLINDPORT_RELAY_PORTS"] == "443"
 assert relay["environment"]["BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR"] == "/var/lib/blindport"
+assert relay["environment"]["BLINDPORT_RELAY_HEARTBEAT_INTERVAL"] == "30s"
+assert relay["environment"]["BLINDPORT_RELAY_HEARTBEAT_TOKEN_FILE"] == ""
 assert any(volume["target"] == "/var/lib/blindport" for volume in relay["volumes"])
 assert relay["environment"]["OFFLINE_ENTITLEMENTS_ENABLED"] == "false"
 assert relay["environment"]["OFFLINE_ENTITLEMENT_PUBLIC_KEYS"] == ""
@@ -578,6 +585,12 @@ assert "offline-entitlement-private-key" not in {
     item if isinstance(item, str) else item.get("source")
     for item in relay.get("secrets", [])
 }
+relay_secrets = {
+    item if isinstance(item, str) else item.get("source")
+    for item in relay.get("secrets", [])
+}
+assert "relay-heartbeat-token" in relay_secrets
+assert "relay-heartbeat-keys" not in relay_secrets
 assert relay["mem_limit"] == "402653184"
 assert relay["cpus"] == 1.0
 '
