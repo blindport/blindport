@@ -222,10 +222,10 @@ address_log_policy_check() {
         "$root/deploy/journald-blindport.conf" \
         "$root/docker/backend.Dockerfile" \
         "$root/docker/docker-compose.yaml" \
-        "$root/deploy/canary/Caddyfile" \
-        "$root/deploy/canary/Caddyfile.internal" \
+        "$root/deploy/production/Caddyfile" \
+        "$root/deploy/production/Caddyfile.internal" \
         "$root/deploy/split/control/Caddyfile" \
-        "$root/deploy/canary/haproxy.cfg" <<'PY'
+        "$root/deploy/production/haproxy.cfg" <<'PY'
 from pathlib import Path
 import sys
 
@@ -300,8 +300,8 @@ haproxy_check() {
         haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
 }
 
-canary_http_routing_check() {
-    python3 - "$root/deploy/canary/haproxy.cfg" <<'PY'
+production_http_routing_check() {
+    python3 - "$root/deploy/production/haproxy.cfg" <<'PY'
 from pathlib import Path
 import sys
 
@@ -315,11 +315,11 @@ assert "relay_acme" not in config
 PY
 }
 
-canary_relay_internal_policy_check() {
+production_relay_internal_policy_check() {
     python3 - \
-        "$root/deploy/canary/Caddyfile" \
-        "$root/deploy/canary/compose.yaml" \
-        "$root/deploy/canary/.env.example" <<'PY'
+        "$root/deploy/production/Caddyfile" \
+        "$root/deploy/production/compose.yaml" \
+        "$root/deploy/production/.env.example" <<'PY'
 from pathlib import Path
 import sys
 
@@ -383,11 +383,11 @@ for path in sys.argv[1:]:
 PY
 }
 
-canary_proxy_protocol_check() {
+production_proxy_protocol_check() {
     config="$1"
     docker run --rm \
-        --env-file "$root/deploy/canary/.env.example" \
-        -v "$root/deploy/canary/$config:/etc/caddy/Caddyfile:ro" \
+        --env-file "$root/deploy/production/.env.example" \
+        -v "$root/deploy/production/$config:/etc/caddy/Caddyfile:ro" \
         caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d \
         caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile \
         | python3 -c '
@@ -603,48 +603,48 @@ assert relay["cpus"] == 1.0
 '
 }
 
-compose_check deploy/canary
+compose_check deploy/production
 compose_check deploy/split/control
 compose_check deploy/split/relay
 compose_check deploy/ha-lab
 compose_check examples/docker
-backend_healthcheck_policy_check deploy/canary
+backend_healthcheck_policy_check deploy/production
 backend_healthcheck_policy_check deploy/split/control
-smtp_secret_scope_check deploy/canary
+smtp_secret_scope_check deploy/production
 smtp_secret_scope_check deploy/split/control
-offline_entitlement_secret_scope_check deploy/canary
+offline_entitlement_secret_scope_check deploy/production
 offline_entitlement_secret_scope_check deploy/split/control
-migration_credential_scope_check deploy/canary
+migration_credential_scope_check deploy/production
 migration_credential_scope_check deploy/split/control
-logging_policy_check deploy/canary
+logging_policy_check deploy/production
 logging_policy_check deploy/split/control
 logging_policy_check deploy/split/relay
-provider_edge_policy_check deploy/canary
+provider_edge_policy_check deploy/production
 provider_edge_policy_check deploy/split/control
-wireguard_production_policy_check deploy/canary deploy/canary
+wireguard_production_policy_check deploy/production deploy/production
 wireguard_production_policy_check deploy/split/control deploy/split/relay
 address_log_policy_check
 relay_host_sysctl_check
-caddy_check deploy/canary
-caddy_check deploy/canary Caddyfile.internal
+caddy_check deploy/production
+caddy_check deploy/production Caddyfile.internal
 caddy_check deploy/split/control
-caddy_log_policy_check deploy/canary
-caddy_log_policy_check deploy/canary Caddyfile.internal
+caddy_log_policy_check deploy/production
+caddy_log_policy_check deploy/production Caddyfile.internal
 caddy_log_policy_check deploy/split/control
-haproxy_check deploy/canary
+haproxy_check deploy/production
 haproxy_check deploy/ha-lab
-canary_http_routing_check
-canary_relay_internal_policy_check
+production_http_routing_check
+production_relay_internal_policy_check
 caddy_runtime_policy_check
-caddy_admin_policy_check deploy/canary
-caddy_admin_policy_check deploy/canary Caddyfile.internal
+caddy_admin_policy_check deploy/production
+caddy_admin_policy_check deploy/production Caddyfile.internal
 caddy_admin_policy_check deploy/split/control
 caddy_admin_routing_policy_check \
-    "$root/deploy/canary/Caddyfile" \
-    "$root/deploy/canary/Caddyfile.internal" \
+    "$root/deploy/production/Caddyfile" \
+    "$root/deploy/production/Caddyfile.internal" \
     "$root/deploy/split/control/Caddyfile"
-canary_proxy_protocol_check Caddyfile
-canary_proxy_protocol_check Caddyfile.internal
+production_proxy_protocol_check Caddyfile
+production_proxy_protocol_check Caddyfile.internal
 docker_example_check
 ha_lab_policy_check
 

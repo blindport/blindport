@@ -1,4 +1,4 @@
-name: blindport-canary
+name: blindport-production
 
 x-service-defaults: &service-defaults
   init: true
@@ -9,7 +9,7 @@ x-service-defaults: &service-defaults
   logging:
     driver: journald
     options:
-      tag: "blindport-canary-{{.Name}}"
+      tag: "blindport-production-{{.Name}}"
 
 x-backend-environment: &backend-environment
   ENVIRONMENT: ${ENVIRONMENT:-production}

@@ -9,19 +9,19 @@ description: Use ONLY when deploying, diagnosing, monitoring, or testing Blindpo
 
 - Servers.Guru SSH: `ssh root@blindport.com -i ~/.ssh/blindport_servers_guru_ed25519`
 - Servers.Guru address: `78.17.212.128`
-- Servers.Guru stack: `/opt/blindport/canary`, Compose project `blindport-canary`
+- Servers.Guru stack: `/opt/blindport/production`, Compose project `blindport-production`
 - mynymbox SSH: `ssh root@89.125.35.70 -i ~/.ssh/blindport_servers_guru_ed25519`
-- mynymbox addresses: `89.125.35.70`, `89.125.35.71`, `89.125.35.72`, and
+- mynymbox addresses: `89.125.35.70`, `89.125.35.71`, `89.125.35.72`, `89.125.35.94`, and
   `2a14:1ec7:f903:4::/64`
 - mynymbox Relay stack: `/opt/blindport/relay`, Compose project `blindport-relay`
 - Public readiness: `https://blindport.com/api/v1/health/ready`
 - Production Docker architecture: `amd64` (`x86_64` remotely).
 
 Address roles are explicit. `89.125.35.70` is the mynymbox shared Relay, Port, and
-control ingress address. `89.125.35.71` and `89.125.35.72` are framed Blindport IP
+control ingress address. `89.125.35.71`, `89.125.35.72`, and `89.125.35.94` are framed Blindport IP
 inventory and must remain in `RELAY_PUBLIC_IPS` plus `FRAMED_IP_ENDPOINTS` while
 assigned, reserved, or quarantined. The backend catalog and lease records are the
-stock authority. Do not remove inventory to represent a sale. Do not offer either
+stock authority. Do not remove inventory to represent a sale. Do not offer any
 address as routed WireGuard inventory unless mynymbox confirms provider routing or
 the required proxy-ARP design is tested end to end.
 
@@ -66,7 +66,7 @@ requires authorization. Never print the resulting value.
    from the dirty main worktree.
 5. Run focused tests, full relevant suites, `./deploy/validate.sh`, and
    `prek run --all-files`. Record known unrelated hook failures explicitly.
-6. Build an immutable local tag `blindport-backend:canary-<short-revision>` for
+6. Build an immutable local tag `blindport-backend:production-<short-revision>` for
    `linux/amd64`. Probe the installed package and compiled NWC helper before export.
 
 ## Deployment Transaction

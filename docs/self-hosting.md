@@ -11,7 +11,7 @@ before exposing a deployment to untrusted traffic.
 
 ## Choose a topology
 
-- `deploy/canary` runs PostgreSQL, backend, Caddy, HAProxy, and relay on one
+- `deploy/production` runs PostgreSQL, backend, Caddy, HAProxy, and relay on one
   dedicated Linux host. It is the shortest path to a single-instance deployment.
 - `deploy/split/control` and `deploy/split/relay` separate the database/control
   host from the public relay host. The private control route and shared relay
@@ -91,15 +91,15 @@ network policy are configured and tested.
 
    ```sh
    ./deploy/validate.sh
-   docker compose --env-file deploy/canary/.env \
-     -f deploy/canary/compose.yaml config --quiet
+   docker compose --env-file deploy/production/.env \
+     -f deploy/production/compose.yaml config --quiet
    ```
 
 7. For CI-built images, pull the digest-pinned references before starting the
    selected stack. Skip this command when using the locally built image tags:
 
    ```sh
-   cd deploy/canary
+   cd deploy/production
    docker compose --env-file .env -f compose.yaml pull
    ```
 
@@ -121,6 +121,11 @@ Back up database, CA, proxy state, and secrets together. Read the release notes,
 pull the new digest-pinned images, run migrations once, then replace services.
 An older application intentionally refuses to run against a newer schema, so a
 rollback may require restoring the matching pre-upgrade database backup.
+
+The single-host Compose project is named `blindport-production`. A project-name
+change creates new project-scoped volumes; never start this manifest over an older
+single-host installation until PostgreSQL, backend CA, and Relay state have been
+copied while the old stack is stopped or restored from a verified backup.
 
 Open general defects and deployment problems in the
 [issue tracker](https://github.com/blindport/blindport/issues). Report security

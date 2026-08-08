@@ -839,7 +839,7 @@ not a normal rollback state, and exact-head startup verification rejects it.
 
 ## Production manifests
 
-The checked-in canary and split-host Compose manifests are documented in
-[`deploy/OPERATIONS.md`](../deploy/OPERATIONS.md). The one-host canary uses an
+The checked-in production and split-host Compose manifests are documented in
+[`deploy/OPERATIONS.md`](../deploy/OPERATIONS.md). The one-host production stack uses an
 SNI multiplexer and is intended for manual and invited testing. Move relay
 ingress to the split relay host before unrestricted public signup.

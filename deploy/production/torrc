@@ -3,7 +3,7 @@ RunAsDaemon 1
 DataDirectory /var/lib/tor
 Log notice syslog
 
-HiddenServiceDir /var/lib/tor/blindport-canary/
+HiddenServiceDir /var/lib/tor/blindport-production/
 HiddenServiceVersion 3
 HiddenServicePort 80 127.0.0.1:8080
 HiddenServicePort 5443 127.0.0.1:55443

@@ -54,7 +54,7 @@ at a subscription-specific random target before payment. The managed suffix apex
 is reserved for the provider and cannot be leased. Blindport currently reads
 customer DNS through a recursive resolver; it is not an authoritative DNS server.
 Customer-owned names must be non-apex subdomains with a direct, DNS-only CNAME;
-flattened, proxied, and wildcard customer records are not supported in the canary.
+flattened, proxied, and wildcard customer records are not supported in the hosted beta.
 Future registrar or authoritative-DNS integrations can automate the same
 subscription and verification API flow.
 
@@ -152,7 +152,7 @@ The dashboard is at `http://localhost:8000`. Compose uses mock Lightning/NWC
 adapters, a development Nutshell mint, and a fixed development-only WireGuard
 keypair. Routed e2e coverage requires a Linux host with kernel WireGuard support.
 
-The development Compose stack is not a production deployment. Production canary
+The development Compose stack is not a production deployment. Production single-host
 and split control/relay manifests, secret preparation, and validation are under
 [`deploy/`](deploy/OPERATIONS.md). These deployments pull released GHCR images;
 they do not build application images on the server.

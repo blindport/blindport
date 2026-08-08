@@ -1,6 +1,6 @@
 # Production deployment artifacts
 
-These Compose stacks are intentionally single-instance deployments. The canary runs on
+These Compose stacks are intentionally single-instance deployments. The production stack runs on
 one dedicated host. The split stack separates control and relay
 failure domains, but neither stack provides database, proxy, relay, or API high
 availability.
@@ -21,7 +21,7 @@ automatic two-node promotion without an external quorum and fencing mechanism.
 
 The disposable [HA lab](../docs/ha.md) exercises application-level failure behavior
 on one Docker host. It is not a production manifest and does not change the availability
-claims of the canary or split stacks.
+claims of the production or split stacks.
 
 The hosted beta is best effort and has no uptime or high-availability guarantee.
 High availability is planned after beta, but future topology is not part of the
@@ -282,9 +282,9 @@ older releases and recalculates the remaining bucket count. This makes direct-cl
 limits best effort across multiple backend processes; per-account product and payment
 limits remain authoritative.
 
-## Canary
+## Production
 
-The canary uses host networking for HAProxy, Caddy, and the relay. This is required so
+The production stack uses host networking for HAProxy, Caddy, and the relay. This is required so
 the public IP configured for Blindport Port in the backend is also the actual address bound by
 the relay. Ensure `PUBLIC_IP` is configured on the host. HAProxy owns `PUBLIC_IP:80`
 and `PUBLIC_IP:443`; the relay owns the configured TCP/UDP Blindport Port range and
@@ -307,7 +307,7 @@ one-off insecure client together with a manual host mapping. Return to
 `CADDYFILE=./Caddyfile` before publishing DNS so Caddy obtains a publicly trusted
 certificate.
 
-For a bounded pre-LND forwarding test, the canary also permits
+For a bounded pre-LND forwarding test, the production stack also permits
 `ENVIRONMENT=development` and `PAYMENT_LIGHTNING_ADAPTER=mock-auto`. Block public
 `:80`, restrict `:443` to the operator's source address, and use explicit HTTPS while
 this mode is active. Every mock invoice settles without payment, and development mode
@@ -322,13 +322,13 @@ The `*_CPU_LIMIT` and `*_MEMORY_LIMIT` variables set per-container ceilings. A
 one-vCPU host must set every CPU limit to at most `1.0`; lower memory limits only after
 measuring steady-state and migration usage.
 
-For onion access, install Tor on the host, copy `deploy/canary/torrc` to
-`/etc/tor/torrc`, and persist `/var/lib/tor/blindport-canary` as secret key material.
+For onion access, install Tor on the host, copy `deploy/production/torrc` to
+`/etc/tor/torrc`, and persist `/var/lib/tor/blindport-production` as secret key material.
 Set `ONION_HOST` to the generated hostname. Tor maps Web traffic to loopback Caddy and
 relay control to the additional loopback mTLS listener; no public firewall port is
 required. The onion Web route intentionally returns 404 for admin and internal APIs.
 
-The canary mounts `DOWNLOADS_DIR` read-only at `/srv/downloads`. Publish versioned
+The production stack mounts `DOWNLOADS_DIR` read-only at `/srv/downloads`. Publish versioned
 agent binaries and matching `.sha256` files there; never replace an existing
 versioned artifact in place. Also publish `install.sh`, the current
 `blindportd-linux-{amd64,arm64,armv7}` aliases, and their checksums. Stage and
@@ -379,7 +379,7 @@ for internal routes.
 Route `API_DOMAIN` to the control host's private IP from the relay host, while keeping
 normal public DNS for users. TLS still authenticates the API hostname.
 
-Run `pull`, the one-shot `migrate` command, and `up -d` as shown for the canary, from
+Run `pull`, the one-shot `migrate` command, and `up -d` as shown for production, from
 `deploy/split/control`.
 
 ## Split relay host
@@ -404,7 +404,7 @@ every other host firewall rule in operator tables. Add host rules for `80/tcp`,
 configured TCP and UDP Blindport Port ranges. Do not expose `9090/tcp`.
 The base Compose files keep routed inventory hidden, keep WireGuard disabled,
 do not grant `NET_ADMIN`, and do not mount the key. Apply
-`compose.wireguard.yaml` on both the control and relay host. For the canary, the
+`compose.wireguard.yaml` on both the control and relay host. For production, the
 single overlay configures both services:
 
 ```sh
