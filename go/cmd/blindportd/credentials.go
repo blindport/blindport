@@ -84,6 +84,13 @@ type credentialManager struct {
 	client     *http.Client
 }
 
+// credentialIdentity is read as one snapshot so a provisioning response cannot
+// be accepted for an identity generation replaced during its network request.
+type credentialIdentity struct {
+	instanceID string
+	generation int
+}
+
 func defaultCredentialStateDir() string {
 	if configured := os.Getenv("BLINDPORT_STATE_DIR"); configured != "" {
 		return configured
@@ -615,6 +622,22 @@ func (m *credentialManager) instanceID() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.snapshot.stored.InstanceID
+}
+
+func (m *credentialManager) generation() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.snapshot.stored.Generation
+}
+
+func (m *credentialManager) identity() credentialIdentity {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return credentialIdentity{instanceID: m.snapshot.stored.InstanceID, generation: m.snapshot.stored.Generation}
+}
+
+func (m *credentialManager) hasIdentity(identity credentialIdentity) bool {
+	return m.identity() == identity
 }
 
 // signMessage signs one enrollment message with the stable client identity key.

@@ -104,21 +104,25 @@ type planReconciler interface {
 }
 
 type dockerAgent struct {
-	docker        dockerContainerLister
-	static        []mapping
-	orders        *orderAPIClient
-	fetchConfig   func(context.Context) ([]provisioning, error)
-	supervisor    planReconciler
-	relayOverride string
-	pollInterval  time.Duration
-	logger        *slog.Logger
-	now           func() time.Time
-	desired       []mapping
-	orderCache    map[string]*orderCacheEntry
+	docker            dockerContainerLister
+	static            []mapping
+	orders            *orderAPIClient
+	fetchConfig       func(context.Context) ([]provisioning, error)
+	fetchProvisioning provisioningFetcher
+	supervisor        planReconciler
+	relayOverride     string
+	pollInterval      time.Duration
+	logger            *slog.Logger
+	now               func() time.Time
+	desired           []mapping
+	orderCache        map[string]*orderCacheEntry
+	started           bool
 }
 
 func (a *dockerAgent) run(ctx context.Context) {
-	a.reconcile(ctx)
+	if !a.started {
+		_ = a.reconcile(ctx)
+	}
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
 	for {
@@ -131,7 +135,7 @@ func (a *dockerAgent) run(ctx context.Context) {
 	}
 }
 
-func (a *dockerAgent) reconcile(ctx context.Context) {
+func (a *dockerAgent) reconcile(ctx context.Context) error {
 	snapshot, err := discoverDockerMappings(ctx, a.docker)
 	if err != nil {
 		a.logger.Warn("discover Docker mappings", "err", err)
@@ -146,20 +150,52 @@ func (a *dockerAgent) reconcile(ctx context.Context) {
 	if err != nil {
 		a.logger.Warn("resolve Docker orders", "err", err)
 	}
-	cfg, err := a.fetchConfig(ctx)
+	result, err := a.provision(ctx)
 	if err != nil {
 		a.logger.Warn("fetch config", "err", err)
-		return
+		if provisioningFailure(err) == provisioningTerminal {
+			if reconcileErr := a.supervisor.Reconcile(nil); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+				a.logger.Warn("stop tunnel workers after terminal provisioning failure", "err", reconcileErr)
+			}
+		}
+		return err
 	}
 	mappings := append(append([]mapping(nil), a.static...), resolved...)
-	plans, err := buildAvailableMappingPlans(mappings, cfg, a.relayOverride)
+	coordinator := newMappingProvisioningCoordinator(mappings, a.relayOverride, true)
+	plans, err := coordinator.plans(result)
 	if err != nil {
 		a.logger.Warn("build Docker tunnel plans", "err", err)
-		return
+		if reconcileErr := a.supervisor.Reconcile(nil); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			a.logger.Warn("stop tunnel workers after invalid provisioning", "err", reconcileErr)
+		}
+		return err
 	}
 	if err := a.supervisor.Reconcile(plans); err != nil && !errors.Is(err, context.Canceled) {
 		a.logger.Warn("reconcile tunnel workers", "err", err)
+		return err
 	}
+	a.started = true
+	return nil
+}
+
+func (a *dockerAgent) provision(ctx context.Context) (provisioningResult, error) {
+	if a.fetchProvisioning != nil {
+		return a.fetchProvisioning(ctx)
+	}
+	if a.fetchConfig == nil {
+		return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal}
+	}
+	config, err := a.fetchConfig(ctx)
+	if err != nil {
+		// Historical test and embedding callbacks did not have typed errors.
+		// Preserve their transient behavior unless they opt into a typed error.
+		var typed *provisioningFetchError
+		if errors.As(err, &typed) {
+			return provisioningResult{}, err
+		}
+		return provisioningResult{}, &provisioningFetchError{kind: provisioningInfrastructure}
+	}
+	return provisioningResult{V1: config, Source: provisioningOnlineV1}, nil
 }
 
 func (a *dockerAgent) resolveMappings(ctx context.Context) ([]mapping, error) {

@@ -32,6 +32,23 @@ type workerEvent struct {
 	plan workerPlan
 }
 
+type proofDialer struct {
+	proofs chan string
+}
+
+func (d *proofDialer) DialContext(_ context.Context, _ string, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	go func() {
+		defer server.Close()
+		hello, err := protocol.ReadFrame(server)
+		if err == nil {
+			d.proofs <- hello.Entitlement
+			_ = protocol.WriteFrame(server, &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion})
+		}
+	}()
+	return client, nil
+}
+
 func TestTLSConfigDerivesIndependentServerNames(t *testing.T) {
 	material := &tlsMaterial{}
 	first, err := material.configForEndpoint("edge-a.example:5443", "")
@@ -151,6 +168,42 @@ func TestWorkerSupervisorRestartsWorkerThatReturns(t *testing.T) {
 	}
 	assertWorkerStarts(t, started, 1)
 	supervisor.Shutdown()
+}
+
+func TestWorkerReconnectReadsRefreshedEntitlementAndDialsAgain(t *testing.T) {
+	key := workerKey{subscriptionID: testSubscriptionID1, relayAddr: "edge.example:5443"}
+	store := newEntitlementStore()
+	store.Set(key, "first-proof")
+	dialer := &proofDialer{proofs: make(chan string, 2)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runWorkerWithEntitlement(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), workerPlan{SubscriptionID: key.subscriptionID, RelayAddr: key.relayAddr, Upstream: "app:80", Claim: &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "site.example"}}, "token", dialer, nil, nil, store.Get)
+		close(done)
+	}()
+	select {
+	case proof := <-dialer.proofs:
+		if proof != "first-proof" {
+			t.Fatalf("first proof = %q", proof)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first reconnect attempt did not send HELLO")
+	}
+	store.Set(key, "second-proof")
+	select {
+	case proof := <-dialer.proofs:
+		if proof != "second-proof" {
+			t.Fatalf("refreshed proof = %q", proof)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not redial after its first connection closed")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop")
+	}
 }
 
 func assertWorkerStarts(t *testing.T, started <-chan struct{}, count int) {

@@ -40,6 +40,8 @@ type staticConfig struct {
 type workerPlan struct {
 	SubscriptionID        string
 	RelayAddr             string
+	EdgeID                string
+	Entitlement           string
 	Upstream              string
 	HTTPChallengeUpstream string
 	TLSMode               string

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/blindport/blindport/internal/protocol"
 	containertypes "github.com/moby/moby/api/types/container"
 )
 
@@ -197,6 +198,73 @@ func TestDockerAgentRetainsSnapshotAndWorkersAcrossTransientFailures(t *testing.
 	agent.reconcile(context.Background())
 	if calls := reconciler.snapshots(); len(calls) != 2 {
 		t.Fatalf("backend failure reconciled workers: %+v", calls)
+	}
+}
+
+func TestDockerAgentV2PlansFailureHandlingAndRecovery(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	instance := "11111111-2222-4333-8444-555555555555"
+	edges := []provisioningV2Edge{
+		testV2Edge(now, "edge-a", "a.example:5443", provisioningV2Claim{Kind: protocol.ClaimPort, IP: "203.0.113.20", Port: 10000, Transport: protocol.TransportTCP}, testSubscriptionID1, instance, 7),
+		testV2Edge(now, "edge-b", "b.example:5443", provisioningV2Claim{Kind: protocol.ClaimPort, IP: "203.0.113.21", Port: 10000, Transport: protocol.TransportTCP}, testSubscriptionID1, instance, 7),
+	}
+	config := testV2Config(now, testSubscriptionID1, instance, 7, edges)
+	valid := provisioningResult{V2: &config, Source: provisioningOnlineV2}
+	responses := []struct {
+		result provisioningResult
+		err    error
+	}{
+		{result: valid},
+		{err: &provisioningFetchError{kind: provisioningInfrastructure}},
+		{err: &provisioningFetchError{kind: provisioningTerminal}},
+		{result: valid},
+	}
+	index := 0
+	reconciler := &recordingPlanReconciler{}
+	agent := &dockerAgent{
+		docker: &fakeDockerClient{},
+		static: []mapping{
+			{SubscriptionID: testSubscriptionID1, Upstream: "app:80"},
+			{SubscriptionID: testSubscriptionID2, Upstream: "missing:80"},
+		},
+		fetchProvisioning: func(context.Context) (provisioningResult, error) {
+			response := responses[index]
+			index++
+			return response.result, response.err
+		},
+		supervisor: reconciler, pollInterval: time.Second,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now, orderCache: make(map[string]*orderCacheEntry),
+	}
+	if err := agent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	calls := reconciler.snapshots()
+	if len(calls) != 1 || len(calls[0]) != 2 {
+		t.Fatalf("initial plans = %+v", calls)
+	}
+	for i, edge := range edges {
+		plan := calls[0][i]
+		if plan.SubscriptionID != testSubscriptionID1 || plan.RelayAddr != edge.Endpoint || plan.EdgeID != edge.ID || plan.Entitlement != edge.Entitlement || plan.Claim == nil || *plan.Claim != edge.Claim.protocolClaim() {
+			t.Fatalf("plan %d = %+v, edge = %+v", i, plan, edge)
+		}
+	}
+	if err := agent.reconcile(context.Background()); provisioningFailure(err) != provisioningInfrastructure {
+		t.Fatalf("infrastructure reconcile error = %v", err)
+	}
+	if calls = reconciler.snapshots(); len(calls) != 1 {
+		t.Fatalf("infrastructure failure changed workers: %+v", calls)
+	}
+	if err := agent.reconcile(context.Background()); provisioningFailure(err) != provisioningTerminal {
+		t.Fatalf("terminal reconcile error = %v", err)
+	}
+	if calls = reconciler.snapshots(); len(calls) != 2 || len(calls[1]) != 0 {
+		t.Fatalf("terminal failure did not clear workers: %+v", calls)
+	}
+	if err := agent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls = reconciler.snapshots(); len(calls) != 3 || len(calls[2]) != 2 {
+		t.Fatalf("valid recovery plans = %+v", calls)
 	}
 }
 

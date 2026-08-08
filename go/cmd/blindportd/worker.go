@@ -32,34 +32,38 @@ type supervisedWorker struct {
 }
 
 type workerSupervisor struct {
-	reconcileMu sync.Mutex
-	mu          sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	run         func(context.Context, workerPlan)
-	workers     map[workerKey]*supervisedWorker
+	reconcileMu  sync.Mutex
+	mu           sync.Mutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	run          func(context.Context, workerPlan)
+	workers      map[workerKey]*supervisedWorker
+	entitlements *entitlementStore
 }
 
 func newWorkerSupervisor(ctx context.Context, run func(context.Context, workerPlan)) *workerSupervisor {
 	supervisorCtx, cancel := context.WithCancel(ctx)
 	return &workerSupervisor{
 		ctx: supervisorCtx, cancel: cancel, run: run,
-		workers: make(map[workerKey]*supervisedWorker),
+		workers: make(map[workerKey]*supervisedWorker), entitlements: newEntitlementStore(),
 	}
 }
 
 func (s *workerSupervisor) Reconcile(plans []workerPlan) error {
 	desired := make(map[workerKey]workerPlan, len(plans))
+	entitlements := make(map[workerKey]string, len(plans))
 	for _, plan := range plans {
 		key := workerKey{subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr}
 		if _, exists := desired[key]; exists {
 			return fmt.Errorf("duplicate worker plan for subscription %s relay %s", plan.SubscriptionID, plan.RelayAddr)
 		}
 		desired[key] = plan
+		entitlements[key] = plan.Entitlement
 	}
 
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
+	s.entitlements.Replace(entitlements)
 	s.mu.Lock()
 	stopping := make([]*supervisedWorker, 0)
 	for key, worker := range s.workers {
@@ -116,10 +120,11 @@ func (s *workerSupervisor) Shutdown() {
 	for _, worker := range workers {
 		<-worker.done
 	}
+	s.entitlements.Replace(nil)
 }
 
 func sameWorkerPlan(a, b workerPlan) bool {
-	if a.SubscriptionID != b.SubscriptionID || a.RelayAddr != b.RelayAddr || a.Upstream != b.Upstream ||
+	if a.SubscriptionID != b.SubscriptionID || a.RelayAddr != b.RelayAddr || a.EdgeID != b.EdgeID || a.Upstream != b.Upstream ||
 		a.HTTPChallengeUpstream != b.HTTPChallengeUpstream || a.TLSMode != b.TLSMode || (a.Claim == nil) != (b.Claim == nil) {
 		return false
 	}
@@ -161,13 +166,23 @@ func (m *tlsMaterial) configForEndpoint(endpoint, serverNameOverride string) (*t
 }
 
 func runWorker(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config, automatic *acmeDomainManager) {
+	runWorkerWithEntitlement(ctx, log, plan, token, dialer, tlsConfig, automatic, nil)
+}
+
+// runWorkerWithEntitlement reads a proof immediately before each HELLO. This
+// preserves the established worker while a refreshed entitlement is installed.
+func runWorkerWithEntitlement(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config, automatic *acmeDomainManager, entitlement func(workerKey) (string, bool)) {
 	if plan.TLSMode == tlsModeAutomatic && automatic == nil {
 		log.Error("automatic TLS manager unavailable", "subscription_id", plan.SubscriptionID, "relay", plan.RelayAddr)
 		return
 	}
 	backoff := time.Second
 	for ctx.Err() == nil {
-		sessionDuration, err := runOnceManaged(ctx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic)
+		proof := ""
+		if entitlement != nil {
+			proof, _ = entitlement(workerKey{subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr})
+		}
+		sessionDuration, err := runOnceManagedWithEntitlement(ctx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic, proof)
 		if ctx.Err() != nil {
 			return
 		}

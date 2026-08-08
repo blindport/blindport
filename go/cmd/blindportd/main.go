@@ -190,55 +190,13 @@ func main() {
 			}
 		}()
 
-		var material *tlsMaterial
-		var credentialStore *credentialManager
-		if !*insecureSkipTLS {
-			credentialStore, err = openCredentialManager(ctx, outbound.httpClient, *backendURL, token, *stateDir)
-			if err != nil {
-				logger.Error("initialize client identity", "err", err)
-				os.Exit(1)
-			}
-			defer credentialStore.Close()
-			material = credentialStore.tlsMaterial()
-			go credentialStore.runRenewal(ctx, logger)
-		} else {
-			logger.Warn("mTLS DISABLED (BLINDPORT_INSECURE_SKIP_TLS=1)")
-		}
-
-		acmeManagers, err := newLazyACMERegistry(ctx, *stateDir, *acmeDirectory, *acmeEmail, outbound.httpClient, logger)
-		if err != nil {
-			logger.Error("initialize automatic TLS state", "err", err)
+		if err := runDockerFramed(ctx, logger, dockerClient, mappings, token, outbound, framedRuntimeOptions{
+			backend: *backendURL, stateDir: *stateDir, serverName: *serverName, insecureSkipTLS: *insecureSkipTLS,
+			relayOverride: *relayOverride, acmeDirectory: *acmeDirectory, acmeEmail: *acmeEmail, pollInterval: *dockerPollInterval,
+		}); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("start Docker tunnel workers", "err", err)
 			os.Exit(1)
 		}
-		defer acmeManagers.Close()
-		supervisor := newWorkerSupervisor(ctx, func(workerCtx context.Context, plan workerPlan) {
-			var tlsConfig *tls.Config
-			if material != nil {
-				var tlsErr error
-				tlsConfig, tlsErr = material.configForEndpoint(plan.RelayAddr, *serverName)
-				if tlsErr != nil {
-					logger.Error("configure relay TLS", "relay", plan.RelayAddr, "err", tlsErr)
-					return
-				}
-			}
-			var automatic *acmeDomainManager
-			if plan.TLSMode == tlsModeAutomatic && plan.Claim != nil {
-				automatic = acmeManagers.manager(plan.Claim.Domain)
-			}
-			runWorker(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic)
-		})
-		agent := &dockerAgent{
-			docker: dockerClient, static: mappings,
-			orders: &orderAPIClient{client: outbound.httpClient, backend: *backendURL, token: token},
-			fetchConfig: func(fetchCtx context.Context) ([]provisioning, error) {
-				return fetchConfigWithClient(fetchCtx, outbound.httpClient, *backendURL, token)
-			},
-			supervisor: automaticPlanReconciler{registry: acmeManagers, workers: supervisor}, relayOverride: *relayOverride, pollInterval: *dockerPollInterval,
-			logger: logger, now: time.Now, orderCache: make(map[string]*orderCacheEntry),
-		}
-		logger.Info("continuous Docker discovery started", "poll_interval", *dockerPollInterval, "static_mappings", len(mappings))
-		agent.run(ctx)
-		supervisor.Shutdown()
 		return
 	}
 	if multiMapping {
@@ -252,87 +210,141 @@ func main() {
 		}
 	}
 
-	cfg, err := fetchConfigWithClient(ctx, outbound.httpClient, *backendURL, token)
-	if err != nil {
-		logger.Error("fetch config", "err", err)
+	var coordinator *provisioningCoordinator
+	if multiMapping {
+		coordinator = newMappingProvisioningCoordinator(mappings, *relayOverride, false)
+	} else {
+		coordinator = newLegacyProvisioningCoordinator(legacySelection{kind: *claimKind, ip: *claimIP, port: *claimPort, transport: *claimTransport, domain: *claimDomain}, *upstream, *httpChallengeUpstream, *relayOverride)
+	}
+	if err := runFramedProvisioner(ctx, logger, token, outbound, coordinator, framedRuntimeOptions{
+		backend: *backendURL, stateDir: *stateDir, serverName: *serverName, insecureSkipTLS: *insecureSkipTLS,
+		acmeDirectory: *acmeDirectory, acmeEmail: *acmeEmail, pollInterval: provisioningRefreshInterval,
+	}); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("start tunnel workers", "err", err)
 		os.Exit(1)
 	}
-	logger.Info("config fetched", "subscriptions", len(cfg))
+}
 
-	var plans []workerPlan
-	if multiMapping {
-		plans, err = buildMappingPlans(mappings, cfg, *relayOverride)
-	} else {
-		plans, err = buildLegacyPlans(cfg, legacySelection{
-			kind: *claimKind, ip: *claimIP, port: *claimPort,
-			transport: *claimTransport, domain: *claimDomain,
-		}, *upstream, *httpChallengeUpstream, *relayOverride)
-	}
-	if err != nil {
-		logger.Error("build tunnel plans", "err", err)
-		os.Exit(2)
-	}
+type framedRuntimeOptions struct {
+	backend         string
+	stateDir        string
+	serverName      string
+	insecureSkipTLS bool
+	relayOverride   string
+	acmeDirectory   string
+	acmeEmail       string
+	pollInterval    time.Duration
+}
 
+func runFramedProvisioner(ctx context.Context, logger *slog.Logger, token string, outbound *outboundTransport, coordinator *provisioningCoordinator, options framedRuntimeOptions) error {
+	var credentials *credentialManager
 	var material *tlsMaterial
-	var credentialStore *credentialManager
-	var certSerial string
-	if !*insecureSkipTLS {
-		credentialStore, err = openCredentialManager(ctx, outbound.httpClient, *backendURL, token, *stateDir)
-		if err != nil {
-			logger.Error("initialize client identity", "err", err)
-			os.Exit(1)
-		}
-		defer credentialStore.Close()
-		material = credentialStore.tlsMaterial()
-		certSerial = credentialStore.serial()
-		go credentialStore.runRenewal(ctx, logger)
-	} else {
+	if options.insecureSkipTLS {
 		logger.Warn("mTLS DISABLED (BLINDPORT_INSECURE_SKIP_TLS=1)")
+	} else {
+		var err error
+		credentials, err = openCredentialManager(ctx, outbound.httpClient, options.backend, token, options.stateDir)
+		if err != nil {
+			return fmt.Errorf("initialize client identity: %w", err)
+		}
+		defer credentials.Close()
+		material = credentials.tlsMaterial()
+		go credentials.runRenewal(ctx, logger)
 	}
 
-	tlsConfigs := make(map[string]*tls.Config, len(plans))
-	for _, plan := range plans {
+	registry, err := newLazyACMERegistry(ctx, options.stateDir, options.acmeDirectory, options.acmeEmail, outbound.httpClient, logger)
+	if err != nil {
+		return fmt.Errorf("initialize automatic TLS state: %w", err)
+	}
+	defer registry.Close()
+
+	var supervisor *workerSupervisor
+	supervisor = newWorkerSupervisor(ctx, func(workerCtx context.Context, plan workerPlan) {
 		var tlsConfig *tls.Config
 		if material != nil {
-			tlsConfig, err = material.configForEndpoint(plan.RelayAddr, *serverName)
-			if err != nil {
-				logger.Error("configure relay TLS", "relay", plan.RelayAddr, "err", err)
-				os.Exit(2)
+			var tlsErr error
+			tlsConfig, tlsErr = material.configForEndpoint(plan.RelayAddr, options.serverName)
+			if tlsErr != nil {
+				logger.Error("configure relay TLS", "relay", plan.RelayAddr, "err", tlsErr)
+				return
 			}
-			logger.Info("mTLS enabled", "relay", plan.RelayAddr, "server_name", tlsConfig.ServerName, "cert_serial", certSerial)
 		}
-		tlsConfigs[plan.RelayAddr] = tlsConfig
-	}
-	logger.Info("tunnel workers started", "workers", len(plans), "mappings", countMappings(plans))
-	var acmeManagers *acmeRegistry
-	if plansUseAutomaticTLS(plans) {
-		acmeManagers, err = newACMERegistry(ctx, *stateDir, *acmeDirectory, *acmeEmail, outbound.httpClient, logger)
-		if err != nil {
-			logger.Error("initialize automatic TLS state", "err", err)
-			os.Exit(1)
-		}
-		defer acmeManagers.Close()
-		if err := acmeManagers.Reconcile(plans); err != nil {
-			logger.Error("initialize automatic TLS managers", "err", err)
-			os.Exit(1)
-		}
-	}
-	runWorkerPlans(plans, func(plan workerPlan) {
 		var automatic *acmeDomainManager
-		if acmeManagers != nil && plan.Claim != nil {
-			automatic = acmeManagers.manager(plan.Claim.Domain)
+		if plan.TLSMode == tlsModeAutomatic && plan.Claim != nil {
+			automatic = registry.manager(plan.Claim.Domain)
 		}
-		runWorker(ctx, logger, plan, token, outbound.relayDialer, tlsConfigs[plan.RelayAddr], automatic)
+		var proof func(workerKey) (string, bool)
+		if credentials != nil {
+			proof = supervisor.entitlements.Get
+		}
+		runWorkerWithEntitlement(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof)
+	})
+	defer supervisor.Shutdown()
+
+	reconciler := automaticPlanReconciler{registry: registry, workers: supervisor}
+	return runProvisioningReconciler(ctx, func(fetchCtx context.Context) (provisioningResult, error) {
+		return fetchProvisioning(fetchCtx, outbound.httpClient, options.backend, token, credentials, options.insecureSkipTLS)
+	}, coordinator, reconciler, options.pollInterval, func(message string, err error) {
+		logger.Warn(message, "err", err)
 	})
 }
 
-func plansUseAutomaticTLS(plans []workerPlan) bool {
-	for _, plan := range plans {
-		if plan.TLSMode == tlsModeAutomatic {
-			return true
+func runDockerFramed(ctx context.Context, logger *slog.Logger, docker dockerContainerLister, mappings []mapping, token string, outbound *outboundTransport, options framedRuntimeOptions) error {
+	var credentials *credentialManager
+	var material *tlsMaterial
+	if options.insecureSkipTLS {
+		logger.Warn("mTLS DISABLED (BLINDPORT_INSECURE_SKIP_TLS=1)")
+	} else {
+		var err error
+		credentials, err = openCredentialManager(ctx, outbound.httpClient, options.backend, token, options.stateDir)
+		if err != nil {
+			return fmt.Errorf("initialize client identity: %w", err)
 		}
+		defer credentials.Close()
+		material = credentials.tlsMaterial()
+		go credentials.runRenewal(ctx, logger)
 	}
-	return false
+	registry, err := newLazyACMERegistry(ctx, options.stateDir, options.acmeDirectory, options.acmeEmail, outbound.httpClient, logger)
+	if err != nil {
+		return fmt.Errorf("initialize automatic TLS state: %w", err)
+	}
+	defer registry.Close()
+	var supervisor *workerSupervisor
+	supervisor = newWorkerSupervisor(ctx, func(workerCtx context.Context, plan workerPlan) {
+		var tlsConfig *tls.Config
+		if material != nil {
+			var tlsErr error
+			tlsConfig, tlsErr = material.configForEndpoint(plan.RelayAddr, options.serverName)
+			if tlsErr != nil {
+				logger.Error("configure relay TLS", "relay", plan.RelayAddr, "err", tlsErr)
+				return
+			}
+		}
+		var automatic *acmeDomainManager
+		if plan.TLSMode == tlsModeAutomatic && plan.Claim != nil {
+			automatic = registry.manager(plan.Claim.Domain)
+		}
+		var proof func(workerKey) (string, bool)
+		if credentials != nil {
+			proof = supervisor.entitlements.Get
+		}
+		runWorkerWithEntitlement(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof)
+	})
+	defer supervisor.Shutdown()
+	agent := &dockerAgent{
+		docker: docker, static: mappings, orders: &orderAPIClient{client: outbound.httpClient, backend: options.backend, token: token},
+		fetchProvisioning: func(fetchCtx context.Context) (provisioningResult, error) {
+			return fetchProvisioning(fetchCtx, outbound.httpClient, options.backend, token, credentials, options.insecureSkipTLS)
+		},
+		supervisor: automaticPlanReconciler{registry: registry, workers: supervisor}, relayOverride: options.relayOverride,
+		pollInterval: options.pollInterval, logger: logger, now: time.Now, orderCache: make(map[string]*orderCacheEntry),
+	}
+	if err := agent.reconcile(ctx); err != nil {
+		return err
+	}
+	logger.Info("continuous Docker discovery started", "poll_interval", options.pollInterval, "static_mappings", len(mappings))
+	agent.run(ctx)
+	return nil
 }
 
 func loadToken(flagValue, path string) (string, error) {
@@ -471,6 +483,10 @@ func runOnceWithHelloTimeout(ctx context.Context, log *slog.Logger, relayAddr, t
 }
 
 func runOnceManaged(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream string, dialer contextDialer, tlsConfig *tls.Config, timeout time.Duration, automatic *acmeDomainManager) (time.Duration, error) {
+	return runOnceManagedWithEntitlement(ctx, log, relayAddr, token, claim, upstream, httpChallengeUpstream, dialer, tlsConfig, timeout, automatic, "")
+}
+
+func runOnceManagedWithEntitlement(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream string, dialer contextDialer, tlsConfig *tls.Config, timeout time.Duration, automatic *acmeDomainManager, entitlement string) (time.Duration, error) {
 	conn, err := dialRelay(ctx, dialer, relayAddr, tlsConfig)
 	if err != nil {
 		return 0, fmt.Errorf("dial relay: %w", err)
@@ -478,11 +494,15 @@ func runOnceManaged(ctx context.Context, log *slog.Logger, relayAddr, token stri
 	defer conn.Close()
 	stopCancellation := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopCancellation()
-	capabilities, err := exchangeHello(conn, token, claim, timeout)
+	capabilities, err := exchangeHelloWithEntitlement(conn, token, claim, timeout, entitlement)
 	if err != nil {
 		return 0, err
 	}
-	log.Info("tunnel established", "relay", relayAddr, "claim", claim, "upstream", upstream, "http_challenge_upstream", httpChallengeUpstream)
+	claimKind := ""
+	if claim != nil {
+		claimKind = string(claim.Kind)
+	}
+	log.Info("tunnel established", "relay", relayAddr, "claim_kind", claimKind, "upstream", upstream, "http_challenge_upstream", httpChallengeUpstream)
 
 	expectedTransport := claimTransportForTunnel(claim)
 	t := tunnel.New(conn, func(s *tunnel.Stream) {
@@ -526,12 +546,20 @@ type tunnelCapabilities struct {
 }
 
 func exchangeHello(conn net.Conn, token string, claim *protocol.Claim, timeout time.Duration) (tunnelCapabilities, error) {
+	return exchangeHelloWithEntitlement(conn, token, claim, timeout, "")
+}
+
+func exchangeHelloWithEntitlement(conn net.Conn, token string, claim *protocol.Claim, timeout time.Duration, entitlement string) (tunnelCapabilities, error) {
 	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return tunnelCapabilities{}, fmt.Errorf("set hello deadline: %w", err)
 	}
 	hello := &protocol.Frame{
 		Type: protocol.TypeHello, Version: protocol.CurrentVersion, Token: token, Claim: claim,
 		Capabilities: []protocol.Capability{protocol.CapabilityTCPHalfClose, protocol.CapabilityStreamFlowControl},
+	}
+	if entitlement != "" {
+		hello.Entitlement = entitlement
+		hello.Capabilities = append(hello.Capabilities, protocol.CapabilityOfflineEntitlementV1)
 	}
 	if err := protocol.WriteFrame(conn, hello); err != nil {
 		return tunnelCapabilities{}, fmt.Errorf("send hello: %w", err)
@@ -670,25 +698,30 @@ func fetchConfigWithClient(ctx context.Context, client *http.Client, backend, to
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Blindport-Agent-Capabilities", relayAssignmentsCapability)
-	resp, err := client.Do(req)
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &provisioningFetchError{kind: provisioningInfrastructure}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("config status %d", resp.StatusCode)
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return nil, &provisioningFetchError{kind: provisioningInfrastructure}
+		}
+		return nil, &provisioningFetchError{kind: provisioningTerminal, status: resp.StatusCode}
 	}
 	var cfg []provisioning
 	if err := decodeBoundedJSON(resp.Body, maxProvisioningJSON, &cfg); err != nil {
-		return nil, err
+		return nil, &provisioningFetchError{kind: provisioningTerminal}
 	}
 	seen := make(map[string]struct{}, len(cfg))
 	for _, row := range cfg {
 		if err := validateSubscriptionID(row.SubscriptionID); err != nil {
-			return nil, fmt.Errorf("invalid provisioning subscription_id %q: %w", row.SubscriptionID, err)
+			return nil, &provisioningFetchError{kind: provisioningTerminal}
 		}
 		if _, exists := seen[row.SubscriptionID]; exists {
-			return nil, fmt.Errorf("duplicate provisioning subscription_id %s", row.SubscriptionID)
+			return nil, &provisioningFetchError{kind: provisioningTerminal}
 		}
 		seen[row.SubscriptionID] = struct{}{}
 	}

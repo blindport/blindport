@@ -3,10 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -338,6 +345,158 @@ func TestExchangeHelloNegotiatesTCPHalfClose(t *testing.T) {
 	if !capabilities.halfClose || !capabilities.flowControl {
 		t.Fatalf("negotiated capabilities = %+v", capabilities)
 	}
+}
+
+func TestExchangeHelloAddsOfflineEntitlementOnlyWhenProvided(t *testing.T) {
+	for name, entitlement := range map[string]string{"v2": "v1.payload.signature", "v1": ""} {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			go func() {
+				hello, err := protocol.ReadFrame(server)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if hello.Entitlement != entitlement {
+					t.Errorf("entitlement = %q", hello.Entitlement)
+				}
+				if got := hello.HasCapability(protocol.CapabilityOfflineEntitlementV1); got != (entitlement != "") {
+					t.Errorf("offline capability = %t", got)
+				}
+				_ = protocol.WriteFrame(server, &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion})
+			}()
+			claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "hello.example"}
+			if _, err := exchangeHelloWithEntitlement(client, "token", claim, time.Second, entitlement); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSecureFramedRuntimeEnrollsBeforeV2ProvisioningAndSendsProof(t *testing.T) {
+	enrollment := newEnrollmentServer(t)
+	relayListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = relayListener.Close() })
+	relayCertificate := issueTestRelayCertificate(t, enrollment, net.ParseIP("127.0.0.1"))
+	clientRoots := x509.NewCertPool()
+	clientRoots.AddCert(enrollment.caCert)
+	tlsListener := tls.NewListener(relayListener, &tls.Config{
+		Certificates: []tls.Certificate{relayCertificate}, ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs: clientRoots, MinVersion: tls.VersionTLS12,
+	})
+
+	helloReceived := make(chan *protocol.Frame, 1)
+	go func() {
+		conn, acceptErr := tlsListener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		hello, readErr := protocol.ReadFrame(conn)
+		if readErr != nil {
+			return
+		}
+		helloReceived <- hello
+		_ = protocol.WriteFrame(conn, &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion})
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	var entitlement string
+	configFetched := make(chan struct{}, 1)
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/client/certificate":
+			enrollment.handle(w, r)
+		case "/api/v2/client/config":
+			if enrollment.callCount() != 1 {
+				t.Errorf("provisioning ran before enrollment: calls = %d", enrollment.callCount())
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			instance := r.URL.Query().Get("instance_id")
+			now := time.Now().UTC().Truncate(time.Second)
+			domain := "runtime.example"
+			edge := testV2Edge(now, "edge-a", relayListener.Addr().String(), provisioningV2Claim{Kind: protocol.ClaimRelay, Domain: domain}, testSubscriptionID1, instance, 1)
+			entitlement = edge.Entitlement
+			config := provisioningV2{Version: 2, Subscriptions: []provisioningSubscription{{
+				Domain: &domain, Transport: "tcp", Product: "relay", SubscriptionID: testSubscriptionID1,
+				Edges: []provisioningV2Edge{edge},
+			}}}
+			configFetched <- struct{}{}
+			_, _ = w.Write(testJSON(t, config))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer control.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	outbound := &outboundTransport{httpClient: control.Client(), relayDialer: &net.Dialer{Timeout: time.Second}}
+	done := make(chan error, 1)
+	go func() {
+		done <- runFramedProvisioner(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-token", outbound,
+			newMappingProvisioningCoordinator([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:443"}}, "", false),
+			framedRuntimeOptions{backend: control.URL, stateDir: privateStateDir(t), pollInterval: time.Hour},
+		)
+	}()
+	select {
+	case <-configFetched:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("v2 provisioning was not fetched")
+	}
+	select {
+	case hello := <-helloReceived:
+		if hello.Entitlement != entitlement || !hello.HasCapability(protocol.CapabilityOfflineEntitlementV1) {
+			t.Fatalf("HELLO entitlement = %q, capabilities = %v", hello.Entitlement, hello.Capabilities)
+		}
+		if hello.Claim == nil || hello.Claim.Kind != protocol.ClaimRelay || hello.Claim.Domain != "runtime.example" {
+			t.Fatalf("HELLO claim = %+v", hello.Claim)
+		}
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("secure framed worker did not send HELLO")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func issueTestRelayCertificate(t *testing.T, enrollment *enrollmentServer, ip net.IP) tls.Certificate {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(99), Subject: pkix.Name{CommonName: "test relay"},
+		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{ip},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, enrollment.caCert, publicKey, enrollment.caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := tls.X509KeyPair(
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate
 }
 
 func TestExchangeHelloRejectsFlowControlWithoutHalfClose(t *testing.T) {
