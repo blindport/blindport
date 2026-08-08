@@ -25,8 +25,13 @@ services:
         uid: "0"
         gid: "0"
         mode: 0400
+    volumes:
+      - relay-wireguard-state:/var/lib/blindport
     cap_add: [NET_ADMIN, DAC_OVERRIDE]
 
 secrets:
   wireguard-key:
     file: ${SECRETS_DIR:-./secrets}/wireguard-key
+
+volumes:
+  relay-wireguard-state:

@@ -180,6 +180,8 @@ assert {"DAC_OVERRIDE", "NET_ADMIN"} <= capabilities
 assert capabilities <= {"DAC_OVERRIDE", "NET_ADMIN", "NET_BIND_SERVICE"}
 assert relay["user"] == "0:0"
 assert relay["read_only"] is True
+relay_state = next(item for item in relay["volumes"] if item["target"] == "/var/lib/blindport")
+assert relay_state["source"].endswith("relay-wireguard-state")
 assert environment["BLINDPORT_RELAY_WIREGUARD"] == "1"
 assert environment["BLINDPORT_RELAY_WIREGUARD_KEY_FILE"] == "/run/secrets/wireguard-key"
 assert int(environment["BLINDPORT_RELAY_WIREGUARD_PORT"]) == 51820

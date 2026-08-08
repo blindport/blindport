@@ -428,8 +428,10 @@ sudo sysctl --system
 The routed Relay runs as UID 0 with `NET_ADMIN` to create the WireGuard device and
 `DAC_OVERRIDE` to access the existing owner-only Relay secret and certificate cache.
 This is required because common Compose runtimes ignore file-secret `uid` and `gid`.
-The container root filesystem remains read-only and all other capabilities remain
-dropped.
+The overlay uses a separate `relay-wireguard-state` volume so its owner-only
+certificate cache matches UID 0 without changing the base Relay's UID 10001 state
+volume. Back up both volumes after enabling routed mode. The container root filesystem
+remains read-only and all other capabilities remain dropped.
 
 Run `nft list table inet blindport` after startup and verify the input, active
 source, non-global destination, and TCP/25 rules before activating sales. Test
