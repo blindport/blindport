@@ -28,6 +28,35 @@ from blindport.migrations import (
 )
 
 EXPECTED_COLUMNS = {
+    "announcement": {
+        "id",
+        "state",
+        "subject",
+        "body",
+        "author_marker",
+        "recipient_count",
+        "created_at",
+        "queued_at",
+        "completed_at",
+        "cancelled_at",
+    },
+    "announcementdelivery": {
+        "id",
+        "announcement_id",
+        "user_id",
+        "recipient_generation",
+        "state",
+        "attempt_count",
+        "error_code",
+        "created_at",
+        "updated_at",
+        "last_attempt_at",
+        "next_attempt_at",
+        "sent_at",
+        "terminal_at",
+        "lease_token",
+        "lease_until",
+    },
     "iplease": {
         "id",
         "public_id",
@@ -122,6 +151,10 @@ EXPECTED_COLUMNS = {
         "reminder_email_ciphertext",
         "reminder_email_key_version",
         "reminder_email_generation",
+        "has_service_email",
+        "service_email_ciphertext",
+        "service_email_key_version",
+        "service_email_generation",
     },
     "subscription": {
         "id",
@@ -204,6 +237,17 @@ EXPECTED_COLUMNS = {
 }
 
 EXPECTED_DATETIME_COLUMNS = {
+    ("announcement", "created_at"),
+    ("announcement", "queued_at"),
+    ("announcement", "completed_at"),
+    ("announcement", "cancelled_at"),
+    ("announcementdelivery", "created_at"),
+    ("announcementdelivery", "updated_at"),
+    ("announcementdelivery", "last_attempt_at"),
+    ("announcementdelivery", "next_attempt_at"),
+    ("announcementdelivery", "sent_at"),
+    ("announcementdelivery", "terminal_at"),
+    ("announcementdelivery", "lease_until"),
     ("iplease", "reserved_at"),
     ("iplease", "activated_at"),
     ("iplease", "expired_at"),
@@ -265,12 +309,14 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path)
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0017", "0017")
+    assert database_revisions(engine) == ("0018", "0018")
     verify_database_current(engine)
 
     inspector = inspect(engine)
     assert set(inspector.get_table_names()) == {
         "alembic_version",
+        "announcement",
+        "announcementdelivery",
         "agentorder",
         "clientcredential",
         "iplease",
@@ -321,6 +367,11 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
         "ix_reminderdelivery_due",
         "ix_reminderdelivery_subscription_id",
     }
+    assert {index["name"] for index in inspector.get_indexes("announcementdelivery")} == {
+        "ix_announcementdelivery_announcement_id",
+        "ix_announcementdelivery_due",
+        "ix_announcementdelivery_user_id",
+    }
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("ratelimitbucket")
     } == {"uq_ratelimitbucket_scope_identifier_window"}
@@ -348,6 +399,10 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
     assert [fk["referred_table"] for fk in inspector.get_foreign_keys("iplease")] == [
         "subscription"
     ]
+    assert {fk["referred_table"] for fk in inspector.get_foreign_keys("announcementdelivery")} == {
+        "announcement",
+        "user",
+    }
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("clientcredential")
     } == {"uq_clientcredential_instance_id"}
@@ -449,7 +504,7 @@ def test_0014_upgrades_deployed_0013_subscription_identity(tmp_path) -> None:
 
     original_public_ids = {row.id: str(row.public_id) for row in rows}
     downgrade_database(engine, "0013")
-    assert database_revisions(engine) == ("0013", "0017")
+    assert database_revisions(engine) == ("0013", "0018")
     downgraded = Table("subscription", MetaData(), autoload_with=engine)
     assert "public_id" in downgraded.c
     assert any(
@@ -698,7 +753,7 @@ def test_sqlite_upgrade_from_0003_preserves_tcp_lease_and_adds_transport_identit
 
     with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
         downgrade_database(engine, "0003")
-    assert database_revisions(engine) == ("0017", "0017")
+    assert database_revisions(engine) == ("0018", "0018")
     assert any(
         constraint["column_names"] == ["assigned_ip", "assigned_port", "transport"]
         for constraint in inspect(engine).get_unique_constraints("subscription")
@@ -814,12 +869,12 @@ def test_0016_rejects_downgrade_with_stablecoin_payments(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
         downgrade_database(engine, "0015")
-    assert database_revisions(engine) == ("0017", "0017")
+    assert database_revisions(engine) == ("0018", "0018")
 
     with engine.begin() as connection:
         connection.execute(payment.delete().where(payment.c.id == payment_id))
     downgrade_database(engine, "0015")
-    assert database_revisions(engine) == ("0015", "0017")
+    assert database_revisions(engine) == ("0015", "0018")
     assert "markup_sats" not in {
         column["name"] for column in inspect(engine).get_columns("payment")
     }
@@ -873,12 +928,34 @@ def test_0017_backfills_current_ip_lease_and_downgrades_cleanly(tmp_path) -> Non
     assert row.smtp_enabled is False
 
     downgrade_database(engine, "0016")
-    assert database_revisions(engine) == ("0016", "0017")
+    assert database_revisions(engine) == ("0016", "0018")
     assert not inspect(engine).has_table("iplease")
     with engine.connect() as connection:
         assert (
             connection.execute(select(subscription.c.assigned_ip)).scalar_one() == "198.51.100.20"
         )
+
+
+def test_0018_service_announcements_downgrade_cleanly_on_sqlite(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path)
+    upgrade_database(engine)
+
+    downgrade_database(engine, "0017")
+
+    assert database_revisions(engine) == ("0017", "0018")
+    inspector = inspect(engine)
+    assert not inspector.has_table("announcement")
+    assert not inspector.has_table("announcementdelivery")
+    columns = {column["name"] for column in inspector.get_columns("user")}
+    assert {
+        "has_service_email",
+        "service_email_ciphertext",
+        "service_email_key_version",
+        "service_email_generation",
+    }.isdisjoint(columns)
+
+    upgrade_database(engine)
+    assert database_revisions(engine) == ("0018", "0018")
 
 
 def test_sqlite_0008_backfills_unique_uuid4_public_ids_and_enforces_immutability(
@@ -1041,7 +1118,7 @@ def test_sqlite_0009_backfills_billing_snapshots_and_supports_rolling_inserts(
     assert (rolling_payment.billing_term, rolling_payment.period_days) == ("monthly", 30)
 
     downgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0017")
+    assert database_revisions(engine) == ("0008", "0018")
     assert "billing_term" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -1085,7 +1162,7 @@ def test_sqlite_downgrade_rejects_wireguard_subscriptions(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="cannot downgrade while WireGuard subscriptions exist"):
         downgrade_database(engine, "0004")
 
-    assert database_revisions(engine) == ("0017", "0017")
+    assert database_revisions(engine) == ("0018", "0018")
     assert "delivery" in {column["name"] for column in inspect(engine).get_columns("subscription")}
     assert inspect(engine).has_table("wireguardpeer")
 
@@ -1096,10 +1173,10 @@ def test_sqlite_downgrade_and_upgrade_round_trip(tmp_path) -> None:
     downgrade_database(engine, "base")
 
     assert inspect(engine).get_table_names() == ["alembic_version"]
-    assert database_revisions(engine) == (None, "0017")
+    assert database_revisions(engine) == (None, "0018")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0017", "0017")
+    assert database_revisions(engine) == ("0018", "0018")
 
 
 def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypatch) -> None:
@@ -1118,7 +1195,7 @@ def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypa
 
     assert not inspect(engine).has_table("injected_migration_failure")
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0017", "0017")
+    assert database_revisions(engine) == ("0018", "0018")
 
 
 def test_all_persisted_datetimes_are_timezone_aware_in_metadata() -> None:
@@ -1154,15 +1231,15 @@ def test_current_cli_can_check_head(tmp_path, monkeypatch, capsys) -> None:
 
     assert cli.main(["upgrade"]) == 0
     assert cli.main(["current", "--check"]) == 0
-    assert "current: 0017\nhead: 0017" in capsys.readouterr().out
+    assert "current: 0018\nhead: 0018" in capsys.readouterr().out
 
     cli.main(["downgrade", "base"])
     capsys.readouterr()
     assert cli.main(["current", "--check"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "current: unversioned\nhead: 0017\n"
+    assert captured.out == "current: unversioned\nhead: 0018\n"
     assert captured.err == (
-        "error: database revision is unversioned, expected migration head 0017\n"
+        "error: database revision is unversioned, expected migration head 0018\n"
     )
     assert "Traceback" not in captured.err
 
@@ -1191,8 +1268,8 @@ def test_current_cli_check_subprocess_exits_without_traceback(tmp_path) -> None:
     )
 
     assert result.returncode == 1
-    assert result.stdout == "current: unversioned\nhead: 0017\n"
+    assert result.stdout == "current: unversioned\nhead: 0018\n"
     assert result.stderr == (
-        "error: database revision is unversioned, expected migration head 0017\n"
+        "error: database revision is unversioned, expected migration head 0018\n"
     )
     assert "Traceback" not in result.stderr

@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
+import stat
 from contextlib import suppress
 from dataclasses import dataclass
 from email.headerregistry import Address
@@ -14,6 +16,8 @@ from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
@@ -27,6 +31,18 @@ from .core.wireguard import canonical_wireguard_key
 class RelayEdge:
     endpoint: str
     ip: str
+
+
+@dataclass(frozen=True)
+class StableRelayEdge:
+    """A relay endpoint with a deployment-stable authorization identifier."""
+
+    id: str
+    endpoint: str
+
+
+_OFFLINE_EDGE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}\Z")
+_OFFLINE_ENTITLEMENT_PRIVATE_KEY_MAX_BYTES = 16 * 1024
 
 
 def validate_v3_onion_hostname(value: str) -> str:
@@ -298,6 +314,79 @@ def parse_framed_ip_endpoints(value: str) -> dict[str, str]:
     return mappings
 
 
+def parse_relay_edges(value: str) -> list[StableRelayEdge]:
+    """Parse the stable edge map used by offline entitlement artifacts."""
+    if not value:
+        return []
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise ValueError("RELAY_EDGES must be valid JSON") from error
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("RELAY_EDGES must be a non-empty JSON list")
+    edges: list[StableRelayEdge] = []
+    for item in raw:
+        if not isinstance(item, dict) or set(item) != {"id", "endpoint"}:
+            raise ValueError("RELAY_EDGES entries must contain only id and endpoint")
+        edge_id = item["id"]
+        endpoint = item["endpoint"]
+        if not isinstance(edge_id, str) or not _OFFLINE_EDGE_ID_RE.fullmatch(edge_id):
+            raise ValueError("RELAY_EDGES ids must be lowercase stable edge identifiers")
+        if not isinstance(endpoint, str):
+            raise ValueError("RELAY_EDGES endpoints must be strings")
+        canonical_endpoint = canonicalize_relay_endpoint(endpoint)
+        edges.append(StableRelayEdge(id=edge_id, endpoint=canonical_endpoint))
+    if len({edge.id for edge in edges}) != len(edges):
+        raise ValueError("RELAY_EDGES contains duplicate ids")
+    if len({edge.endpoint for edge in edges}) != len(edges):
+        raise ValueError("RELAY_EDGES contains duplicate canonical endpoints")
+    return edges
+
+
+def load_offline_entitlement_private_key(path_value: str) -> Ed25519PrivateKey:
+    """Open one owner-only regular Ed25519 PEM key without following symlinks."""
+    path = Path(path_value).expanduser()
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise ValueError("offline entitlement private key is not securely readable") from error
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("offline entitlement private key must be a regular file")
+        if metadata.st_uid != os.geteuid():
+            raise ValueError("offline entitlement private key must be owned by the effective user")
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ValueError(
+                "offline entitlement private key must not be accessible by group or others"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as source:
+            raw = source.read(_OFFLINE_ENTITLEMENT_PRIVATE_KEY_MAX_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if not raw or len(raw) > _OFFLINE_ENTITLEMENT_PRIVATE_KEY_MAX_BYTES:
+        raise ValueError(
+            "offline entitlement private key must be a non-empty PEM no larger than 16 KiB"
+        )
+    try:
+        key = serialization.load_pem_private_key(raw, password=None)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "offline entitlement private key must be an unencrypted Ed25519 PEM key"
+        ) from error
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("offline entitlement private key must be Ed25519")
+    canonical = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    if raw != canonical:
+        raise ValueError("offline entitlement private key must contain one canonical PEM key")
+    return key
+
+
 class Settings(BaseSettings):
     """Blindport backend settings."""
 
@@ -423,6 +512,7 @@ class Settings(BaseSettings):
 
     # Optional expiration reminders delivered through generic SMTP.
     REMINDER_EMAIL_ENABLED: bool = False
+    ANNOUNCEMENT_EMAIL_ENABLED: bool = False
     SMTP_HOST: str = ""
     SMTP_PORT: int = Field(default=587, ge=1, le=65535)
     SMTP_SECURITY: str = "starttls"
@@ -443,6 +533,11 @@ class Settings(BaseSettings):
     PORT_HA_EDGES: str = ""  # JSON [{"endpoint":"edge:5443","ip":"203.0.113.20"}]
     PORT_HOSTNAME_SUFFIX: str = ""
     FRAMED_IP_ENDPOINTS: str = ""  # JSON {"203.0.113.10":"edge:5443"}
+    OFFLINE_ENTITLEMENTS_ENABLED: bool = False
+    OFFLINE_ENTITLEMENT_GRACE_SECONDS: int = Field(default=604800, ge=86400, le=604800)
+    OFFLINE_ENTITLEMENT_KEY_ID: str = ""
+    OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: str = ""
+    RELAY_EDGES: str = ""  # JSON [{"id":"edge-a","endpoint":"edge-a:5443"}]
     RELAY_PUBLIC_IPS: str = "203.0.113.10,203.0.113.11"  # comma-separated, allocated pool
     WIREGUARD_PUBLIC_IPS: str = ""  # provider-routed /32 inventory, never locally bound
     RELAY_SHARED_IPS: str = "203.0.113.20"  # separate Blindport Port/SNI ingress inventory
@@ -466,7 +561,7 @@ class Settings(BaseSettings):
     )
     RELAY_DNS_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0, le=30)
     RESOURCE_RESERVATION_TTL_SECONDS: int = Field(default=1800, ge=60, le=86400)
-    RESOURCE_REUSE_QUARANTINE_SECONDS: int = Field(default=180, ge=60, le=86400)
+    RESOURCE_REUSE_QUARANTINE_SECONDS: int = Field(default=180, ge=60, le=7776000)
     IP_REUSE_QUARANTINE_SECONDS: int = Field(default=604800, ge=3600, le=7776000)
 
     # Token format settings
@@ -523,6 +618,10 @@ class Settings(BaseSettings):
     @property
     def framed_ip_endpoints_map(self) -> dict[str, str]:
         return parse_framed_ip_endpoints(self.FRAMED_IP_ENDPOINTS)
+
+    @property
+    def relay_edges_list(self) -> list[StableRelayEdge]:
+        return parse_relay_edges(self.RELAY_EDGES)
 
     @property
     def cashu_mints_list(self) -> list[str]:
@@ -713,6 +812,16 @@ class Settings(BaseSettings):
     def validate_framed_ip_endpoints(cls, value: str) -> str:
         return json.dumps(parse_framed_ip_endpoints(value), sort_keys=True) if value else ""
 
+    @field_validator("RELAY_EDGES")
+    @classmethod
+    def validate_relay_edges(cls, value: str) -> str:
+        edges = parse_relay_edges(value) if value else []
+        return (
+            json.dumps([{"id": edge.id, "endpoint": edge.endpoint} for edge in edges])
+            if edges
+            else ""
+        )
+
     @field_validator("PORT_HOSTNAME_SUFFIX")
     @classmethod
     def validate_port_hostname_suffix(cls, value: str) -> str:
@@ -868,6 +977,38 @@ class Settings(BaseSettings):
             raise ValueError("FRAMED_IP_ENDPOINTS must map every RELAY_PUBLIC_IPS address exactly")
         if set(framed_endpoints.values()) - set(self.relay_control_urls_list):
             raise ValueError("every FRAMED_IP_ENDPOINTS value must appear in RELAY_CONTROL_URLS")
+        if self.OFFLINE_ENTITLEMENTS_ENABLED:
+            if not _OFFLINE_EDGE_ID_RE.fullmatch(self.OFFLINE_ENTITLEMENT_KEY_ID):
+                raise ValueError(
+                    "OFFLINE_ENTITLEMENT_KEY_ID must be a lowercase stable key identifier"
+                )
+            if not self.OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE:
+                raise ValueError(
+                    "OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE is required when offline entitlements are enabled"
+                )
+            endpoint_counts: dict[str, int] = {}
+            for edge in self.relay_edges_list:
+                endpoint_counts[edge.endpoint] = endpoint_counts.get(edge.endpoint, 0) + 1
+            used_endpoints = {
+                self.RELAY_CONTROL_URL,
+                *self.relay_control_urls_list,
+                *(edge.endpoint for edge in port_edges),
+                *framed_endpoints.values(),
+            }
+            if any(endpoint_counts.get(endpoint) != 1 for endpoint in used_endpoints):
+                raise ValueError(
+                    "every configured relay endpoint must map to exactly one RELAY_EDGES id"
+                )
+            if self.RESOURCE_REUSE_QUARANTINE_SECONDS <= (
+                self.OFFLINE_ENTITLEMENT_GRACE_SECONDS + 120
+            ):
+                raise ValueError(
+                    "RESOURCE_REUSE_QUARANTINE_SECONDS must exceed offline entitlement grace plus 120 seconds"
+                )
+            if self.RELAY_RENEWAL_GRACE_SECONDS <= (self.OFFLINE_ENTITLEMENT_GRACE_SECONDS + 120):
+                raise ValueError(
+                    "RELAY_RENEWAL_GRACE_SECONDS must exceed offline entitlement grace plus 120 seconds"
+                )
         if self.wireguard_enabled:
             if any(ip_address(address).version != 4 for address in routed):
                 raise ValueError("WIREGUARD_PUBLIC_IPS currently supports IPv4 addresses only")
@@ -978,18 +1119,18 @@ class Settings(BaseSettings):
             )
         if bool(self.SMTP_USERNAME) != bool(self.SMTP_PASSWORD):
             raise ValueError("SMTP_USERNAME and SMTP_PASSWORD must be configured together")
-        if self.REMINDER_EMAIL_ENABLED:
+        if self.REMINDER_EMAIL_ENABLED or self.ANNOUNCEMENT_EMAIL_ENABLED:
             if not self.PAYMENT_RECONCILIATION_ENABLED:
                 raise ValueError(
-                    "PAYMENT_RECONCILIATION_ENABLED is required when email reminders are enabled"
+                    "PAYMENT_RECONCILIATION_ENABLED is required when email delivery is enabled"
                 )
             if not self.CREDENTIAL_ENCRYPTION_KEY:
                 raise ValueError(
-                    "CREDENTIAL_ENCRYPTION_KEY is required when email reminders are enabled"
+                    "CREDENTIAL_ENCRYPTION_KEY is required when email delivery is enabled"
                 )
             if not self.SMTP_HOST or not self.SMTP_FROM_EMAIL:
                 raise ValueError(
-                    "SMTP_HOST and SMTP_FROM_EMAIL are required when reminders are enabled"
+                    "SMTP_HOST and SMTP_FROM_EMAIL are required when email delivery is enabled"
                 )
         rate_limit_windows = (
             self.RATE_LIMIT_SIGNUP_WINDOW_SECONDS,
@@ -1049,7 +1190,9 @@ class Settings(BaseSettings):
                     "NWC relay policy requires NWC_ALLOW_PUBLIC_RELAYS=true or at least one "
                     "NWC_ALLOWED_RELAY_HOSTS entry"
                 )
-        if self.REMINDER_EMAIL_ENABLED and self.SMTP_SECURITY not in {"starttls", "tls"}:
+        if (
+            self.REMINDER_EMAIL_ENABLED or self.ANNOUNCEMENT_EMAIL_ENABLED
+        ) and self.SMTP_SECURITY not in {"starttls", "tls"}:
             failures.append("SMTP_SECURITY must use TLS in production")
         if (
             self.SECRET_KEY == DEFAULT_SECRET_KEY
@@ -1087,6 +1230,14 @@ class Settings(BaseSettings):
             failures.append("CA_DIR must be an absolute path")
         if self.LEGACY_CLIENT_CERT_ISSUANCE_ENABLED:
             failures.append("LEGACY_CLIENT_CERT_ISSUANCE_ENABLED must be false")
+        if self.OFFLINE_ENTITLEMENTS_ENABLED:
+            if not Path(self.OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE).expanduser().is_absolute():
+                failures.append("OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE must be absolute")
+            else:
+                try:
+                    load_offline_entitlement_private_key(self.OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE)
+                except ValueError as error:
+                    failures.append(str(error))
         for price_field in (
             "IP_MONTHLY_SATS",
             "IP_YEARLY_SATS",

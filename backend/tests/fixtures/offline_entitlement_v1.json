@@ -1,0 +1,27 @@
+{
+  "public_key_b64url": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
+  "canonical_payload_b64url": "eyJ0eXAiOiJibGluZHBvcnQtb2ZmbGluZS1lbnRpdGxlbWVudCIsInYiOjEsImtpZCI6Im9mZmxpbmUtYSIsImFjY291bnQiOiIxMjM0NTY3OC0xMjM0LTQyMzQtODIzNC0xMjM0NTY3ODlhYmMiLCJzdWJzY3JpcHRpb24iOiJhYWFhYWFhYS1iYmJiLTRjY2MtOGRkZC1lZWVlZWVlZWVlZWUiLCJpbnN0YW5jZSI6IjExMTExMTExLTIyMjItNDMzMy04NDQ0LTU1NTU1NTU1NTU1NSIsImNsaWVudF9wayI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJlZGdlIjoiZWRnZS1hIiwia2luZCI6InBvcnQiLCJpcCI6IjE5OC41MS4xMDAuMzAiLCJwb3J0IjoxMDAwMCwidHJhbnNwb3J0IjoidGNwIiwiZG9tYWluIjoiIiwiaWF0IjoxNzM1Njg5NjAwLCJuYmYiOjE3MzU2ODk2MDAsInBhaWRfdGhyb3VnaCI6MTczNTY4OTYwMCwiZ3JhY2VfdGhyb3VnaCI6MTczNjI5NDQwMCwiZ2VuZXJhdGlvbiI6MzcyNzM2NTAzNDAwMzY2MDgwNywianRpIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyJ9",
+  "artifact": "v1.eyJ0eXAiOiJibGluZHBvcnQtb2ZmbGluZS1lbnRpdGxlbWVudCIsInYiOjEsImtpZCI6Im9mZmxpbmUtYSIsImFjY291bnQiOiIxMjM0NTY3OC0xMjM0LTQyMzQtODIzNC0xMjM0NTY3ODlhYmMiLCJzdWJzY3JpcHRpb24iOiJhYWFhYWFhYS1iYmJiLTRjY2MtOGRkZC1lZWVlZWVlZWVlZWUiLCJpbnN0YW5jZSI6IjExMTExMTExLTIyMjItNDMzMy04NDQ0LTU1NTU1NTU1NTU1NSIsImNsaWVudF9wayI6IkFBRUNBd1FGQmdjSUNRb0xEQTBPRHhBUkVoTVVGUllYR0JrYUd4d2RIaDgiLCJlZGdlIjoiZWRnZS1hIiwia2luZCI6InBvcnQiLCJpcCI6IjE5OC41MS4xMDAuMzAiLCJwb3J0IjoxMDAwMCwidHJhbnNwb3J0IjoidGNwIiwiZG9tYWluIjoiIiwiaWF0IjoxNzM1Njg5NjAwLCJuYmYiOjE3MzU2ODk2MDAsInBhaWRfdGhyb3VnaCI6MTczNTY4OTYwMCwiZ3JhY2VfdGhyb3VnaCI6MTczNjI5NDQwMCwiZ2VuZXJhdGlvbiI6MzcyNzM2NTAzNDAwMzY2MDgwNywianRpIjoiRUJFU0V4UVZGaGNZR1JvYkhCMGVIdyJ9.sNzc_VY8jhgG_FVBoUNwdSd-VpK4U70wxfk89UYjag1TIb5G29zEGVYri352yyRwVMgTVD8rFoYA84L18JGgAg",
+  "claims": {
+    "typ": "blindport-offline-entitlement",
+    "v": 1,
+    "kid": "offline-a",
+    "account": "12345678-1234-4234-8234-123456789abc",
+    "subscription": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "instance": "11111111-2222-4333-8444-555555555555",
+    "client_pk": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "edge": "edge-a",
+    "kind": "port",
+    "ip": "198.51.100.30",
+    "port": 10000,
+    "transport": "tcp",
+    "domain": "",
+    "iat": 1735689600,
+    "nbf": 1735689600,
+    "paid_through": 1735689600,
+    "grace_through": 1736294400,
+    "generation": 3727365034003660807,
+    "jti": "EBESExQVFhcYGRobHB0eHw"
+  },
+  "signature_b64url": "sNzc_VY8jhgG_FVBoUNwdSd-VpK4U70wxfk89UYjag1TIb5G29zEGVYri352yyRwVMgTVD8rFoYA84L18JGgAg"
+}

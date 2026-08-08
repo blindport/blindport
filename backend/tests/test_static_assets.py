@@ -140,6 +140,8 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert 'button.textContent = copied ? "Copied"' in dashboard
     assert "JSON.stringify(body)" in dashboard
     assert "`${body.domain} (CNAME)`" in landing
+    assert 'jsonFetch("/api/v1/me/service-email"' in dashboard
+    assert "/api/v1/me/service-announcement-email" not in dashboard
 
 
 def test_templates_have_accessible_external_only_structure() -> None:
@@ -222,6 +224,9 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="framedRunCommand"' in dashboard
     assert 'id="framedConfigInstallCommand"' in dashboard
     assert 'id="generatedClientConfig"' in dashboard
+    assert 'id="announcementEmailForm"' in dashboard
+    assert "user.has_service_email" in dashboard
+    assert "has_service_announcement_email" not in dashboard
     assert "Most web services need a public hostname" in dashboard
     assert "Routed WireGuard /32" in dashboard
     assert '<script src="/static/account-storage.js"></script>' in dashboard
@@ -245,7 +250,7 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert landing_inspector.table_cells_without_labels == 0
 
     admin = _inspect(templates[4])
-    assert admin.tables == 5
+    assert admin.tables == 6
     assert admin.captions == admin.tables
     assert admin.unscoped_headers == 0
     assert admin.table_cells_without_labels == 0
@@ -533,6 +538,35 @@ def test_dashboard_stablecoin_control_follows_feature_kill_switch(app_client, mo
     assert "stablecoinPayBtn" not in disabled.text
     assert "stablecoinPayBtn" in enabled.text
     assert "Pay with stablecoin" in enabled.text
+
+
+def test_dashboard_service_announcement_control_follows_feature_gate_and_hides_address(
+    app_client, monkeypatch
+) -> None:
+    from blindport import config
+
+    client, _ = app_client
+    signup = client.post("/api/v2/signup").json()
+    headers = {"Authorization": f"Bearer {signup['token']}"}
+    client.cookies.set("blindport_token", signup["token"])
+
+    disabled = client.get("/dashboard")
+    assert "announcementEmailForm" not in disabled.text
+
+    monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
+    enabled = client.get("/dashboard")
+    assert "announcementEmailForm" in enabled.text
+    assert 'id="announcementStatus" role="status" aria-live="polite">Disabled' in enabled.text
+    assert "deleteAnnouncementEmailBtn" not in enabled.text
+
+    address = "customer-announcement@example.com"
+    saved = client.post("/api/v1/me/service-email", json={"email": address}, headers=headers)
+    assert saved.status_code == 200
+    rendered = client.get("/dashboard")
+
+    assert 'id="announcementStatus" role="status" aria-live="polite">Enabled' in rendered.text
+    assert "deleteAnnouncementEmailBtn" in rendered.text
+    assert address not in rendered.text
 
 
 def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monkeypatch) -> None:

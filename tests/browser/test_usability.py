@@ -66,6 +66,9 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "PAYMENT_NWC_ADAPTER": "mock",
             "CREDENTIAL_ENCRYPTION_KEY": "cd" * 32,
             "PAYMENT_RECONCILIATION_ENABLED": "true",
+            "ANNOUNCEMENT_EMAIL_ENABLED": "true",
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_FROM_EMAIL": "notices@example.test",
             "BILLING_YEARLY_ENABLED": "true",
             "RELAY_SHARED_IPS": "203.0.113.20",
             "RELAY_SHARED_TCP_PORTS": "10000-10015",
@@ -399,6 +402,115 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
         finally:
             request.dispose()
         _assert_layout(page)
+    finally:
+        context.close()
+
+
+def test_dashboard_service_announcement_opt_in_uses_service_email_endpoint(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    address = "playwright-announcement@example.com"
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        page.get_by_text("Service announcements", exact=True).click()
+        assert page.locator("#announcementStatus").inner_text() == "Disabled"
+        assert page.locator("#deleteAnnouncementEmailBtn").count() == 0
+        page.locator("#announcementEmail").fill(address)
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v1/me/service-email")
+                and response.request.method == "POST"
+            )
+        ) as saved_response:
+            page.locator("#announcementEmailForm").get_by_role(
+                "button", name="Enable"
+            ).click()
+        assert saved_response.value.status == 200
+        page.locator("#deleteAnnouncementEmailBtn").wait_for(state="attached")
+        page.get_by_text("Service announcements", exact=True).click()
+        page.locator("#deleteAnnouncementEmailBtn").wait_for(state="visible")
+        assert address not in page.content()
+
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v1/me/service-email")
+                and response.request.method == "DELETE"
+            )
+        ) as deleted_response:
+            page.locator("#deleteAnnouncementEmailBtn").click()
+        assert deleted_response.value.status == 200
+        page.locator("#announcementStatus").get_by_text(
+            "Service announcements disabled. Reloading the dashboard."
+        ).wait_for(state="visible")
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_admin_browser_service_announcement_draft_queue_and_cancel_hide_recipient(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    address = "playwright-admin-recipient@example.com"
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        saved = request.post(
+            "/api/v1/me/service-email",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"email": address},
+        )
+        assert saved.ok, saved.text()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 1440, "height": 900})
+    page = context.new_page()
+    subject = "Browser maintenance announcement"
+    try:
+        page.goto(f"{browser_server.base_url}/admin", wait_until="networkidle")
+        page.locator("#adminToken").fill("BROWSERCIADMIN0000")
+        page.get_by_role("button", name="Sign in").click()
+        page.get_by_role("heading", name="Admin", exact=True).wait_for(state="visible")
+        assert address not in page.content()
+
+        page.locator("#announcementSubject").fill(subject)
+        page.locator("#announcementBody").fill("The service will restart at 02:00 UTC.")
+        page.get_by_role("button", name="Save draft").click()
+        page.wait_for_url("**/admin#announcements-title")
+        campaign = page.locator("tr", has_text=subject)
+        assert "draft" in campaign.inner_text()
+        assert campaign.get_by_role("button", name="Queue campaign").is_visible()
+        assert address not in page.content()
+
+        campaign.get_by_role("button", name="Queue campaign").click()
+        page.wait_for_url("**/admin#announcements-title")
+        campaign = page.locator("tr", has_text=subject)
+        assert "queued" in campaign.inner_text()
+        assert campaign.get_by_role("button", name="Queue campaign").count() == 0
+
+        campaign.get_by_role("button", name="Cancel").click()
+        page.wait_for_url("**/admin#announcements-title")
+        assert "cancelled" in page.locator("tr", has_text=subject).inner_text()
+        assert address not in page.content()
     finally:
         context.close()
 

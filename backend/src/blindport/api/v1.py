@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from sqlalchemy import func
 from sqlmodel import Session, select
 from starlette.concurrency import run_in_threadpool
 
@@ -21,6 +22,9 @@ from ..core.auth import AdminPrincipal, current_admin, current_user
 from ..core.ca import issue_client_cert
 from ..core.credentials import CredentialError
 from ..core.models import (
+    Announcement,
+    AnnouncementDelivery,
+    AnnouncementDeliveryState,
     DeliveryMode,
     Payment,
     PaymentMethod,
@@ -34,12 +38,15 @@ from ..core.schemas import (
     AccountStatusResponse,
     AgentOrderRequest,
     AgentOrderResponse,
+    AnnouncementDetailResponse,
+    AnnouncementSummaryResponse,
     CashuMintAndRedeemRequest,
     CashuQuoteRequest,
     CashuQuoteResponse,
     CatalogResponse,
     ClientCertResponse,
     ClientVersionResponse,
+    CreateAnnouncementRequest,
     CreatePaymentRequest,
     CreateSubscriptionRequest,
     DomainVerificationResponse,
@@ -50,8 +57,10 @@ from ..core.schemas import (
     RelayAssignmentResponse,
     RelayProvisioningResponse,
     ReminderEmailStatusResponse,
+    ServiceEmailStatusResponse,
     SetNwcRequest,
     SetReminderEmailRequest,
+    SetServiceEmailRequest,
     SignupResponse,
     SubmitCashuTokenRequest,
     SubscriptionResponse,
@@ -62,6 +71,16 @@ from ..services import ip_leases, relay_routing
 from ..services import payments as payments_svc
 from ..services import subscriptions as subs_svc
 from ..services.allocator import NoCapacityError
+from ..services.announcements import (
+    AnnouncementEmailError,
+    AnnouncementError,
+    cancel_announcement,
+    cancel_pending_announcements,
+    clear_service_announcement_email,
+    create_announcement,
+    queue_announcement,
+    store_service_announcement_email,
+)
 from ..services.catalog import ProductUnavailableError, get_catalog
 from ..services.domain_verification import (
     DomainVerificationResult,
@@ -584,6 +603,106 @@ def delete_reminder_email(
     return _reminder_status(user)
 
 
+def _service_email_status(user: User) -> ServiceEmailStatusResponse:
+    return ServiceEmailStatusResponse(configured=user.has_service_email)
+
+
+@router.get(
+    "/me/service-email",
+    response_model=ServiceEmailStatusResponse,
+)
+def get_service_email_status(
+    response: Response,
+    user: User = Depends(current_user),
+) -> ServiceEmailStatusResponse:
+    response.headers["Cache-Control"] = "no-store"
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    return _service_email_status(user)
+
+
+@router.post(
+    "/me/service-email",
+    response_model=ServiceEmailStatusResponse,
+)
+async def set_service_email(
+    response: Response,
+    request: Request,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ServiceEmailStatusResponse:
+    response.headers["Cache-Control"] = "no-store"
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    _enforce_public_rate_limit(
+        session,
+        RateLimitScope.PAYMENT_CREATE,
+        account_identifier(user.id or 0),
+    )
+    try:
+        content_type = request.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+        if content_type != "application/json":
+            raise ValueError("invalid content type")
+        encoded = bytearray()
+        async for chunk in request.stream():
+            encoded.extend(chunk)
+            if len(encoded) > 1024:
+                raise ValueError("request body is too large")
+        validated = SetServiceEmailRequest.model_validate(json.loads(encoded))
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError, ValidationError) as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "service announcement email address is invalid",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    user = _locked_reminder_user(session, user)
+    try:
+        cancel_pending_announcements(session, user)
+        store_service_announcement_email(user, validated.email)
+    except AnnouncementEmailError as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            str(error),
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    except CredentialError as error:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "service announcement email encryption is unavailable",
+            headers={"Cache-Control": "no-store"},
+        ) from error
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return _service_email_status(user)
+
+
+@router.delete(
+    "/me/service-email",
+    response_model=ServiceEmailStatusResponse,
+)
+def delete_service_email(
+    response: Response,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ServiceEmailStatusResponse:
+    response.headers["Cache-Control"] = "no-store"
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    _enforce_public_rate_limit(
+        session,
+        RateLimitScope.PAYMENT_CREATE,
+        account_identifier(user.id or 0),
+    )
+    user = _locked_reminder_user(session, user)
+    clear_service_announcement_email(user)
+    cancel_pending_announcements(session, user)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return _service_email_status(user)
+
+
 # ---- subscriptions --------------------------------------------------------
 
 
@@ -905,6 +1024,143 @@ def create_payment(
 
 
 # ---- administration -------------------------------------------------------
+
+
+def _require_announcement_email_enabled() -> None:
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+
+
+def _announcement_delivery_counts(
+    session: Session, announcement_id: int
+) -> dict[AnnouncementDeliveryState, int]:
+    return {
+        delivery_state: int(count)
+        for delivery_state, count in session.exec(
+            select(AnnouncementDelivery.state, func.count())
+            .where(AnnouncementDelivery.announcement_id == announcement_id)
+            .group_by(AnnouncementDelivery.state)
+        ).all()
+    }
+
+
+def _announcement_summary(
+    session: Session, announcement: Announcement
+) -> AnnouncementSummaryResponse:
+    return AnnouncementSummaryResponse(
+        id=announcement.id or 0,
+        state=announcement.state,
+        subject=announcement.subject,
+        author_marker=announcement.author_marker,
+        recipient_count=announcement.recipient_count,
+        created_at=announcement.created_at,
+        queued_at=announcement.queued_at,
+        completed_at=announcement.completed_at,
+        cancelled_at=announcement.cancelled_at,
+        delivery_counts=_announcement_delivery_counts(session, announcement.id or 0),
+    )
+
+
+def _announcement_detail(
+    session: Session, announcement: Announcement
+) -> AnnouncementDetailResponse:
+    return AnnouncementDetailResponse(
+        **_announcement_summary(session, announcement).model_dump(),
+        body=announcement.body,
+    )
+
+
+def _announcement_or_404(session: Session, announcement_id: int) -> Announcement:
+    announcement = session.get(Announcement, announcement_id)
+    if announcement is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "announcement not found")
+    return announcement
+
+
+@router.get("/admin/announcements", response_model=list[AnnouncementSummaryResponse])
+def list_announcements(
+    response: Response,
+    _admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> list[AnnouncementSummaryResponse]:
+    response.headers["Cache-Control"] = "no-store"
+    _require_announcement_email_enabled()
+    announcements = session.exec(
+        select(Announcement).order_by(Announcement.created_at.desc())
+    ).all()
+    return [_announcement_summary(session, announcement) for announcement in announcements]
+
+
+@router.get("/admin/announcements/{announcement_id}", response_model=AnnouncementDetailResponse)
+def get_announcement(
+    announcement_id: int,
+    response: Response,
+    _admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> AnnouncementDetailResponse:
+    response.headers["Cache-Control"] = "no-store"
+    _require_announcement_email_enabled()
+    return _announcement_detail(session, _announcement_or_404(session, announcement_id))
+
+
+@router.post(
+    "/admin/announcements",
+    response_model=AnnouncementDetailResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_service_announcement(
+    body: CreateAnnouncementRequest,
+    response: Response,
+    admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> AnnouncementDetailResponse:
+    response.headers["Cache-Control"] = "no-store"
+    _require_announcement_email_enabled()
+    try:
+        announcement = create_announcement(session, body.subject, body.body, admin.audience)
+    except AnnouncementError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _announcement_detail(session, announcement)
+
+
+@router.post(
+    "/admin/announcements/{announcement_id}/queue",
+    response_model=AnnouncementDetailResponse,
+)
+def queue_service_announcement(
+    announcement_id: int,
+    response: Response,
+    _admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> AnnouncementDetailResponse:
+    response.headers["Cache-Control"] = "no-store"
+    _require_announcement_email_enabled()
+    _announcement_or_404(session, announcement_id)
+    try:
+        announcement = queue_announcement(session, announcement_id)
+    except AnnouncementError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _announcement_detail(session, announcement)
+
+
+@router.post(
+    "/admin/announcements/{announcement_id}/cancel",
+    response_model=AnnouncementDetailResponse,
+)
+def cancel_service_announcement(
+    announcement_id: int,
+    response: Response,
+    _admin: AdminPrincipal = Depends(current_admin),
+    session: Session = Depends(get_session),
+) -> AnnouncementDetailResponse:
+    response.headers["Cache-Control"] = "no-store"
+    _require_announcement_email_enabled()
+    _announcement_or_404(session, announcement_id)
+    try:
+        announcement = cancel_announcement(session, announcement_id)
+    except AnnouncementError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _announcement_detail(session, announcement)
 
 
 def _set_account_suspension(

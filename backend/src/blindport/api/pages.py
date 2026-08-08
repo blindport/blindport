@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..config import DEFAULT_BRAND_NAME, DEFAULT_BRAND_TAGLINE, settings
@@ -19,6 +20,8 @@ from ..core.auth import (
     validate_admin_browser_session,
 )
 from ..core.models import (
+    Announcement,
+    AnnouncementDelivery,
     DeliveryMode,
     IPLease,
     IPLeaseState,
@@ -34,6 +37,13 @@ from ..db import get_session
 from ..services import ip_leases
 from ..services import subscriptions as subs_svc
 from ..services.admin_dashboard import build_operations_summary
+from ..services.announcements import (
+    AnnouncementError,
+    cancel_announcement,
+    create_announcement,
+    eligible_recipient_count,
+    queue_announcement,
+)
 from ..services.btc_usd_price import approximate_usd, price_cache
 from ..services.catalog import get_catalog
 from ..services.rate_limits import (
@@ -142,6 +152,7 @@ def _ctx(request: Request, **extra) -> dict:
         "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
         "stablecoin_enabled": settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP),
         "reminder_email_enabled": settings.REMINDER_EMAIL_ENABLED,
+        "announcement_email_enabled": settings.ANNOUNCEMENT_EMAIL_ENABLED,
         "smtp_egress_fee_sats": settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
         "request_origin_shell": shlex.quote(request_origin),
         "request_origin_json": json.dumps(request_origin),
@@ -401,6 +412,22 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
     reminders = session.exec(
         select(ReminderDelivery).join(Subscription).join(User).where(User.is_admin.is_(False))  # type: ignore[union-attr]
     ).all()
+    announcements = (
+        session.exec(select(Announcement).order_by(Announcement.created_at.desc())).all()
+        if settings.ANNOUNCEMENT_EMAIL_ENABLED
+        else []
+    )
+    announcement_delivery_counts = {
+        announcement.id: {
+            state.value: count
+            for state, count in session.exec(
+                select(AnnouncementDelivery.state, func.count())
+                .where(AnnouncementDelivery.announcement_id == announcement.id)
+                .group_by(AnnouncementDelivery.state)
+            ).all()
+        }
+        for announcement in announcements
+    }
     leases = session.exec(
         select(IPLease)
         .join(Subscription)
@@ -427,6 +454,11 @@ def admin_panel(request: Request, session: Session = Depends(get_session)) -> HT
             subscriptions=subs,
             payments=payments,
             reminders=reminders,
+            announcements=announcements,
+            announcement_delivery_counts=announcement_delivery_counts,
+            announcement_eligible_count=(
+                eligible_recipient_count(session) if settings.ANNOUNCEMENT_EMAIL_ENABLED else 0
+            ),
             leases=leases,
             account_by_user_id=account_by_user_id,
             account_by_payment_id=account_by_payment_id,
@@ -538,6 +570,73 @@ def _browser_admin_redirect(request: Request) -> RedirectResponse | None:
     response = RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
     _clear_admin_session(response, request)
     _clear_legacy_admin_session(response, request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/admin/announcements")
+def admin_create_announcement(
+    request: Request,
+    subject: str = Form(..., min_length=1, max_length=160),
+    body: str = Form(..., min_length=1, max_length=10_000),
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    unauthorized = _browser_admin_redirect(request)
+    if unauthorized is not None:
+        return unauthorized
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    try:
+        create_announcement(session, subject, body, "blindport-admin-browser-v1")
+    except AnnouncementError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    response = RedirectResponse(
+        url="/admin#announcements-title", status_code=status.HTTP_303_SEE_OTHER
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/admin/announcements/{announcement_id}/queue")
+def admin_queue_announcement(
+    announcement_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    unauthorized = _browser_admin_redirect(request)
+    if unauthorized is not None:
+        return unauthorized
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    try:
+        queue_announcement(session, announcement_id)
+    except AnnouncementError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    response = RedirectResponse(
+        url="/admin#announcements-title", status_code=status.HTTP_303_SEE_OTHER
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/admin/announcements/{announcement_id}/cancel")
+def admin_cancel_announcement(
+    announcement_id: int,
+    request: Request,
+    session: Session = Depends(get_session),
+) -> RedirectResponse:
+    unauthorized = _browser_admin_redirect(request)
+    if unauthorized is not None:
+        return unauthorized
+    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
+    try:
+        cancel_announcement(session, announcement_id)
+    except AnnouncementError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    response = RedirectResponse(
+        url="/admin#announcements-title", status_code=status.HTTP_303_SEE_OTHER
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 

@@ -106,6 +106,22 @@ class ReminderDeliveryState(StrEnum):
     EXPIRED = "expired"
 
 
+class AnnouncementState(StrEnum):
+    DRAFT = "draft"
+    QUEUED = "queued"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class AnnouncementDeliveryState(StrEnum):
+    QUEUED = "queued"
+    SENDING = "sending"
+    SENT = "sent"
+    DELIVERY_AMBIGUOUS = "delivery_ambiguous"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
 class User(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     public_id: UUID = Field(default_factory=uuid4, index=True, unique=True, nullable=False)
@@ -127,6 +143,10 @@ class User(SQLModel, table=True):
     reminder_email_ciphertext: str | None = Field(default=None, sa_type=Text)
     reminder_email_key_version: str | None = Field(default=None, max_length=32)
     reminder_email_generation: int = 0
+    has_service_email: bool = False
+    service_email_ciphertext: str | None = Field(default=None, sa_type=Text)
+    service_email_key_version: str | None = Field(default=None, max_length=32)
+    service_email_generation: int = 0
 
 
 # Keep the revoked rolling-deployment column in schema metadata without mapping
@@ -401,6 +421,65 @@ class ReminderDelivery(SQLModel, table=True):
             ReminderDeliveryState,
             values_callable=_enum_values,
             name="reminderdeliverystate",
+        ),
+        sa_column_kwargs={"server_default": text("'queued'")},
+    )
+    attempt_count: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    error_code: str | None = Field(default=None, max_length=64)
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+    last_attempt_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    next_attempt_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    terminal_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    lease_token: str | None = Field(default=None, max_length=32)
+    lease_until: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class Announcement(SQLModel, table=True):
+    __table_args__ = (
+        CheckConstraint("recipient_count >= 0", name="ck_announcement_recipient_count"),
+        CheckConstraint("length(body) <= 10000", name="ck_announcement_body_length"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    state: AnnouncementState = Field(
+        default=AnnouncementState.DRAFT,
+        sa_type=Enum(AnnouncementState, values_callable=_enum_values, name="announcementstate"),
+        sa_column_kwargs={"server_default": text("'draft'")},
+    )
+    subject: str = Field(max_length=160)
+    body: str = Field(max_length=10_000, sa_type=Text)
+    author_marker: str = Field(max_length=100)
+    recipient_count: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+    queued_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    completed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    cancelled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class AnnouncementDelivery(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint(
+            "announcement_id", "user_id", name="uq_announcementdelivery_campaign_user"
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= 20",
+            name="ck_announcementdelivery_attempt_count",
+        ),
+        Index("ix_announcementdelivery_due", "state", "next_attempt_at", "id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    announcement_id: int = Field(foreign_key="announcement.id", index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    recipient_generation: int
+    state: AnnouncementDeliveryState = Field(
+        default=AnnouncementDeliveryState.QUEUED,
+        sa_type=Enum(
+            AnnouncementDeliveryState,
+            values_callable=_enum_values,
+            name="announcementdeliverystate",
         ),
         sa_column_kwargs={"server_default": text("'queued'")},
     )

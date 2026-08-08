@@ -17,6 +17,7 @@ from blindport.config import (
     parse_framed_ip_endpoints,
     parse_managed_suffixes,
     parse_port_ha_edges,
+    parse_relay_edges,
     parse_relay_endpoints,
     parse_relay_pool_domains,
     parse_tcp_port_pool,
@@ -328,6 +329,7 @@ def test_email_reminders_default_off() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.REMINDER_EMAIL_ENABLED is False
+    assert settings.ANNOUNCEMENT_EMAIL_ENABLED is False
     assert settings.SMTP_PORT == 587
     assert settings.SMTP_SECURITY == "starttls"
     assert settings.SMTP_TIMEOUT_SECONDS == 10
@@ -352,6 +354,16 @@ def test_enabled_email_reminders_require_smtp_endpoint() -> None:
         Settings(
             _env_file=None,
             REMINDER_EMAIL_ENABLED=True,
+            PAYMENT_RECONCILIATION_ENABLED=True,
+            CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
+        )
+
+
+def test_enabled_service_announcements_require_smtp_endpoint() -> None:
+    with pytest.raises(ValidationError, match="SMTP_HOST"):
+        Settings(
+            _env_file=None,
+            ANNOUNCEMENT_EMAIL_ENABLED=True,
             PAYMENT_RECONCILIATION_ENABLED=True,
             CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
         )
@@ -842,10 +854,71 @@ def test_settings_reject_invalid_inventory(field: str, value: str) -> None:
         Settings(_env_file=None, **{field: value})
 
 
-@pytest.mark.parametrize("seconds", [0, 59, 86401])
+@pytest.mark.parametrize("seconds", [0, 59, 7776001])
 def test_settings_bound_resource_reuse_quarantine(seconds: int) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, RESOURCE_REUSE_QUARANTINE_SECONDS=seconds)
+
+
+def test_offline_entitlement_quarantine_supports_seven_day_grace_only_when_enabled() -> None:
+    assert Settings(_env_file=None).RESOURCE_REUSE_QUARANTINE_SECONDS == 180
+    assert Settings(_env_file=None, RESOURCE_REUSE_QUARANTINE_SECONDS=604921)
+
+
+def test_offline_entitlement_quarantine_and_relay_hold_must_strictly_exceed_grace() -> None:
+    common = {
+        "OFFLINE_ENTITLEMENTS_ENABLED": True,
+        "OFFLINE_ENTITLEMENT_KEY_ID": "offline-a",
+        "OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE": "/tmp/offline-key.pem",
+        "RELAY_EDGES": '[{"id":"edge-a","endpoint":"relay:5443"}]',
+    }
+    with pytest.raises(ValidationError, match="RESOURCE_REUSE_QUARANTINE_SECONDS"):
+        Settings(_env_file=None, **common, RESOURCE_REUSE_QUARANTINE_SECONDS=604920)
+    with pytest.raises(ValidationError, match="RELAY_RENEWAL_GRACE_SECONDS"):
+        Settings(
+            _env_file=None,
+            **common,
+            RESOURCE_REUSE_QUARANTINE_SECONDS=604921,
+            RELAY_RENEWAL_GRACE_SECONDS=604920,
+        )
+
+
+def test_relay_edges_are_canonicalized_and_unique() -> None:
+    parsed = parse_relay_edges('[{"id":"edge-a","endpoint":"Relay.Example:5443"}]')
+    assert [(edge.id, edge.endpoint) for edge in parsed] == [("edge-a", "relay.example:5443")]
+    with pytest.raises(ValueError, match="duplicate"):
+        parse_relay_edges(
+            '[{"id":"edge-a","endpoint":"relay.example:5443"},'
+            '{"id":"edge-b","endpoint":"Relay.Example:5443"}]'
+        )
+
+
+@pytest.mark.parametrize("key_id", ["", "UPPER", "has space", "x" * 33])
+def test_enabled_offline_entitlements_require_a_stable_key_id(key_id: str) -> None:
+    with pytest.raises(ValidationError, match="OFFLINE_ENTITLEMENT_KEY_ID"):
+        Settings(
+            _env_file=None,
+            OFFLINE_ENTITLEMENTS_ENABLED=True,
+            OFFLINE_ENTITLEMENT_KEY_ID=key_id,
+            OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE="/tmp/offline.pem",
+            RELAY_EDGES='[{"id":"edge-a","endpoint":"relay:5443"}]',
+            RESOURCE_REUSE_QUARANTINE_SECONDS=604921,
+            RELAY_RENEWAL_GRACE_SECONDS=604921,
+        )
+
+
+def test_production_offline_entitlement_key_path_must_be_absolute() -> None:
+    with pytest.raises(
+        ValidationError, match="OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE must be absolute"
+    ):
+        _production_settings(
+            OFFLINE_ENTITLEMENTS_ENABLED=True,
+            OFFLINE_ENTITLEMENT_KEY_ID="offline-a",
+            OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE="offline.pem",
+            RELAY_EDGES='[{"id":"edge-a","endpoint":"relay.blindport.com:5443"}]',
+            RESOURCE_REUSE_QUARANTINE_SECONDS=604921,
+            RELAY_RENEWAL_GRACE_SECONDS=604921,
+        )
 
 
 def test_managed_suffixes_are_strictly_canonicalized() -> None:

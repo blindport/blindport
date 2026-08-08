@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .models import (
     AgentOrderState,
+    AnnouncementDeliveryState,
+    AnnouncementState,
     BillingTerm,
     DeliveryMode,
     IPLeaseState,
@@ -350,6 +352,42 @@ class ReminderEmailStatusResponse(BaseModel):
     configured: bool
 
 
+class SetServiceEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+
+
+class ServiceEmailStatusResponse(BaseModel):
+    configured: bool
+
+
+class CreateAnnouncementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    subject: str = Field(min_length=1, max_length=160)
+    body: str = Field(min_length=1, max_length=10_000)
+
+
+class AnnouncementSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    state: AnnouncementState
+    subject: str
+    author_marker: str
+    recipient_count: int
+    created_at: datetime
+    queued_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    delivery_counts: dict[AnnouncementDeliveryState, int] = Field(default_factory=dict)
+
+
+class AnnouncementDetailResponse(AnnouncementSummaryResponse):
+    body: str
+
+
 class RelayAssignmentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -393,6 +431,49 @@ class ClientCertResponse(BaseModel):
     client_key_pem: str
     not_after: str  # ISO-8601 UTC
     serial: str  # hex, lowercase, no 0x prefix
+
+
+class OfflineEntitlementClaimResponse(BaseModel):
+    """Exact edge-local claim, duplicated from the signed entitlement payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ProductType
+    ip: str
+    port: int
+    transport: str
+    domain: str
+
+
+class OfflineEntitlementEdgeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    endpoint: str
+    claim: OfflineEntitlementClaimResponse
+    entitlement: str
+    paid_through: int
+    grace_through: int
+    generation: int
+
+
+class OfflineEntitlementProvisioningResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assigned_ip: str | None = None
+    assigned_port: int | None = None
+    transport: Transport
+    domain: str | None = None
+    product: ProductType
+    subscription_id: UUID
+    edges: list[OfflineEntitlementEdgeResponse]
+
+
+class OfflineEntitlementConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 2
+    subscriptions: list[OfflineEntitlementProvisioningResponse]
 
 
 class ClientCertificateRequest(BaseModel):

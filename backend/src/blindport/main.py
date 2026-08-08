@@ -26,7 +26,7 @@ from .services.reminder_reconciliation import get_smtp_adapter
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     get_lightning_adapter()
-    if settings.REMINDER_EMAIL_ENABLED:
+    if settings.REMINDER_EMAIL_ENABLED or settings.ANNOUNCEMENT_EMAIL_ENABLED:
         get_smtp_adapter()
     if settings.is_payment_method_enabled(PaymentMethod.NWC):
         get_nwc_adapter()

@@ -21,6 +21,7 @@ class CredentialPurpose(StrEnum):
 
     NWC = "nwc"
     REMINDER_EMAIL = "reminder-email"
+    SERVICE_EMAIL = "service-email"
 
 
 class CredentialError(ValueError):

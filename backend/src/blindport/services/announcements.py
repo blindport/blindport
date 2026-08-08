@@ -1,0 +1,440 @@
+"""Encrypted service announcement preferences and durable SMTP delivery transitions."""
+
+from __future__ import annotations
+
+import hashlib
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, update
+from sqlmodel import Session, select
+
+from .. import config
+from ..adapters.smtp import SmtpAdapter, SmtpDeliveryError
+from ..core.credentials import (
+    CredentialCipher,
+    CredentialError,
+    CredentialPurpose,
+    EncryptedCredential,
+)
+from ..core.models import (
+    Announcement,
+    AnnouncementDelivery,
+    AnnouncementDeliveryState,
+    AnnouncementState,
+    User,
+)
+from .reminders import ReminderEmailError, normalize_reminder_email
+
+MAX_ANNOUNCEMENT_ATTEMPTS = 20
+_TERMINAL_DELIVERY_STATES = (
+    AnnouncementDeliveryState.SENT,
+    AnnouncementDeliveryState.DELIVERY_AMBIGUOUS,
+    AnnouncementDeliveryState.CANCELLED,
+    AnnouncementDeliveryState.FAILED,
+)
+
+
+class AnnouncementError(ValueError):
+    """An announcement is invalid without reflecting its contents."""
+
+
+class AnnouncementEmailError(ValueError):
+    """A service announcement address is invalid or unavailable without reflecting it."""
+
+
+def _cipher() -> CredentialCipher:
+    return CredentialCipher(config.settings.CREDENTIAL_ENCRYPTION_KEY)
+
+
+def validate_announcement_content(subject: str, body: str) -> tuple[str, str]:
+    if (
+        not isinstance(subject, str)
+        or not 1 <= len(subject) <= 160
+        or "\r" in subject
+        or "\n" in subject
+        or any(not character.isprintable() for character in subject)
+    ):
+        raise AnnouncementError("announcement subject is invalid")
+    normalized_body = body.replace("\r\n", "\n") if isinstance(body, str) else ""
+    if (
+        not 1 <= len(normalized_body) <= 10_000
+        or "\r" in normalized_body
+        or any(
+            not character.isprintable() and character not in {"\n", "\t"}
+            for character in normalized_body
+        )
+    ):
+        raise AnnouncementError("announcement body is invalid")
+    return subject, normalized_body
+
+
+def store_service_announcement_email(
+    user: User,
+    email: str,
+    *,
+    cipher: CredentialCipher | None = None,
+) -> str:
+    try:
+        normalized = normalize_reminder_email(email)
+    except ReminderEmailError as error:
+        raise AnnouncementEmailError("service announcement email address is invalid") from error
+    encrypted = (cipher or _cipher()).encrypt(
+        user.public_id,
+        normalized,
+        purpose=CredentialPurpose.SERVICE_EMAIL,
+    )
+    user.service_email_ciphertext = encrypted.ciphertext
+    user.service_email_key_version = encrypted.key_version
+    user.service_email_generation += 1
+    user.has_service_email = True
+    return normalized
+
+
+def decrypt_service_announcement_email(
+    user: User,
+    expected_generation: int | None = None,
+    *,
+    cipher: CredentialCipher | None = None,
+) -> str:
+    if expected_generation is not None and user.service_email_generation != expected_generation:
+        raise CredentialError("service announcement email generation changed")
+    if (
+        not user.has_service_email
+        or not user.service_email_ciphertext
+        or not user.service_email_key_version
+    ):
+        raise CredentialError("service announcement email is unavailable")
+    plaintext = (cipher or _cipher()).decrypt(
+        user.public_id,
+        EncryptedCredential(
+            user.service_email_ciphertext,
+            user.service_email_key_version,
+        ),
+        purpose=CredentialPurpose.SERVICE_EMAIL,
+    )
+    try:
+        return normalize_reminder_email(plaintext)
+    except ReminderEmailError as error:
+        raise CredentialError("service announcement email plaintext is invalid") from error
+
+
+def clear_service_announcement_email(user: User) -> None:
+    if (
+        not user.has_service_email
+        and user.service_email_ciphertext is None
+        and user.service_email_key_version is None
+    ):
+        return
+    user.has_service_email = False
+    user.service_email_ciphertext = None
+    user.service_email_key_version = None
+    user.service_email_generation += 1
+
+
+def create_announcement(
+    session: Session, subject: str, body: str, author_marker: str
+) -> Announcement:
+    subject, body = validate_announcement_content(subject, body)
+    if (
+        not author_marker
+        or len(author_marker) > 100
+        or not author_marker.isascii()
+        or not author_marker.isprintable()
+    ):
+        raise AnnouncementError("announcement author is invalid")
+    announcement = Announcement(subject=subject, body=body, author_marker=author_marker)
+    session.add(announcement)
+    session.commit()
+    session.refresh(announcement)
+    return announcement
+
+
+def eligible_recipient_count(session: Session) -> int:
+    return int(
+        session.exec(
+            select(func.count())
+            .select_from(User)
+            .where(
+                User.has_service_email,
+                User.service_email_generation >= 1,
+                User.is_admin.is_(False),  # type: ignore[union-attr]
+                User.is_suspended.is_(False),  # type: ignore[union-attr]
+            )
+        ).one()
+        or 0
+    )
+
+
+def queue_announcement(
+    session: Session, announcement_id: int, *, now: datetime | None = None
+) -> Announcement:
+    announcement = session.exec(
+        select(Announcement)
+        .where(Announcement.id == announcement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if announcement is None:
+        raise AnnouncementError("announcement not found")
+    if announcement.state == AnnouncementState.QUEUED:
+        return announcement
+    if announcement.state != AnnouncementState.DRAFT:
+        raise AnnouncementError("announcement cannot be queued")
+    queued_at = _aware(now or datetime.now(UTC))
+    recipients = session.exec(
+        select(User)
+        .where(
+            User.has_service_email,
+            User.service_email_generation >= 1,
+            User.is_admin.is_(False),  # type: ignore[union-attr]
+            User.is_suspended.is_(False),  # type: ignore[union-attr]
+        )
+        .order_by(User.id)
+        .with_for_update()
+    ).all()
+    announcement.state = AnnouncementState.QUEUED
+    announcement.queued_at = queued_at
+    announcement.recipient_count = len(recipients)
+    session.add(announcement)
+    session.flush()
+    session.add_all(
+        AnnouncementDelivery(
+            announcement_id=announcement.id or 0,
+            user_id=user.id or 0,
+            recipient_generation=user.service_email_generation,
+        )
+        for user in recipients
+    )
+    if not recipients:
+        announcement.state = AnnouncementState.COMPLETED
+        announcement.completed_at = queued_at
+        session.add(announcement)
+    session.commit()
+    session.refresh(announcement)
+    return announcement
+
+
+def cancel_announcement(
+    session: Session, announcement_id: int, *, now: datetime | None = None
+) -> Announcement:
+    announcement = session.exec(
+        select(Announcement)
+        .where(Announcement.id == announcement_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if announcement is None:
+        raise AnnouncementError("announcement not found")
+    if announcement.state in (AnnouncementState.COMPLETED, AnnouncementState.CANCELLED):
+        return announcement
+    cancelled_at = _aware(now or datetime.now(UTC))
+    announcement.state = AnnouncementState.CANCELLED
+    announcement.cancelled_at = cancelled_at
+    session.add(announcement)
+    session.exec(
+        update(AnnouncementDelivery)
+        .where(
+            AnnouncementDelivery.announcement_id == announcement.id,
+            AnnouncementDelivery.state == AnnouncementDeliveryState.QUEUED,
+        )
+        .values(
+            state=AnnouncementDeliveryState.CANCELLED,
+            error_code="announcement_cancelled",
+            updated_at=cancelled_at,
+            terminal_at=cancelled_at,
+            next_attempt_at=None,
+            lease_token=None,
+            lease_until=None,
+        )
+    )
+    session.commit()
+    session.refresh(announcement)
+    return announcement
+
+
+def cancel_pending_announcements(
+    session: Session, user: User, *, now: datetime | None = None
+) -> None:
+    if user.id is None:
+        return
+    cancelled_at = _aware(now or datetime.now(UTC))
+    session.exec(
+        update(AnnouncementDelivery)
+        .where(
+            AnnouncementDelivery.user_id == user.id,
+            AnnouncementDelivery.state == AnnouncementDeliveryState.QUEUED,
+        )
+        .values(
+            state=AnnouncementDeliveryState.CANCELLED,
+            error_code="announcement_preference_changed",
+            updated_at=cancelled_at,
+            terminal_at=cancelled_at,
+            next_attempt_at=None,
+            lease_token=None,
+            lease_until=None,
+        )
+    )
+
+
+def cancel_announcement_delivery(
+    delivery: AnnouncementDelivery,
+    code: str,
+    now: datetime,
+) -> None:
+    _terminal(delivery, AnnouncementDeliveryState.CANCELLED, code, _aware(now))
+
+
+def send_announcement(
+    session: Session,
+    delivery: AnnouncementDelivery,
+    user: User,
+    announcement: Announcement,
+    adapter: SmtpAdapter,
+    *,
+    cipher: CredentialCipher | None = None,
+    now: datetime | None = None,
+) -> AnnouncementDelivery:
+    attempted_at = _aware(now or datetime.now(UTC))
+    if delivery.state != AnnouncementDeliveryState.QUEUED:
+        raise ValueError("announcement delivery is not queued")
+    lease_token = delivery.lease_token
+    if delivery.attempt_count >= MAX_ANNOUNCEMENT_ATTEMPTS:
+        _terminal(delivery, AnnouncementDeliveryState.FAILED, "attempts_exhausted", attempted_at)
+        session.add(delivery)
+        session.commit()
+        return delivery
+    delivery.attempt_count += 1
+    delivery.state = AnnouncementDeliveryState.SENDING
+    delivery.last_attempt_at = attempted_at
+    delivery.updated_at = attempted_at
+    delivery.next_attempt_at = None
+    session.add(delivery)
+    session.commit()
+    try:
+        recipient = decrypt_service_announcement_email(
+            user, delivery.recipient_generation, cipher=cipher
+        )
+        adapter.send_message(
+            recipient,
+            announcement.subject,
+            announcement.body,
+            announcement_message_id(delivery),
+        )
+    except CredentialError:
+        if fence_announcement_lease(session, delivery, lease_token):
+            _terminal(
+                delivery, AnnouncementDeliveryState.FAILED, "recipient_unavailable", attempted_at
+            )
+            session.add(delivery)
+            session.commit()
+        return delivery
+    except SmtpDeliveryError as error:
+        if not fence_announcement_lease(session, delivery, lease_token):
+            return delivery
+        if error.ambiguous:
+            _terminal(
+                delivery, AnnouncementDeliveryState.DELIVERY_AMBIGUOUS, error.code, attempted_at
+            )
+        elif error.retryable and delivery.attempt_count < MAX_ANNOUNCEMENT_ATTEMPTS:
+            delivery.state = AnnouncementDeliveryState.QUEUED
+            delivery.error_code = error.code
+            delivery.updated_at = attempted_at
+            delivery.next_attempt_at = attempted_at + _retry_delay(delivery.attempt_count)
+        else:
+            _terminal(delivery, AnnouncementDeliveryState.FAILED, error.code, attempted_at)
+        session.add(delivery)
+        session.commit()
+        return delivery
+    except Exception:
+        if fence_announcement_lease(session, delivery, lease_token):
+            _terminal(
+                delivery, AnnouncementDeliveryState.FAILED, "smtp_internal_error", attempted_at
+            )
+            session.add(delivery)
+            session.commit()
+        return delivery
+    if not fence_announcement_lease(session, delivery, lease_token):
+        return delivery
+    delivery.state = AnnouncementDeliveryState.SENT
+    delivery.error_code = None
+    delivery.updated_at = attempted_at
+    delivery.sent_at = attempted_at
+    delivery.terminal_at = attempted_at
+    delivery.next_attempt_at = None
+    session.add(delivery)
+    session.commit()
+    return delivery
+
+
+def announcement_message_id(delivery: AnnouncementDelivery) -> str:
+    identity = f"{delivery.announcement_id}|{delivery.user_id}|{delivery.recipient_generation}"
+    digest = hashlib.sha256(f"blindport-announcement-v1|{identity}".encode("ascii")).hexdigest()
+    domain = config.settings.SMTP_FROM_EMAIL.rsplit("@", 1)[-1].lower()
+    return f"<{digest}@{domain}>"
+
+
+def fence_announcement_lease(
+    session: Session,
+    delivery: AnnouncementDelivery,
+    expected_token: str | None,
+) -> bool:
+    if expected_token is None or delivery.id is None:
+        return True
+    fenced_at = datetime.now(UTC)
+    result = session.exec(
+        update(AnnouncementDelivery)
+        .where(
+            AnnouncementDelivery.id == delivery.id,
+            AnnouncementDelivery.lease_token == expected_token,
+        )
+        .values(
+            lease_until=fenced_at
+            + timedelta(seconds=config.settings.REMINDER_DELIVERY_LEASE_SECONDS)
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount == 1:  # type: ignore[attr-defined]
+        return True
+    session.rollback()
+    session.refresh(delivery)
+    return False
+
+
+def mark_announcement_completed_if_done(session: Session, announcement_id: int) -> None:
+    announcement = session.get(Announcement, announcement_id)
+    if announcement is None or announcement.state != AnnouncementState.QUEUED:
+        return
+    unfinished = session.exec(
+        select(AnnouncementDelivery.id).where(
+            AnnouncementDelivery.announcement_id == announcement_id,
+            AnnouncementDelivery.state.not_in(_TERMINAL_DELIVERY_STATES),  # type: ignore[union-attr]
+        )
+    ).first()
+    if unfinished is None:
+        announcement.state = AnnouncementState.COMPLETED
+        announcement.completed_at = datetime.now(UTC)
+        session.add(announcement)
+        session.commit()
+
+
+def _terminal(
+    delivery: AnnouncementDelivery,
+    state: AnnouncementDeliveryState,
+    error_code: str,
+    recorded_at: datetime,
+) -> None:
+    delivery.state = state
+    delivery.error_code = error_code
+    delivery.updated_at = recorded_at
+    delivery.terminal_at = recorded_at
+    delivery.next_attempt_at = None
+    delivery.lease_token = None
+    delivery.lease_until = None
+
+
+def _retry_delay(attempt_count: int) -> timedelta:
+    return timedelta(seconds=min(3600, 5 * 2 ** min(attempt_count, 10)))
+
+
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

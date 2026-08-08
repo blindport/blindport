@@ -72,7 +72,7 @@ Expiration reminders are separately gated by `REMINDER_EMAIL_ENABLED`. When enab
 recipient addresses are encrypted with purpose-specific AES-GCM associated data and
 never returned after submission. Configure `SMTP_HOST`, `SMTP_PORT`,
 `SMTP_SECURITY=starttls|tls`, `SMTP_FROM_EMAIL`, and `SMTP_TIMEOUT_SECONDS`.
-`SMTP_USERNAME` and the file-backed `SMTP_PASSWORD` must be configured together, or
+`SMTP_USERNAME` and the file-backed `SMTP_PASSWORD_FILE` input must be configured together, or
 both omitted for a trusted local relay. Production requires TLS. The durable outbox
 stores no recipient, subject, or body plaintext and uses a deterministic Message-ID.
 SMTP servers necessarily receive each recipient and generated reminder in plaintext.

@@ -40,6 +40,49 @@
     </div>
   </section>
 
+  {% if announcement_email_enabled %}
+  <section class="admin-section" aria-labelledby="announcements-title">
+    <h2 id="announcements-title">Service announcements</h2>
+    <form method="post" action="/admin/announcements" class="announcement-form">
+      <label for="announcementSubject">Subject</label>
+      <input id="announcementSubject" name="subject" maxlength="160" required>
+      <label for="announcementBody">Plain-text message</label>
+      <textarea id="announcementBody" name="body" maxlength="10000" rows="8" required></textarea>
+      <div class="form-actions form-actions-end"><button type="submit">Save draft</button></div>
+    </form>
+    <p class="field-help">{{ announcement_eligible_count }} eligible accounts at this time. Queueing snapshots the recipient count and requires a separate action.</p>
+    {% if announcements %}
+    <div class="table-wrap">
+      <table class="responsive-table">
+        <caption>Service announcement campaigns</caption>
+        <thead><tr><th scope="col">Reference</th><th scope="col">Subject</th><th scope="col">State</th><th scope="col">Recipients</th><th scope="col">Delivery totals</th><th scope="col">Created</th><th scope="col">Action</th></tr></thead>
+        <tbody>
+        {% for announcement in announcements %}
+          {% set counts = announcement_delivery_counts.get(announcement.id, {}) %}
+          <tr>
+            <td data-label="Reference"><code>{{ announcement.id }}</code></td>
+            <td data-label="Subject">{{ announcement.subject }}</td>
+            <td data-label="State">{{ announcement.state.value }}</td>
+            <td data-label="Recipients">{{ announcement.recipient_count if announcement.state.value != "draft" else announcement_eligible_count }}</td>
+            <td data-label="Delivery totals">Queued {{ counts.get("queued", 0) }}, sending {{ counts.get("sending", 0) }}, sent {{ counts.get("sent", 0) }}, ambiguous {{ counts.get("delivery_ambiguous", 0) }}, failed {{ counts.get("failed", 0) }}, cancelled {{ counts.get("cancelled", 0) }}</td>
+            <td data-label="Created">{{ announcement.created_at }}</td>
+            <td data-label="Action">
+              {% if announcement.state.value == "draft" %}
+              <form method="post" action="/admin/announcements/{{ announcement.id }}/queue"><button type="submit" class="button-secondary">Queue campaign</button></form>
+              {% endif %}
+              {% if announcement.state.value in ("draft", "queued") %}
+              <form method="post" action="/admin/announcements/{{ announcement.id }}/cancel"><button type="submit" class="button-secondary button-danger">Cancel</button></form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="admin-section" aria-labelledby="accounts-title">
     <h2 id="accounts-title">Accounts</h2>
     <div class="table-wrap">

@@ -744,6 +744,49 @@ if (deleteReminderButton) {
   });
 }
 
+const announcementEmailForm = document.getElementById("announcementEmailForm");
+if (announcementEmailForm) {
+  announcementEmailForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = document.getElementById("saveAnnouncementEmailBtn");
+    const status = document.getElementById("announcementStatus");
+    button.disabled = true;
+    status.textContent = "Saving service announcement preference...";
+    try {
+      await jsonFetch("/api/v1/me/service-email", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ email: document.getElementById("announcementEmail").value }),
+      });
+      document.getElementById("announcementEmail").value = "";
+      status.textContent = "Service announcements enabled. Reloading the dashboard.";
+      window.setTimeout(() => window.location.reload(), 500);
+    } catch (error) {
+      status.textContent = `Service announcement preference error: ${error.message}`;
+      button.disabled = false;
+    }
+  });
+}
+
+const deleteAnnouncementEmailButton = document.getElementById("deleteAnnouncementEmailBtn");
+if (deleteAnnouncementEmailButton) {
+  deleteAnnouncementEmailButton.addEventListener("click", async () => {
+    deleteAnnouncementEmailButton.disabled = true;
+    const status = document.getElementById("announcementStatus");
+    try {
+      await jsonFetch("/api/v1/me/service-email", {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      status.textContent = "Service announcements disabled. Reloading the dashboard.";
+      window.setTimeout(() => window.location.reload(), 500);
+    } catch (error) {
+      status.textContent = `Service announcement preference error: ${error.message}`;
+      deleteAnnouncementEmailButton.disabled = false;
+    }
+  });
+}
+
 document.querySelectorAll(".verifyDomainBtn").forEach((button) => {
   button.addEventListener("click", async () => {
     const originalText = button.textContent;

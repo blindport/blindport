@@ -165,7 +165,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
-input, select {
+input, select, textarea {
   width: 100%;
   min-height: 44px;
   padding: 0.55rem 0.7rem;
@@ -175,6 +175,8 @@ input, select {
   color: var(--ink);
   font: inherit;
 }
+.announcement-form { display: grid; max-width: 760px; gap: 0.55rem; }
+.announcement-form textarea { min-height: 180px; padding: 0.55rem 0.7rem; border: 1px solid #aeb9b4; border-radius: 4px; background: white; color: var(--ink); font: inherit; resize: vertical; }
 input[type="radio"], input[type="checkbox"] {
   width: 20px;
   min-width: 20px;
