@@ -131,10 +131,11 @@ for name, service in services.items():
 wireguard_production_policy_check() {
     control_directory="$1"
     relay_directory="$2"
+    control_overlay="${3:-compose.wireguard.yaml}"
     docker compose \
         --env-file "$root/$control_directory/.env.example" \
         -f "$root/$control_directory/compose.yaml" \
-        -f "$root/$control_directory/compose.wireguard.yaml" \
+        -f "$root/$control_directory/$control_overlay" \
         config --format json \
         | python3 -c '
 import json
@@ -622,6 +623,7 @@ logging_policy_check deploy/split/relay
 provider_edge_policy_check deploy/production
 provider_edge_policy_check deploy/split/control
 wireguard_production_policy_check deploy/production deploy/production
+wireguard_production_policy_check deploy/production deploy/split/relay compose.wireguard-control.yaml
 wireguard_production_policy_check deploy/split/control deploy/split/relay
 address_log_policy_check
 relay_host_sysctl_check

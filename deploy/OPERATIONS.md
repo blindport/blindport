@@ -411,6 +411,12 @@ single overlay configures both services:
 docker compose --env-file .env -f compose.yaml -f compose.wireguard.yaml up -d
 ```
 
+When the one-host production backend provisions routed inventory through a separate
+split relay host, apply `compose.wireguard-control.yaml` on the production host and
+`compose.wireguard.yaml` in `deploy/split/relay` on the relay host. The control-only
+overlay does not grant `NET_ADMIN`, mount the relay private key, or enable WireGuard
+on the production host's local Relay.
+
 Run `nft list table inet blindport` after startup and verify the input, active
 source, non-global destination, and TCP/25 rules before activating sales. Test
 both directions from an external network and confirm the outbound observer sees
