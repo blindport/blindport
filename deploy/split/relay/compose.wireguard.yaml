@@ -1,6 +1,6 @@
 services:
   relay:
-    user: "10001:10001"
+    user: "0:0"
     environment:
       BLINDPORT_RELAY_WIREGUARD: "1"
       BLINDPORT_RELAY_WIREGUARD_KEY_FILE: /run/secrets/wireguard-key
@@ -11,15 +11,15 @@ services:
     secrets:
       - source: relay-secret
         target: relay-secret
-        uid: "10001"
-        gid: "10001"
+        uid: "0"
+        gid: "0"
         mode: 0400
       - source: wireguard-key
         target: wireguard-key
-        uid: "10001"
-        gid: "10001"
+        uid: "0"
+        gid: "0"
         mode: 0400
-    cap_add: [NET_ADMIN]
+    cap_add: [NET_ADMIN, DAC_OVERRIDE]
 
 secrets:
   wireguard-key:

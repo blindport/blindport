@@ -425,6 +425,12 @@ sudo install -m 0644 deploy/sysctl-blindport-routed-relay.conf \
 sudo sysctl --system
 ```
 
+The routed Relay runs as UID 0 with `NET_ADMIN` to create the WireGuard device and
+`DAC_OVERRIDE` to access the existing owner-only Relay secret and certificate cache.
+This is required because common Compose runtimes ignore file-secret `uid` and `gid`.
+The container root filesystem remains read-only and all other capabilities remain
+dropped.
+
 Run `nft list table inet blindport` after startup and verify the input, active
 source, non-global destination, and TCP/25 rules before activating sales. Test
 both directions from an external network and confirm the outbound observer sees

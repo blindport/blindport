@@ -175,8 +175,10 @@ import sys
 relay = json.load(sys.stdin)["services"]["relay"]
 environment = relay["environment"]
 assert relay["network_mode"] == "host"
-assert "NET_ADMIN" in relay["cap_add"]
-assert relay["user"] == "10001:10001"
+capabilities = set(relay["cap_add"])
+assert {"DAC_OVERRIDE", "NET_ADMIN"} <= capabilities
+assert capabilities <= {"DAC_OVERRIDE", "NET_ADMIN", "NET_BIND_SERVICE"}
+assert relay["user"] == "0:0"
 assert relay["read_only"] is True
 assert environment["BLINDPORT_RELAY_WIREGUARD"] == "1"
 assert environment["BLINDPORT_RELAY_WIREGUARD_KEY_FILE"] == "/run/secrets/wireguard-key"
@@ -192,8 +194,8 @@ for name in ("relay-secret", "wireguard-key"):
         item for item in relay["secrets"]
         if isinstance(item, dict) and item.get("source") == name
     )
-    assert mounted["uid"] == "10001"
-    assert mounted["gid"] == "10001"
+    assert mounted["uid"] == "0"
+    assert mounted["gid"] == "0"
 '
 
     docker compose \
