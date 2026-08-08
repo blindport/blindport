@@ -146,6 +146,14 @@ keyring in `OFFLINE_ENTITLEMENT_PUBLIC_KEYS`. Set
 Relay receives no signer or private key. Its fallback admits only a v2 account certificate
 with one exact `urn:blindport:client:<canonical-uuid>` URI SAN and its bound signed
 artifact, and only for typed backend infrastructure failures.
+Set `BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR` to an absolute canonical persistent directory
+owned by the Relay process with mode `0700`. The Relay fetches and validates online
+certificate material first, then atomically stores `certificate.json` with mode `0600`.
+On restart it reads that cache only after a typed backend infrastructure failure. Bad Relay
+secrets, protocol errors, malformed successful responses, changed exact DNS/IP SANs,
+expired certificates, unsafe files, and changed certificate authorities remain terminal.
+The official Compose definitions mount `/var/lib/blindport` as the `relay-state` volume.
+Treat that volume as private key material and include it in protected edge-state backups.
 This fallback is limited to framed tunnels. It does not alter routed WireGuard,
 which continues using its enrolled desired-state reconciliation path and never
 uses an entitlement cache or proof. Framed agents refresh provisioning every 30

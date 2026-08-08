@@ -12,7 +12,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -buildid=" -o /out/blindpor
 FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS relay
 RUN apk add --no-cache ca-certificates iproute2 nftables \
  && addgroup -g 10001 -S blindport \
- && adduser -u 10001 -S -D -H -G blindport blindport
+ && adduser -u 10001 -S -D -H -G blindport blindport \
+ && install -d -o blindport -g blindport -m 0700 /var/lib/blindport
 COPY --from=build /out/blindport-relay /usr/local/bin/blindport-relay
 COPY --chmod=0555 docker/relay-entrypoint.sh /usr/local/bin/relay-entrypoint
 USER 10001:10001

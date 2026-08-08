@@ -6,11 +6,15 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -149,7 +153,7 @@ func TestCertificateManagerRenewsDynamicCertificate(t *testing.T) {
 		ca.issue(t, 11, []string{"relay.example"}, nil, now.Add(time.Hour)),
 	}}
 	health := newRelayHealth(true, time.Second, time.Minute)
-	manager, err := newCertificateManager(context.Background(), fetcher, []string{"relay.example"}, nil, health, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	manager, err := newCertificateManager(context.Background(), fetcher, []string{"relay.example"}, nil, "", health, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,4 +177,199 @@ func TestCertificateManagerRenewsDynamicCertificate(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("certificate did not renew")
+}
+
+type staticCertificateFetcher struct {
+	response *relayauth.RelayCert
+	err      error
+	calls    int
+}
+
+func (f *staticCertificateFetcher) FetchRelayCert(context.Context, []string, []string) (*relayauth.RelayCert, error) {
+	f.calls++
+	return f.response, f.err
+}
+
+func TestCertificateManagerStoresOnlineCertificateCache(t *testing.T) {
+	ca := newTestRelayCA(t, 1)
+	now := time.Now().UTC().Truncate(time.Second)
+	directory := certificateCacheTestDir(t)
+	response := ca.issue(t, 2, []string{"RELAY.example."}, []string{"203.0.113.10"}, now.Add(time.Hour))
+	health := newRelayHealth(true, time.Second, time.Minute)
+	manager, err := newCertificateManager(context.Background(), &staticCertificateFetcher{response: response}, []string{"relay.EXAMPLE"}, []string{"203.0.113.10"}, directory, health, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manager.current.Load() == nil {
+		t.Fatal("online certificate was not activated")
+	}
+	info, err := os.Stat(filepath.Join(directory, certificateCacheFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("cache mode = %04o, want 0600", got)
+	}
+}
+
+func TestCertificateManagerUsesCacheOnlyForInfrastructureFailure(t *testing.T) {
+	ca := newTestRelayCA(t, 1)
+	now := time.Now().UTC().Truncate(time.Second)
+	directory := certificateCacheTestDir(t)
+	response := ca.issue(t, 2, []string{"relay.example"}, nil, now.Add(time.Hour))
+	cache := newCertificateCache(directory)
+	if err := cache.store(response, []string{"relay.example"}, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	infrastructure := &relayauth.Error{Kind: relayauth.ErrorInfrastructure, Err: errors.New("backend unavailable")}
+	health := newRelayHealth(true, time.Second, time.Minute)
+	manager, err := newCertificateManager(context.Background(), &staticCertificateFetcher{err: infrastructure}, []string{"relay.example"}, nil, directory, health, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.current.Load().Leaf.SerialNumber.Int64(); got != 2 {
+		t.Fatalf("cached serial = %d, want 2", got)
+	}
+	if got := health.authState.Load(); got != authInfrastructureFailure {
+		t.Fatalf("health auth state = %d, want infrastructure failure", got)
+	}
+}
+
+func TestCertificateManagerDoesNotFallbackForOnlineFailures(t *testing.T) {
+	ca := newTestRelayCA(t, 1)
+	now := time.Now().UTC().Truncate(time.Second)
+	response := ca.issue(t, 2, []string{"relay.example"}, nil, now.Add(time.Hour))
+	for _, test := range []struct {
+		name     string
+		response *relayauth.RelayCert
+		err      error
+	}{
+		{name: "secret error", err: &relayauth.Error{Kind: relayauth.ErrorSecret, Err: errors.New("bad secret")}},
+		{name: "protocol error", err: &relayauth.Error{Kind: relayauth.ErrorProtocol, Err: errors.New("bad response")}},
+		{name: "malformed online success", response: &relayauth.RelayCert{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := certificateCacheTestDir(t)
+			cache := newCertificateCache(directory)
+			if err := cache.store(response, []string{"relay.example"}, nil, now); err != nil {
+				t.Fatal(err)
+			}
+			_, err := newCertificateManager(context.Background(), &staticCertificateFetcher{response: test.response, err: test.err}, []string{"relay.example"}, nil, directory, newRelayHealth(true, time.Second, time.Minute), slog.Default())
+			if err == nil {
+				t.Fatal("certificate manager unexpectedly loaded the cache")
+			}
+		})
+	}
+}
+
+func TestCertificateCacheRejectsMismatchedAndExpiredMaterial(t *testing.T) {
+	ca := newTestRelayCA(t, 1)
+	now := time.Now().UTC().Truncate(time.Second)
+	response := ca.issue(t, 2, []string{"relay.example"}, nil, now.Add(time.Hour))
+	expiredResponse := ca.issue(t, 3, []string{"relay.example"}, nil, now.Add(-time.Hour))
+	for _, test := range []struct {
+		name     string
+		envelope certificateCacheEnvelope
+	}{
+		{name: "identity mismatch", envelope: certificateCacheEnvelope{Version: certificateCacheVersion, Hostnames: []string{"other.example"}, IPs: []string{}, Certificate: responseCopy(response)}},
+		{name: "expired", envelope: certificateCacheEnvelope{Version: certificateCacheVersion, Hostnames: []string{"relay.example"}, IPs: []string{}, Certificate: responseCopy(expiredResponse)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := certificateCacheTestDir(t)
+			writeCertificateCacheEnvelope(t, directory, test.envelope)
+			if _, err := newCertificateCache(directory).load([]string{"relay.example"}, nil, now); err == nil {
+				t.Fatal("unsafe cached material was accepted")
+			}
+		})
+	}
+}
+
+func TestCertificateCacheRejectsUnsafeFiles(t *testing.T) {
+	ca := newTestRelayCA(t, 1)
+	now := time.Now().UTC().Truncate(time.Second)
+	response := ca.issue(t, 2, []string{"relay.example"}, nil, now.Add(time.Hour))
+	t.Run("mode", func(t *testing.T) {
+		directory := certificateCacheTestDir(t)
+		cache := newCertificateCache(directory)
+		if err := cache.store(response, []string{"relay.example"}, nil, now); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(directory, certificateCacheFileName)
+		if err := os.Chmod(path, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cache.load([]string{"relay.example"}, nil, now); err == nil {
+			t.Fatal("cache with unsafe mode was accepted")
+		}
+	})
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows symlink permissions are environment-dependent")
+	}
+	t.Run("symlink", func(t *testing.T) {
+		directory := certificateCacheTestDir(t)
+		path := filepath.Join(directory, certificateCacheFileName)
+		target := filepath.Join(directory, "target")
+		payload, err := json.Marshal(certificateCacheEnvelope{Version: certificateCacheVersion, Hostnames: []string{"relay.example"}, IPs: []string{}, Certificate: *response})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("create symlink: %v", err)
+		}
+		if _, err := newCertificateCache(directory).load([]string{"relay.example"}, nil, now); err == nil {
+			t.Fatal("symlink cache was accepted")
+		}
+	})
+}
+
+func TestCertificateManagerRetainsCurrentCertificateWhenCachePersistenceFails(t *testing.T) {
+	ca := newTestRelayCA(t, 1)
+	now := time.Now().UTC().Truncate(time.Second)
+	directory := certificateCacheTestDir(t)
+	fetcher := &sequenceCertificateFetcher{responses: []*relayauth.RelayCert{
+		ca.issue(t, 10, []string{"relay.example"}, nil, now.Add(2*time.Second)),
+		ca.issue(t, 11, []string{"relay.example"}, nil, now.Add(time.Hour)),
+	}}
+	health := newRelayHealth(true, time.Second, time.Minute)
+	manager, err := newCertificateManager(context.Background(), fetcher, []string{"relay.example"}, nil, directory, health, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(directory, certificateCacheFileName), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go manager.run(ctx)
+	time.Sleep(2500 * time.Millisecond)
+	if got := manager.current.Load().Leaf.SerialNumber.Int64(); got != 10 {
+		t.Fatalf("renewed certificate serial = %d, want current serial 10 after cache failure", got)
+	}
+}
+
+func responseCopy(response *relayauth.RelayCert) relayauth.RelayCert {
+	return *response
+}
+
+func writeCertificateCacheEnvelope(t *testing.T, directory string, envelope certificateCacheEnvelope) {
+	t.Helper()
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, certificateCacheFileName), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func certificateCacheTestDir(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }

@@ -82,6 +82,7 @@ func main() {
 	sniListen := flag.String("sni", envDefault("BLINDPORT_RELAY_SNI", ":4443"), "shared-pool SNI listen address (set empty to disable)")
 	challengeListen := flag.String("http-challenge", os.Getenv("BLINDPORT_RELAY_HTTP_CHALLENGE"), "HTTP listen address for HTTPS redirects and HTTP-01 forwarding, for example :80 (empty disables it; safe behind an L7 frontend)")
 	mtlsHosts := flag.String("mtls-hosts", os.Getenv("BLINDPORT_RELAY_MTLS_HOSTS"), "comma-separated SAN hostnames for the relay server cert")
+	certificateCacheDir := flag.String("certificate-cache-dir", os.Getenv("BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR"), "owner-only directory for persistent relay certificate cache (empty disables persistence)")
 	disableMTLS := flag.Bool("disable-mtls", os.Getenv("BLINDPORT_RELAY_DISABLE_MTLS") == "1", "disable mTLS on the control plane (insecure, dev only)")
 	reauthInterval := flag.Duration("reauth-interval", envDurationDefault("BLINDPORT_RELAY_REAUTH_INTERVAL", 45*time.Second), "established tunnel reauthorization interval")
 	reauthMaxStale := flag.Duration("reauth-max-staleness", envDurationDefault("BLINDPORT_RELAY_REAUTH_MAX_STALENESS", 90*time.Second), "maximum time an established tunnel may retain authorization during resolver errors")
@@ -236,7 +237,7 @@ func main() {
 	var certificateCredentials *certificateManager
 	if !*disableMTLS {
 		certIPs := append(append([]string{}, r.listenIPs...), r.sharedIPs...)
-		certificateCredentials, err = newCertificateManager(ctx, resolver, splitNonEmpty(*mtlsHosts, ","), certIPs, health, logger)
+		certificateCredentials, err = newCertificateManager(ctx, resolver, splitNonEmpty(*mtlsHosts, ","), certIPs, *certificateCacheDir, health, logger)
 		if err != nil {
 			logger.Error("mTLS setup failed", "err", err)
 			os.Exit(1)

@@ -23,6 +23,7 @@ type certificateManager struct {
 	fetcher certificateFetcher
 	hosts   []string
 	ips     []string
+	cache   *certificateCache
 	log     *slog.Logger
 	health  *relayHealth
 	current atomic.Pointer[tls.Certificate]
@@ -30,24 +31,45 @@ type certificateManager struct {
 	caPool  *x509.CertPool
 }
 
-func newCertificateManager(ctx context.Context, fetcher certificateFetcher, hosts, ips []string, health *relayHealth, log *slog.Logger) (*certificateManager, error) {
-	if len(hosts) == 0 && len(ips) == 0 {
-		return nil, fmt.Errorf("no hostnames or IPs given for relay server certificate")
-	}
-	m := &certificateManager{fetcher: fetcher, hosts: hosts, ips: ips, health: health, log: log}
-	issued, err := fetcher.FetchRelayCert(ctx, hosts, ips)
-	health.observeAuth(err)
-	if err != nil {
-		return nil, fmt.Errorf("fetch relay certificate: %w", err)
-	}
-	cert, ca, pool, err := validateCertificateResponse(issued, hosts, ips, nil, time.Now())
+func newCertificateManager(ctx context.Context, fetcher certificateFetcher, hosts, ips []string, cacheDir string, health *relayHealth, log *slog.Logger) (*certificateManager, error) {
+	canonicalHosts, canonicalIPs, err := canonicalCertificateIdentities(hosts, ips)
 	if err != nil {
 		return nil, err
+	}
+	m := &certificateManager{
+		fetcher: fetcher, hosts: canonicalHosts, ips: canonicalIPs, cache: newCertificateCache(cacheDir), health: health, log: log,
+	}
+	issued, fetchErr := fetcher.FetchRelayCert(ctx, canonicalHosts, canonicalIPs)
+	if fetchErr != nil {
+		health.observeAuth(fetchErr)
+		if !relayauth.IsKind(fetchErr, relayauth.ErrorInfrastructure) || m.cache == nil {
+			return nil, fmt.Errorf("fetch relay certificate: %w", fetchErr)
+		}
+		cached, cacheErr := m.cache.load(canonicalHosts, canonicalIPs, time.Now())
+		if cacheErr != nil {
+			return nil, fmt.Errorf("fetch relay certificate: %v; load certificate cache: %w", fetchErr, cacheErr)
+		}
+		m.current.Store(cached.cert)
+		m.caRaw = cached.ca
+		m.caPool = cached.pool
+		health.certExpiry.Store(cached.cert.Leaf.NotAfter.Unix())
+		log.Warn("relay certificate backend unavailable; using cached certificate")
+		return m, nil
+	}
+	cert, ca, pool, err := validateCertificateResponse(issued, canonicalHosts, canonicalIPs, nil, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if m.cache != nil {
+		if err := m.cache.store(issued, canonicalHosts, canonicalIPs, time.Now()); err != nil {
+			return nil, fmt.Errorf("persist relay certificate cache: %w", err)
+		}
 	}
 	m.current.Store(cert)
 	m.caRaw = ca
 	m.caPool = pool
 	health.certExpiry.Store(cert.Leaf.NotAfter.Unix())
+	health.observeAuth(nil)
 	return m, nil
 }
 
@@ -86,9 +108,14 @@ func (m *certificateManager) run(ctx context.Context) {
 		for {
 			var next *tls.Certificate
 			issued, err := m.fetcher.FetchRelayCert(ctx, m.hosts, m.ips)
-			m.health.observeAuth(err)
 			if err == nil {
 				next, err = validateRenewedCertificateResponse(issued, m.hosts, m.ips, m.caRaw, cert, time.Now())
+			}
+			if err == nil && m.cache != nil {
+				err = m.cache.store(issued, m.hosts, m.ips, time.Now())
+				if err != nil {
+					err = fmt.Errorf("persist relay certificate cache: %w", err)
+				}
 			}
 			if err == nil {
 				m.current.Store(next)
@@ -123,6 +150,10 @@ func validateCertificateResponse(response *relayauth.RelayCert, hosts, ips []str
 	if response == nil {
 		return nil, nil, nil, fmt.Errorf("certificate response is empty")
 	}
+	canonicalHosts, canonicalIPs, err := canonicalCertificateIdentities(hosts, ips)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	caBlock, rest := pem.Decode([]byte(response.CACertPEM))
 	if caBlock == nil || caBlock.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) != 0 {
 		return nil, nil, nil, fmt.Errorf("CA response must contain exactly one certificate")
@@ -152,6 +183,12 @@ func validateCertificateResponse(response *relayauth.RelayCert, hosts, ips []str
 	if now.Before(pair.Leaf.NotBefore) || !now.Before(pair.Leaf.NotAfter) {
 		return nil, nil, nil, fmt.Errorf("relay leaf certificate is not currently valid")
 	}
+	if pair.Leaf.IsCA {
+		return nil, nil, nil, fmt.Errorf("relay leaf certificate must not be a CA")
+	}
+	if len(pair.Leaf.EmailAddresses) != 0 || len(pair.Leaf.URIs) != 0 {
+		return nil, nil, nil, fmt.Errorf("relay leaf certificate must not contain email or URI SANs")
+	}
 	metadataExpiry, err := time.Parse(time.RFC3339, response.NotAfter)
 	if err != nil || !metadataExpiry.Equal(pair.Leaf.NotAfter) {
 		return nil, nil, nil, fmt.Errorf("relay certificate expiry metadata does not match leaf")
@@ -170,21 +207,22 @@ func validateCertificateResponse(response *relayauth.RelayCert, hosts, ips []str
 	if _, err := pair.Leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, CurrentTime: now}); err != nil {
 		return nil, nil, nil, fmt.Errorf("verify relay certificate chain: %w", err)
 	}
-	for _, host := range hosts {
-		if err := pair.Leaf.VerifyHostname(host); err != nil {
-			return nil, nil, nil, fmt.Errorf("verify relay certificate hostname %q: %w", host, err)
-		}
+	leafHosts, leafIPs, err := canonicalCertificateIdentities(pair.Leaf.DNSNames, certificateIPs(pair.Leaf.IPAddresses))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("canonicalize relay certificate SANs: %w", err)
 	}
-	for _, rawIP := range ips {
-		ip := net.ParseIP(rawIP)
-		if ip == nil {
-			return nil, nil, nil, fmt.Errorf("invalid requested certificate IP %q", rawIP)
-		}
-		if err := pair.Leaf.VerifyHostname(ip.String()); err != nil {
-			return nil, nil, nil, fmt.Errorf("verify relay certificate IP %q: %w", rawIP, err)
-		}
+	if !equalStrings(leafHosts, canonicalHosts) || !equalStrings(leafIPs, canonicalIPs) {
+		return nil, nil, nil, fmt.Errorf("relay certificate SANs do not exactly match requested identities")
 	}
 	return &pair, ca.Raw, roots, nil
+}
+
+func certificateIPs(ips []net.IP) []string {
+	values := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		values = append(values, ip.String())
+	}
+	return values
 }
 
 func validateRenewedCertificateResponse(response *relayauth.RelayCert, hosts, ips []string, expectedCA []byte, current *tls.Certificate, now time.Time) (*tls.Certificate, error) {

@@ -356,6 +356,7 @@ services:
       BLINDPORT_RELAY_SNI: 127.0.0.1:4443
       BLINDPORT_RELAY_HTTP_CHALLENGE: 127.0.0.1:4080
       BLINDPORT_RELAY_MTLS_HOSTS: ${RELAY_CONTROL_HOST}
+      BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR: /var/lib/blindport
       BLINDPORT_RELAY_ADMIN: 127.0.0.1:9090
       BLINDPORT_RELAY_MAX_CONTROL_HANDSHAKES: ${RELAY_MAX_CONTROL_HANDSHAKES:-128}
       BLINDPORT_RELAY_MAX_INGRESS: ${RELAY_MAX_INGRESS:-1024}
@@ -375,6 +376,8 @@ services:
         uid: "10001"
         gid: "10001"
         mode: 0400
+    volumes:
+      - relay-state:/var/lib/blindport
     depends_on:
       backend:
         condition: service_healthy
@@ -433,6 +436,7 @@ networks:
 volumes:
   postgres-data:
   backend-ca:
+  relay-state:
 
 secrets:
   database-url:
