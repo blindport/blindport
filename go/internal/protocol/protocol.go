@@ -47,6 +47,8 @@ const (
 	CapabilityTCPHalfClose Capability = "tcp_half_close"
 	// CapabilityStreamFlowControl permits per-stream WINDOW_UPDATE credit.
 	CapabilityStreamFlowControl Capability = "stream_flow_control"
+	// CapabilityOfflineEntitlementV1 permits a Hello frame to carry a v1 offline entitlement.
+	CapabilityOfflineEntitlementV1 Capability = "offline_entitlement_v1"
 )
 
 // ClaimKind identifies which product the client is claiming on this tunnel.
@@ -120,6 +122,7 @@ type Frame struct {
 	Type         FrameType    `json:"type"`
 	Version      uint16       `json:"version,omitempty"`
 	Token        string       `json:"token,omitempty"`
+	Entitlement  string       `json:"entitlement,omitempty"`
 	Claim        *Claim       `json:"claim,omitempty"`
 	Msg          string       `json:"msg,omitempty"`
 	Stream       uint32       `json:"stream,omitempty"`

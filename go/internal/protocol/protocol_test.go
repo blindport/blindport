@@ -10,7 +10,7 @@ import (
 
 func TestFrameRoundtrip(t *testing.T) {
 	cases := []*Frame{
-		{Type: TypeHello, Token: "ABC123", Claim: &Claim{Kind: ClaimIP, IP: "1.2.3.4"}},
+		{Type: TypeHello, Token: "ABC123", Entitlement: "v1.payload.signature", Claim: &Claim{Kind: ClaimIP, IP: "1.2.3.4"}},
 		{Type: TypeHello, Token: "ABC123", Claim: &Claim{Kind: ClaimPort, IP: "1.2.3.4", Port: 10000, Transport: TransportTCP}},
 		{Type: TypeOpen, Stream: 7, Proto: "tcp", Src: "9.9.9.9:1", Dst: "1.2.3.4:443"},
 		{Type: TypeData, Stream: 7, Data: []byte("hello world")},
@@ -29,7 +29,7 @@ func TestFrameRoundtrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
-		if got.Type != f.Type || got.Stream != f.Stream || got.Token != f.Token || got.Credit != f.Credit {
+		if got.Type != f.Type || got.Stream != f.Stream || got.Token != f.Token || got.Entitlement != f.Entitlement || got.Credit != f.Credit {
 			t.Errorf("mismatch: %+v vs %+v", got, f)
 		}
 		if !bytes.Equal(got.Data, f.Data) {
@@ -39,7 +39,7 @@ func TestFrameRoundtrip(t *testing.T) {
 }
 
 func TestFrameCapabilities(t *testing.T) {
-	frame := &Frame{Capabilities: []Capability{"future", CapabilityTCPHalfClose, CapabilityStreamFlowControl}}
+	frame := &Frame{Capabilities: []Capability{"future", CapabilityTCPHalfClose, CapabilityStreamFlowControl, CapabilityOfflineEntitlementV1}}
 	if !frame.HasCapability(CapabilityTCPHalfClose) {
 		t.Fatal("advertised TCP half-close capability not found")
 	}
@@ -48,6 +48,20 @@ func TestFrameCapabilities(t *testing.T) {
 	}
 	if !frame.HasCapability(CapabilityStreamFlowControl) {
 		t.Fatal("advertised stream flow-control capability not found")
+	}
+	if !frame.HasCapability(CapabilityOfflineEntitlementV1) {
+		t.Fatal("advertised offline entitlement capability not found")
+	}
+}
+
+func TestHelloEntitlementSizeLimit(t *testing.T) {
+	var buf bytes.Buffer
+	frame := &Frame{Type: TypeHello, Entitlement: strings.Repeat("x", MaxHelloFrameSize)}
+	if err := WriteFrame(&buf, frame); err != nil {
+		t.Fatalf("WriteFrame() error = %v", err)
+	}
+	if _, err := ReadFrameWithLimit(&buf, MaxHelloFrameSize); err == nil {
+		t.Fatal("ReadFrameWithLimit() accepted an oversized entitlement Hello")
 	}
 }
 

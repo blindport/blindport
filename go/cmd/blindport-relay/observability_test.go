@@ -107,6 +107,8 @@ func TestAdminEndpointsAndMetricsUseFixedLabels(t *testing.T) {
 		"blindport_relay_wireguard_peers_active 0",
 		"blindport_relay_wireguard_prefixes_active 0",
 		"blindport_relay_ready 1",
+		`blindport_relay_entitlement_authorizations_total{outcome="online"} 0`,
+		`blindport_relay_entitlement_authorizations_total{outcome="offline"} 0`,
 		`blindport_relay_http_challenge_outcomes_total{outcome="success"} 0`,
 		`blindport_relay_http_challenge_outcomes_total{outcome="redirected"} 0`,
 	} {
@@ -114,7 +116,9 @@ func TestAdminEndpointsAndMetricsUseFixedLabels(t *testing.T) {
 			t.Fatalf("metrics missing %q:\n%s", required, text)
 		}
 	}
-	if strings.Contains(text, "sensitive.example") {
-		t.Fatal("metrics exposed tenant domain")
+	for _, sensitive := range []string{"sensitive.example", "test-token", "v1.payload.signature", offlineTestAccount} {
+		if strings.Contains(text, sensitive) {
+			t.Fatalf("metrics exposed sensitive value %q", sensitive)
+		}
 	}
 }

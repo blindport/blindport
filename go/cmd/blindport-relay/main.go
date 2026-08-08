@@ -29,6 +29,18 @@ type tokenResolver interface {
 	Resolve(context.Context, string) (*relayauth.Resolution, error)
 }
 
+const (
+	authorizationSourceOnline                 = "online"
+	authorizationSourceOnlineWithOfflineProof = "online_with_offline_proof"
+	authorizationSourceOffline                = "offline"
+)
+
+type controlAuthorization struct {
+	source       string
+	peerIdentity *clientIdentity
+	offlineProof *offlineAuthorization
+}
+
 // relay is the runtime state of a relay node.
 type relay struct {
 	log                 *slog.Logger
@@ -50,6 +62,7 @@ type relay struct {
 	shutdownTimeout     time.Duration
 	maxStreamsPerTunnel int
 	udpAssociationIdle  time.Duration
+	offlineEntitlements *offlineEntitlementConfig
 	// tunnels keyed by claim, e.g. "ip:203.0.113.10" or "domain:alice.example.com"
 	mu         sync.RWMutex
 	tunnels    map[string]*tunnel.Conn
@@ -93,6 +106,10 @@ func main() {
 	wireguardInterval := flag.Duration("wireguard-interval", envDurationDefault("BLINDPORT_RELAY_WIREGUARD_INTERVAL", 10*time.Second), "routed desired-state reconcile interval")
 	wireguardMaxStale := flag.Duration("wireguard-max-staleness", envDurationDefault("BLINDPORT_RELAY_WIREGUARD_MAX_STALENESS", 90*time.Second), "maximum backend staleness before the routed plane fails closed")
 	wireguardAllowPrivate := flag.Bool("wireguard-allow-private-destinations", os.Getenv("BLINDPORT_RELAY_WIREGUARD_ALLOW_PRIVATE_DESTINATIONS") == "1", "allow private routed destinations (isolated development tests only)")
+	offlineEntitlementsEnabled := flag.Bool("offline-entitlements-enabled", envBoolDefault("OFFLINE_ENTITLEMENTS_ENABLED", false), "enable signed offline entitlement fallback")
+	offlineEntitlementPublicKeys := flag.String("offline-entitlement-public-keys", os.Getenv("OFFLINE_ENTITLEMENT_PUBLIC_KEYS"), "canonical JSON offline entitlement Ed25519 public keyring")
+	offlineEntitlementMaxGrace := flag.Int("offline-entitlement-max-grace-seconds", envIntDefault("OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS", 604800), "maximum accepted offline entitlement grace period in seconds")
+	relayEdgeID := flag.String("relay-edge-id", os.Getenv("RELAY_EDGE_ID"), "stable relay edge ID for offline entitlement verification")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -102,6 +119,15 @@ func main() {
 	}
 	if err := validateReauthorizationConfig(*reauthInterval, *reauthMaxStale); err != nil {
 		logger.Error("invalid reauthorization configuration", "err", err)
+		os.Exit(2)
+	}
+	offlineEntitlements, err := parseOfflineEntitlementConfig(*offlineEntitlementsEnabled, *offlineEntitlementPublicKeys, *relayEdgeID, *offlineEntitlementMaxGrace)
+	if err != nil {
+		logger.Error("invalid offline entitlement configuration", "err", err)
+		os.Exit(2)
+	}
+	if offlineEntitlements != nil && *disableMTLS {
+		logger.Error("offline entitlements require mTLS")
 		os.Exit(2)
 	}
 	parsedConfig, err := parseRelayConfig(*listenIPs, *listenPorts, *sharedIPs, *sharedTCPPorts, *sharedUDPPorts)
@@ -155,6 +181,7 @@ func main() {
 		shutdownTimeout:     *shutdownTimeout,
 		maxStreamsPerTunnel: *maxStreamsPerTunnel,
 		udpAssociationIdle:  *udpAssociationIdle,
+		offlineEntitlements: offlineEntitlements,
 		tunnels:             map[string]*tunnel.Conn{},
 		allTunnels:          map[*tunnel.Conn]struct{}{},
 	}
@@ -363,7 +390,26 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 	}
 	res, err := r.resolver.Resolve(ctx, hello.Token)
 	r.metrics.observeAuth(err)
+	authorization := controlAuthorization{source: authorizationSourceOnline}
 	if err != nil {
+		if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && r.offlineEntitlements != nil && hello.HasCapability(protocol.CapabilityOfflineEntitlementV1) && hello.Entitlement != "" {
+			identity, identityErr := r.offlineIdentity(conn)
+			var verifyErr error
+			if identityErr == nil {
+				_, verifyErr = r.verifyOfflineEntitlement(hello.Entitlement, hello.Claim, identity, time.Now())
+			}
+			if identityErr == nil && verifyErr == nil {
+				authorization = controlAuthorization{
+					source:       authorizationSourceOffline,
+					peerIdentity: &identity,
+					offlineProof: &offlineAuthorization{artifact: hello.Entitlement, identity: identity},
+				}
+			}
+		}
+		if authorization.source == authorizationSourceOffline {
+			r.establishControlTunnel(ctx, conn, hello, authorization, handshakeComplete)
+			return
+		}
 		if relayauth.IsKind(err, relayauth.ErrorDenied) {
 			r.metrics.control[controlAuthDenied].Add(1)
 		} else {
@@ -373,7 +419,6 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		r.writeErr(conn, "invalid token")
 		return
 	}
-	var peerIdentity *clientIdentity
 	if r.tlsConfig != nil {
 		tlsConn, ok := conn.(*tls.Conn)
 		if !ok {
@@ -389,14 +434,32 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 			r.writeErr(conn, "peer certificate identity does not match token")
 			return
 		}
-		peerIdentity = &identity
+		authorization.peerIdentity = &identity
 	}
-	key := claimKey(hello.Claim)
-	if !claimAllowed(res, hello.Claim) {
+	if r.offlineEntitlements != nil && hello.HasCapability(protocol.CapabilityOfflineEntitlementV1) && hello.Entitlement != "" {
+		identity, identityErr := r.offlineIdentity(conn)
+		if identityErr != nil {
+			r.metrics.control[controlIdentityDenied].Add(1)
+			r.writeErr(conn, "peer certificate identity does not support offline entitlement")
+			return
+		}
+		if _, verifyErr := r.verifyOfflineEntitlement(hello.Entitlement, hello.Claim, identity, time.Now()); verifyErr != nil {
+			r.metrics.control[controlIdentityDenied].Add(1)
+			r.writeErr(conn, "offline entitlement is invalid")
+			return
+		}
+		authorization.source = authorizationSourceOnlineWithOfflineProof
+		authorization.offlineProof = &offlineAuthorization{artifact: hello.Entitlement, identity: identity}
+	}
+	if res == nil || !claimAllowed(res, hello.Claim) {
 		r.metrics.control[controlAuthDenied].Add(1)
 		r.writeErr(conn, "claim not authorized for token")
 		return
 	}
+	r.establishControlTunnel(ctx, conn, hello, authorization, handshakeComplete)
+}
+
+func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello *protocol.Frame, authorization controlAuthorization, handshakeComplete func()) {
 	_ = conn.SetReadDeadline(time.Time{})
 	halfClose := hello.HasCapability(protocol.CapabilityTCPHalfClose)
 	flowControl := halfClose && hello.HasCapability(protocol.CapabilityStreamFlowControl)
@@ -406,6 +469,9 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 	}
 	if flowControl {
 		reply.Capabilities = append(reply.Capabilities, protocol.CapabilityStreamFlowControl)
+	}
+	if authorization.offlineProof != nil {
+		reply.Capabilities = append(reply.Capabilities, protocol.CapabilityOfflineEntitlementV1)
 	}
 	if err := protocol.WriteFrame(conn, reply); err != nil {
 		r.metrics.control[controlWriteError].Add(1)
@@ -425,13 +491,20 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		t.EnableStreamFlowControl()
 	}
 	handshakeComplete()
+	key := claimKey(hello.Claim)
 	r.registerTunnel(key, hello.Claim.Kind, t)
 	defer r.unregisterTunnel(key, hello.Claim.Kind, t)
 	r.metrics.control[controlAccepted].Add(1)
-	r.log.Info("client connected", "claim_kind", hello.Claim.Kind)
+	if authorization.source == authorizationSourceOnlineWithOfflineProof {
+		r.metrics.entitlement[entitlementOnline].Add(1)
+	}
+	if authorization.source == authorizationSourceOffline {
+		r.metrics.entitlement[entitlementOffline].Add(1)
+	}
+	r.log.Info("client connected", "claim_kind", hello.Claim.Kind, "authorization_source", authorization.source)
 	sessionCtx, cancel := context.WithCancel(ctx)
 	reauthDone := make(chan struct{})
-	go r.watchAuthorization(sessionCtx, hello.Token, hello.Claim, peerIdentity, t, reauthDone)
+	go r.watchAuthorization(sessionCtx, hello.Token, hello.Claim, authorization.peerIdentity, authorization.offlineProof, t, reauthDone)
 	if err := t.Run(); err != nil {
 		r.log.Info("client disconnected", "claim_kind", hello.Claim.Kind)
 	}
@@ -442,6 +515,14 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 func (r *relay) writeErr(conn net.Conn, msg string) {
 	_ = protocol.WriteFrame(conn, &protocol.Frame{Type: protocol.TypeHelloErr, Msg: msg})
 	_ = conn.Close()
+}
+
+func (r *relay) offlineIdentity(conn net.Conn) (clientIdentity, error) {
+	tlsConn, ok := conn.(*tls.Conn)
+	if !ok {
+		return clientIdentity{}, fmt.Errorf("offline entitlements require an mTLS connection")
+	}
+	return offlineCertificateIdentity(tlsConn.ConnectionState())
 }
 
 func (r *relay) registerTunnel(key string, kind protocol.ClaimKind, t *tunnel.Conn) {
@@ -564,9 +645,12 @@ const (
 )
 
 type clientIdentity struct {
-	kind      clientIdentityKind
-	accountID [16]byte
-	userID    int64
+	kind            clientIdentityKind
+	accountID       [16]byte
+	userID          int64
+	instanceID      [16]byte
+	clientPublicKey []byte
+	offlineV2       bool
 }
 
 func certificateIdentity(state tls.ConnectionState) (clientIdentity, error) {
@@ -666,10 +750,13 @@ func validateReauthorizationConfig(interval, maxStaleness time.Duration) error {
 	return nil
 }
 
-func reauthorizationRequiresClose(res *relayauth.Resolution, err error, claim *protocol.Claim, peerIdentity *clientIdentity, lastAuthorized, now time.Time, maxStaleness time.Duration) bool {
+func reauthorizationRequiresClose(res *relayauth.Resolution, err error, claim *protocol.Claim, peerIdentity *clientIdentity, lastAuthorized, now time.Time, maxStaleness time.Duration, offlineProofValid bool, hasOfflineProof bool) bool {
 	if err != nil {
-		if relayauth.IsKind(err, relayauth.ErrorDenied) || relayauth.IsKind(err, relayauth.ErrorSecret) {
+		if relayauth.IsKind(err, relayauth.ErrorDenied) || relayauth.IsKind(err, relayauth.ErrorSecret) || relayauth.IsKind(err, relayauth.ErrorProtocol) {
 			return true
+		}
+		if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && hasOfflineProof {
+			return !offlineProofValid
 		}
 		return !now.Before(lastAuthorized.Add(maxStaleness))
 	}
@@ -679,7 +766,7 @@ func reauthorizationRequiresClose(res *relayauth.Resolution, err error, claim *p
 	return peerIdentity != nil && !peerIdentity.matchesResolution(res)
 }
 
-func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, t *tunnel.Conn, done chan<- struct{}) {
+func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, offlineProof *offlineAuthorization, t *tunnel.Conn, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(r.reauthInterval)
 	defer ticker.Stop()
@@ -694,7 +781,12 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 			res, err := r.resolver.Resolve(ctx, token)
 			r.metrics.observeAuth(err)
 			now := time.Now()
-			if reauthorizationRequiresClose(res, err, claim, peerIdentity, lastAuthorized, now, r.reauthMaxStale) {
+			offlineProofValid := false
+			if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && offlineProof != nil {
+				_, verifyErr := r.verifyOfflineEntitlement(offlineProof.artifact, claim, offlineProof.identity, now)
+				offlineProofValid = verifyErr == nil
+			}
+			if reauthorizationRequiresClose(res, err, claim, peerIdentity, lastAuthorized, now, r.reauthMaxStale, offlineProofValid, offlineProof != nil) {
 				if err != nil {
 					r.log.Warn("tunnel authorization became stale", "claim_kind", claim.Kind)
 				} else {
@@ -704,7 +796,12 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 				return
 			}
 			if err != nil {
-				r.log.Warn("tunnel reauthorization failed; retaining session", "claim_kind", claim.Kind)
+				if offlineProofValid {
+					r.metrics.entitlement[entitlementOffline].Add(1)
+					r.log.Warn("tunnel reauthorization failed; retaining session", "claim_kind", claim.Kind, "authorization_source", "offline")
+				} else {
+					r.log.Warn("tunnel reauthorization failed; retaining session", "claim_kind", claim.Kind)
+				}
 				continue
 			}
 			lastAuthorized = now
@@ -1124,6 +1221,19 @@ func envIntDefault(key string, def int) int {
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid %s integer %q: %v\n", key, value, err)
+		os.Exit(2)
+	}
+	return parsed
+}
+
+func envBoolDefault(key string, def bool) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		return def
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid %s boolean %q: %v\n", key, value, err)
 		os.Exit(2)
 	}
 	return parsed

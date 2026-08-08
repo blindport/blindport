@@ -24,6 +24,7 @@ const (
 	ErrorDenied         ErrorKind = "denied"
 	ErrorSecret         ErrorKind = "secret"
 	ErrorInfrastructure ErrorKind = "infrastructure"
+	ErrorProtocol       ErrorKind = "protocol"
 )
 
 // Error is a typed backend failure.
@@ -212,12 +213,7 @@ func (r *Resolver) doJSON(req *http.Request, out any, resolve bool) error {
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBody+1))
-		kind := ErrorInfrastructure
-		if resp.StatusCode == http.StatusUnauthorized {
-			kind = ErrorSecret
-		} else if resolve && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden) {
-			kind = ErrorDenied
-		}
+		kind := classifyStatus(resp.StatusCode, resolve)
 		return &Error{Kind: kind, Status: resp.StatusCode, Err: errors.New(http.StatusText(resp.StatusCode))}
 	}
 
@@ -226,23 +222,40 @@ func (r *Resolver) doJSON(req *http.Request, out any, resolve bool) error {
 		return infrastructure("read backend response", err)
 	}
 	if len(responseBody) > maxResponseBody {
-		return infrastructure("read backend response", errors.New("response body exceeds limit"))
+		return protocolFailure("read backend response", errors.New("response body exceeds limit"))
 	}
 	decoder := json.NewDecoder(bytes.NewReader(responseBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
-		return infrastructure("decode backend response", err)
+		return protocolFailure("decode backend response", err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
 			err = errors.New("multiple JSON values")
 		}
-		return infrastructure("decode backend response", err)
+		return protocolFailure("decode backend response", err)
 	}
 	return nil
 }
 
 func infrastructure(operation string, err error) error {
 	return &Error{Kind: ErrorInfrastructure, Err: fmt.Errorf("%s: %w", operation, err)}
+}
+
+func protocolFailure(operation string, err error) error {
+	return &Error{Kind: ErrorProtocol, Err: fmt.Errorf("%s: %w", operation, err)}
+}
+
+func classifyStatus(status int, resolve bool) ErrorKind {
+	switch {
+	case status == http.StatusUnauthorized:
+		return ErrorSecret
+	case resolve && (status == http.StatusForbidden || status == http.StatusNotFound):
+		return ErrorDenied
+	case status >= http.StatusInternalServerError:
+		return ErrorInfrastructure
+	default:
+		return ErrorProtocol
+	}
 }

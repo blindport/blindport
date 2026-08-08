@@ -138,6 +138,35 @@ func TestResolveFallsBackToLegacyEndpoint(t *testing.T) {
 	}
 }
 
+func TestResolveLegacyFallbackPreservesTokenDenial(t *testing.T) {
+	var v2Calls atomic.Int64
+	var v1Calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v2/resolve":
+			v2Calls.Add(1)
+			http.NotFound(w, r)
+		case "/internal/v1/resolve":
+			v1Calls.Add(1)
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(context.Background(), "token"); !IsKind(err, ErrorDenied) {
+		t.Fatalf("Resolve() error = %v, want typed denial", err)
+	}
+	if v2Calls.Load() != 1 || v1Calls.Load() != 1 {
+		t.Fatalf("v2/v1 calls = %d/%d", v2Calls.Load(), v1Calls.Load())
+	}
+}
+
 func TestResolveDoesNotFallbackAfterNonNotFoundFailure(t *testing.T) {
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -244,7 +273,7 @@ func TestWireGuardPeersRetainsStrictDecodingOnV2AndV1(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := resolver.WireGuardPeers(context.Background()); !IsKind(err, ErrorInfrastructure) {
+			if _, err := resolver.WireGuardPeers(context.Background()); !IsKind(err, ErrorProtocol) {
 				t.Fatalf("WireGuardPeers() error = %v", err)
 			}
 		})
@@ -294,8 +323,8 @@ func TestResponseDecodeIsBoundedAndStrict(t *testing.T) {
 		}
 		_, err = resolver.Resolve(context.Background(), "token")
 		server.Close()
-		if !IsKind(err, ErrorInfrastructure) {
-			t.Fatalf("Resolve() error = %v, want infrastructure", err)
+		if !IsKind(err, ErrorProtocol) {
+			t.Fatalf("Resolve() error = %v, want protocol", err)
 		}
 	}
 }
@@ -345,8 +374,8 @@ func TestResolverDoesNotFollowRedirectsWithRelaySecret(t *testing.T) {
 	}
 	_, err = resolver.Resolve(context.Background(), "token")
 	var typed *Error
-	if !errors.As(err, &typed) || typed.Kind != ErrorInfrastructure || typed.Status != http.StatusTemporaryRedirect {
-		t.Fatalf("Resolve() error = %v, want infrastructure status %d", err, http.StatusTemporaryRedirect)
+	if !errors.As(err, &typed) || typed.Kind != ErrorProtocol || typed.Status != http.StatusTemporaryRedirect {
+		t.Fatalf("Resolve() error = %v, want protocol status %d", err, http.StatusTemporaryRedirect)
 	}
 	if followed.Load() {
 		t.Fatal("resolver followed a backend redirect carrying the relay secret")

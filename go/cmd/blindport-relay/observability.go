@@ -28,7 +28,14 @@ const (
 	authDenied
 	authInfrastructure
 	authSecret
+	authProtocol
 	authOutcomeCount
+)
+
+const (
+	entitlementOnline = iota
+	entitlementOffline
+	entitlementOutcomeCount
 )
 
 const (
@@ -49,14 +56,15 @@ type relayMetrics struct {
 		active   atomic.Int64
 		rejected atomic.Uint64
 	}
-	tunnels   [claimKindCount]metricPair
-	streams   [claimKindCount]metricPair
-	bytes     [claimKindCount][2]atomic.Uint64
-	control   [controlOutcomeCount]atomic.Uint64
-	auth      [authOutcomeCount]atomic.Uint64
-	sni       [sniOutcomeCount]atomic.Uint64
-	challenge [challengeOutcomeCount]atomic.Uint64
-	udp       struct {
+	tunnels     [claimKindCount]metricPair
+	streams     [claimKindCount]metricPair
+	bytes       [claimKindCount][2]atomic.Uint64
+	control     [controlOutcomeCount]atomic.Uint64
+	auth        [authOutcomeCount]atomic.Uint64
+	entitlement [entitlementOutcomeCount]atomic.Uint64
+	sni         [sniOutcomeCount]atomic.Uint64
+	challenge   [challengeOutcomeCount]atomic.Uint64
+	udp         struct {
 		associations metricPair
 		rejected     atomic.Uint64
 		dropped      atomic.Uint64
@@ -93,6 +101,7 @@ const (
 	authHealthy
 	authInfrastructureFailure
 	authSecretFailure
+	authProtocolFailure
 )
 
 func newRelayHealth(certNeeded bool, certMargin, authMaxStale time.Duration) *relayHealth {
@@ -109,6 +118,8 @@ func (h *relayHealth) observeAuth(err error) {
 		h.authLastSuccess.Store(time.Now().UnixNano())
 	case relayauth.IsKind(err, relayauth.ErrorSecret):
 		h.authState.Store(authSecretFailure)
+	case relayauth.IsKind(err, relayauth.ErrorProtocol):
+		h.authState.Store(authProtocolFailure)
 	default:
 		h.authState.Store(authInfrastructureFailure)
 	}
@@ -119,7 +130,7 @@ func (h *relayHealth) ready(now time.Time) bool {
 		return false
 	}
 	authState := h.authState.Load()
-	if authState == authUnknown || authState == authSecretFailure || (authState == authInfrastructureFailure && h.authorizationStale(now)) {
+	if authState == authUnknown || authState == authSecretFailure || authState == authProtocolFailure || (authState == authInfrastructureFailure && h.authorizationStale(now)) {
 		return false
 	}
 	if h.wgNeeded.Load() && h.wgState.Load() != wgHealthy {
@@ -145,6 +156,8 @@ func (m *relayMetrics) observeAuth(err error) {
 		m.auth[authDenied].Add(1)
 	case relayauth.IsKind(err, relayauth.ErrorSecret):
 		m.auth[authSecret].Add(1)
+	case relayauth.IsKind(err, relayauth.ErrorProtocol):
+		m.auth[authProtocol].Add(1)
 	default:
 		m.auth[authInfrastructure].Add(1)
 	}
@@ -181,6 +194,8 @@ func (h *relayHealth) components(now time.Time) map[string]string {
 	authorization := "ok"
 	switch h.authState.Load() {
 	case authSecretFailure:
+		authorization = "unavailable"
+	case authProtocolFailure:
 		authorization = "unavailable"
 	case authInfrastructureFailure:
 		if h.authorizationStale(now) {
@@ -281,6 +296,7 @@ func (m *relayMetrics) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 
 	writeFixedOutcomes(w, "blindport_relay_control_outcomes_total", "Control handshake outcomes.", controlOutcomeLabels, m.control[:])
 	writeFixedOutcomes(w, "blindport_relay_auth_outcomes_total", "Backend authorization outcomes.", authOutcomeLabels, m.auth[:])
+	writeFixedOutcomes(w, "blindport_relay_entitlement_authorizations_total", "Accepted or retained signed entitlement authorizations.", entitlementOutcomeLabels, m.entitlement[:])
 	writeFixedOutcomes(w, "blindport_relay_sni_outcomes_total", "SNI inspection outcomes.", sniOutcomeLabels, m.sni[:])
 	writeFixedOutcomes(w, "blindport_relay_http_challenge_outcomes_total", "HTTP ingress outcomes.", challengeOutcomeLabels, m.challenge[:])
 	writeHelpType(w, "blindport_relay_ready", "Whether the relay is ready.", "gauge")
@@ -315,7 +331,8 @@ func writeFixedOutcomes(w http.ResponseWriter, name, help string, labels []strin
 var listenerKindLabels = []string{"control", "ip", "port", "sni", "http_challenge"}
 var claimKindLabels = []string{"ip", "port", "relay"}
 var controlOutcomeLabels = []string{"accepted", "bad_hello", "inventory_denied", "auth_denied", "auth_error", "identity_denied", "write_error"}
-var authOutcomeLabels = []string{"allowed", "denied", "infrastructure", "secret"}
+var authOutcomeLabels = []string{"allowed", "denied", "infrastructure", "secret", "protocol"}
+var entitlementOutcomeLabels = []string{"online", "offline"}
 var sniOutcomeLabels = []string{"success", "invalid", "no_tunnel"}
 var challengeOutcomeLabels = []string{"success", "redirected", "invalid", "rate_limited", "no_tunnel", "upstream_error"}
 

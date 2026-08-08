@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func TestCertificateIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatalf("certificateIdentity() error = %v", err)
 			}
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("certificateIdentity() = %+v, want %+v", got, tt.want)
 			}
 		})
@@ -227,7 +228,7 @@ func TestReauthorizationRequiresClose(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := reauthorizationRequiresClose(tt.resolution, tt.err, claim, tt.identity, tt.lastAuth, now, maxStaleness); got != tt.wantClose {
+			if got := reauthorizationRequiresClose(tt.resolution, tt.err, claim, tt.identity, tt.lastAuth, now, maxStaleness, false, false); got != tt.wantClose {
 				t.Fatalf("reauthorizationRequiresClose() = %t, want %t", got, tt.wantClose)
 			}
 		})
