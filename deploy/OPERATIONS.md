@@ -85,6 +85,8 @@ connection. The checked-in Compose environments remain Lightning-only.
 Keep reminder email disabled until migration `0013` is applied and SMTP plus
 recipient-encryption settings are installed. Reminder delivery does not require
 customer NWC enablement.
+Keep service announcements disabled until migration `0018` is applied, every old
+writer is drained, and the same SMTP and recipient-encryption settings are installed.
 For routed-IP rollout, replace and verify every relay before deploying the new
 backend. The new relay safely falls back to the old v1 desired state with no
 TCP/25 exceptions. An old relay has no routed nftables policy, so never leave one
@@ -134,6 +136,7 @@ install -o 10001 -g 10001 -m 0400 /path/to/tls.cert secrets/lnd-tls-cert
 install -o 10001 -g 10001 -m 0400 /path/to/invoice.macaroon secrets/lnd-invoice-macaroon
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/credential-encryption-key
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/smtp-password
+install -o 10001 -g 10001 -m 0400 /path/to/offline-entitlement-private-key.pem secrets/offline-entitlement-private-key
 install -o 10001 -g 10001 -m 0400 /dev/null secrets/wireguard-key
 install -o root -g root -m 0400 /dev/null secrets/postgres-password
 ```
@@ -211,15 +214,45 @@ and must not be used as invoice or accounting authority.
 
 Optional reminder delivery uses generic SMTP. Configure `SMTP_HOST`, `SMTP_PORT`,
 `SMTP_SECURITY=starttls|tls`, `SMTP_FROM_EMAIL`, and `SMTP_TIMEOUT_SECONDS`.
-Production requires TLS. For authenticated SMTP, set `SMTP_USERNAME`, create the
-owner-only `smtp-password` file, and set
-`SMTP_PASSWORD_FILE=/run/secrets/smtp-password`; username and password must be
+Production requires TLS. For authenticated SMTP, set `SMTP_USERNAME` and use
+`SMTP_PASSWORD_FILE` as the file-backed operator input, for example the owner-only
+`smtp-password` file at `/run/secrets/smtp-password`; username and password must be
 present together. Omit both for a trusted relay. Set
 `CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key` to protect
 recipient addresses with a distinct encryption purpose, then set
 `REMINDER_EMAIL_ENABLED=true`. Mount both secrets only on `backend`, never on
 `migrate`, relay, proxy, or database services. The migration service forces reminders
 off and needs neither runtime secret.
+
+Service announcements use the same SMTP configuration but a separate encrypted recipient
+purpose. After migration `0018` and a complete writer rollout, set
+`ANNOUNCEMENT_EMAIL_ENABLED=true`. The customer dashboard exposes a separate opt-in.
+The browser admin creates a draft, reviews the eligible count, then queues it with a
+separate POST. The queue snapshot excludes suspended and admin accounts. Delivery rows
+contain only campaign, account, and recipient-generation references; no addresses are
+displayed or exported. Cancellation reaches queued rows only and cannot retract a
+delivery that has entered `sending`.
+
+Offline entitlements remain disabled by default. Do not set
+`OFFLINE_ENTITLEMENTS_ENABLED=true` until every serving relay and agent accepts the signed
+v2 claim format. Mount the dedicated unencrypted Ed25519 PKCS#8 PEM only on `backend`, set
+`OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE=/run/secrets/offline-entitlement-private-key`, choose
+an immutable `OFFLINE_ENTITLEMENT_KEY_ID`, and map every configured control endpoint in
+`RELAY_EDGES`. Before enabling the flag, set both
+`RESOURCE_REUSE_QUARANTINE_SECONDS` and `RELAY_RENEWAL_GRACE_SECONDS` strictly above
+`OFFLINE_ENTITLEMENT_GRACE_SECONDS + 120`; with the default seven-day grace, each must be at
+least `604921`. The checked-in normal disabled defaults remain 180 seconds and seven days,
+respectively. Roll out the code and configuration with the flag false first, drain old API
+replicas, verify each edge mapping, then enable the flag in a separate rollout. Keep the key
+stable with the database backups; no private material is returned to clients.
+
+Relay stacks remain disabled by default. Before the separate enablement rollout, give
+each relay its own stable `RELAY_EDGE_ID`, set `OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS`
+to the approved backend grace limit, and set `OFFLINE_ENTITLEMENT_PUBLIC_KEYS` to the
+canonical JSON public keyring. Mount no entitlement private key on a relay. A relay can
+admit a newly connected v2 client during an infrastructure outage only when its exact
+certificate identity and signed artifact both verify for that edge; token denials,
+secret failures, and protocol failures remain fail-closed.
 
 The reconciler queues one notice seven days before expiry and one notice one day
 before expiry. Each delivery gets a deterministic Message-ID derived from its outbox

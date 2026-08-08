@@ -32,6 +32,16 @@ capabilities:
 {"type":"hello","version":1,"token":"...","claim":{"kind":"port","ip":"203.0.113.20","port":10000,"transport":"udp"},"capabilities":["tcp_half_close","stream_flow_control"]}
 ```
 
+When offline entitlements are enabled by a separate control-plane and Relay
+rollout, a v2-provisioned framed worker adds the edge-bound signed artifact as
+`entitlement` and advertises `offline_entitlement_v1`. The agent reads the
+current artifact before every reconnect, so a provisioning refresh changes the
+next HELLO without dropping a healthy tunnel. v1 provisioning, development
+`-insecure-skip-tls`, and routed WireGuard never send this field or capability.
+The feature gates remain disabled by default. A Relay accepts the artifact only
+for its typed control-plane infrastructure-failure fallback; online denials and
+malformed authoritative responses remain fail-closed.
+
 The relay returns `hello_ok` or `hello_err`. A `hello_ok` echoes only capabilities
 offered by the client and supported by the relay. An absent or empty capability
 list selects no extensions. After `hello_ok`, the relay sends

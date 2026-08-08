@@ -23,6 +23,10 @@ x-backend-environment: &backend-environment
   LND_INVOICE_HMAC_KEY_FILE: /run/secrets/lnd-invoice-hmac-key
   CREDENTIAL_ENCRYPTION_KEY_FILE: ${CREDENTIAL_ENCRYPTION_KEY_FILE:-}
   SMTP_PASSWORD_FILE: ${SMTP_PASSWORD_FILE:-}
+  OFFLINE_ENTITLEMENTS_ENABLED: ${OFFLINE_ENTITLEMENTS_ENABLED:-false}
+  OFFLINE_ENTITLEMENT_GRACE_SECONDS: ${OFFLINE_ENTITLEMENT_GRACE_SECONDS:-604800}
+  OFFLINE_ENTITLEMENT_KEY_ID: ${OFFLINE_ENTITLEMENT_KEY_ID:-}
+  OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: ${OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE:-}
   CA_DIR: /var/lib/blindport/ca
   LEGACY_CLIENT_CERT_ISSUANCE_ENABLED: "false"
   PAYMENT_ENABLED_METHODS: ${PAYMENT_ENABLED_METHODS:-lightning}
@@ -41,6 +45,7 @@ x-backend-environment: &backend-environment
   NWC_ALLOW_PUBLIC_RELAYS: ${NWC_ALLOW_PUBLIC_RELAYS:-false}
   # NWC stays disabled until migration 0010 and a credential key secret are installed.
   REMINDER_EMAIL_ENABLED: ${REMINDER_EMAIL_ENABLED:-false}
+  ANNOUNCEMENT_EMAIL_ENABLED: ${ANNOUNCEMENT_EMAIL_ENABLED:-false}
   SMTP_HOST: ${SMTP_HOST:-}
   SMTP_PORT: ${SMTP_PORT:-587}
   SMTP_SECURITY: ${SMTP_SECURITY:-starttls}
@@ -77,6 +82,7 @@ x-backend-environment: &backend-environment
   ACCOUNT_MAX_OPEN_PAYMENTS: ${ACCOUNT_MAX_OPEN_PAYMENTS:-5}
   ACCOUNT_MAX_PENDING_RELAY_CLAIMS: ${ACCOUNT_MAX_PENDING_RELAY_CLAIMS:-2}
   IP_REUSE_QUARANTINE_SECONDS: ${IP_REUSE_QUARANTINE_SECONDS:-604800}
+  RESOURCE_REUSE_QUARANTINE_SECONDS: ${RESOURCE_REUSE_QUARANTINE_SECONDS:-180}
   RATE_LIMIT_SIGNUP_REQUESTS: ${RATE_LIMIT_SIGNUP_REQUESTS:-10}
   RATE_LIMIT_SIGNUP_WINDOW_SECONDS: ${RATE_LIMIT_SIGNUP_WINDOW_SECONDS:-60}
   RATE_LIMIT_ADMIN_LOGIN_REQUESTS: ${RATE_LIMIT_ADMIN_LOGIN_REQUESTS:-5}
@@ -97,9 +103,11 @@ x-backend-environment: &backend-environment
   PORT_HA_EDGES: ${PORT_HA_EDGES:-}
   PORT_HOSTNAME_SUFFIX: ${PORT_HOSTNAME_SUFFIX:-}
   FRAMED_IP_ENDPOINTS: ${FRAMED_IP_ENDPOINTS:-}
+  RELAY_EDGES: ${RELAY_EDGES:-}
   RELAY_MANAGED_SUFFIXES: ${RELAY_MANAGED_SUFFIXES}
   RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS: ${RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS:-1800}
   RELAY_DOMAIN_CLAIM_TTL_SECONDS: ${RELAY_DOMAIN_CLAIM_TTL_SECONDS:-3600}
+  RELAY_RENEWAL_GRACE_SECONDS: ${RELAY_RENEWAL_GRACE_SECONDS:-604800}
   BRAND_NAME: ${BRAND_NAME:-Blindport}
   BRAND_TAGLINE: ${BRAND_TAGLINE:-Public reach for self-hosted services. TLS stays on your box.}
   PUBLIC_SITE_URL: https://${API_DOMAIN}
@@ -261,6 +269,11 @@ services:
         uid: "10001"
         gid: "10001"
         mode: 0400
+      - source: offline-entitlement-private-key
+        target: offline-entitlement-private-key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
     volumes:
       - backend-ca:/var/lib/blindport/ca
     networks:
@@ -358,3 +371,5 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/smtp-password
   credential-encryption-key:
     file: ${SECRETS_DIR:-./secrets}/credential-encryption-key
+  offline-entitlement-private-key:
+    file: ${SECRETS_DIR:-./secrets}/offline-entitlement-private-key

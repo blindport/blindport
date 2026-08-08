@@ -53,6 +53,38 @@ for name, service in services.items():
 '
 }
 
+offline_entitlement_secret_scope_check() {
+    directory="$1"
+    docker compose \
+        --env-file "$root/$directory/.env.example" \
+        -f "$root/$directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+backend = services["backend"]
+environment = backend["environment"]
+assert environment["OFFLINE_ENTITLEMENTS_ENABLED"] == "false"
+assert environment["OFFLINE_ENTITLEMENT_GRACE_SECONDS"] == "604800"
+assert environment["OFFLINE_ENTITLEMENT_KEY_ID"] == ""
+assert environment["OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE"] == ""
+assert environment["RELAY_EDGES"] == ""
+assert environment["RESOURCE_REUSE_QUARANTINE_SECONDS"] == "180"
+assert environment["RELAY_RENEWAL_GRACE_SECONDS"] == "604800"
+for name, service in services.items():
+    secret_names = {
+        item if isinstance(item, str) else item.get("source")
+        for item in service.get("secrets", [])
+    }
+    if name == "backend":
+        assert "offline-entitlement-private-key" in secret_names
+    else:
+        assert "offline-entitlement-private-key" not in secret_names
+'
+}
+
 migration_credential_scope_check() {
     directory="$1"
     docker compose \
@@ -533,6 +565,15 @@ import sys
 relay = json.load(sys.stdin)["services"]["relay"]
 assert relay["environment"]["BLINDPORT_RELAY_IPS"] == ""
 assert relay["environment"]["BLINDPORT_RELAY_PORTS"] == "443"
+assert relay["environment"]["OFFLINE_ENTITLEMENTS_ENABLED"] == "false"
+assert relay["environment"]["OFFLINE_ENTITLEMENT_PUBLIC_KEYS"] == ""
+assert relay["environment"]["OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS"] == "604800"
+assert relay["environment"]["RELAY_EDGE_ID"] == ""
+assert "OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE" not in relay["environment"]
+assert "offline-entitlement-private-key" not in {
+    item if isinstance(item, str) else item.get("source")
+    for item in relay.get("secrets", [])
+}
 assert relay["mem_limit"] == "402653184"
 assert relay["cpus"] == 1.0
 '
@@ -547,6 +588,8 @@ backend_healthcheck_policy_check deploy/canary
 backend_healthcheck_policy_check deploy/split/control
 smtp_secret_scope_check deploy/canary
 smtp_secret_scope_check deploy/split/control
+offline_entitlement_secret_scope_check deploy/canary
+offline_entitlement_secret_scope_check deploy/split/control
 migration_credential_scope_check deploy/canary
 migration_credential_scope_check deploy/split/control
 logging_policy_check deploy/canary

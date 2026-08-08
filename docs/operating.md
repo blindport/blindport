@@ -103,8 +103,8 @@ Revision `0011` adds optional encrypted expiration reminder preferences and a
 provider-neutral outbox. Revision `0013` upgrades deployed `0012` databases to the
 generic SMTP schema. Keep `REMINDER_EMAIL_ENABLED=false` through that migration. To
 enable it, configure `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY=starttls|tls`,
-`SMTP_FROM_EMAIL`, and `SMTP_TIMEOUT_SECONDS`. Configure `SMTP_USERNAME` and the
-file-backed `SMTP_PASSWORD` together, or omit both for a trusted relay. Production
+`SMTP_FROM_EMAIL`, and `SMTP_TIMEOUT_SECONDS`. Configure `SMTP_USERNAME` and use
+`SMTP_PASSWORD_FILE` as the file-backed operator input together, or omit both for a trusted relay. Production
 requires TLS. Recipient addresses use the rotatable credential keyring with a
 distinct AES-GCM AAD purpose, and the database stores no recipient, subject, or body
 plaintext. SMTP acceptance marks a delivery sent. Definitive transient rejections
@@ -116,6 +116,43 @@ Revision `0013` permanently scrubs the retired delivery fields. Its downgrade is
 schema no-op for the rewritten publication chain and does not make a deployed
 pre-`0013` application compatible; restore the matching pre-migration backup to roll
 back to that image.
+
+Revision `0018` adds optional service-announcement email, separate from expiration
+reminders. Set `ANNOUNCEMENT_EMAIL_ENABLED=true` only after migration `0018`, SMTP,
+and `CREDENTIAL_ENCRYPTION_KEY_FILE` are installed. Addresses are separately encrypted
+and never returned by the API. Administrators create a draft, review the eligible
+recipient count, then queue it in a separate browser-session-authenticated action.
+Campaign content is plain text, recipients are snapshotted by account and address
+generation only, and the outbox stores no plaintext addresses. The SMTP safety boundary
+matches expiration reminders: a send-side disconnect is terminal `delivery_ambiguous`.
+
+Offline entitlement provisioning is disabled by default. The v2 endpoint returns an
+edge-specific signed artifact and an identical explicit claim object, so agents can build
+plans without decoding the artifact. Enable it only after all relays and agents support the
+format: configure a dedicated owner-only, unencrypted Ed25519 PKCS#8 PEM at an absolute
+`OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE`, a stable `OFFLINE_ENTITLEMENT_KEY_ID`, and canonical
+`RELAY_EDGES` JSON mapping every configured control endpoint to one stable edge ID. The PEM
+is mounted only on API backends. With the default `OFFLINE_ENTITLEMENT_GRACE_SECONDS=604800`,
+set `RESOURCE_REUSE_QUARANTINE_SECONDS` and `RELAY_RENEWAL_GRACE_SECONDS` to at least
+`604921` before setting `OFFLINE_ENTITLEMENTS_ENABLED=true`; both constraints are strictly
+greater than grace plus 120 seconds. The ordinary disabled defaults remain 180 seconds and
+seven days. Roll out support with the feature flag false, drain old API replicas, verify every
+edge mapping, then enable in a separate configuration rollout.
+
+Each Relay uses the corresponding stable edge ID as `RELAY_EDGE_ID`, the same approved
+grace limit as `OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS`, and the canonical JSON public
+keyring in `OFFLINE_ENTITLEMENT_PUBLIC_KEYS`. Set
+`OFFLINE_ENTITLEMENTS_ENABLED=false` until the separate Relay enablement rollout. The
+Relay receives no signer or private key. Its fallback admits only a v2 account certificate
+with one exact `urn:blindport:client:<canonical-uuid>` URI SAN and its bound signed
+artifact, and only for typed backend infrastructure failures.
+This fallback is limited to framed tunnels. It does not alter routed WireGuard,
+which continues using its enrolled desired-state reconciliation path and never
+uses an entitlement cache or proof. Framed agents refresh provisioning every 30
+seconds (or at the Docker discovery interval), retain the last plan through a
+typed infrastructure failure only while a valid signed artifact remains within
+its grace period, and remove workers on an online denial or malformed
+authoritative response.
 
 Revision `0012` adds idempotent Docker agent orders and uniquely links their
 optional initial NWC payment before wallet access. Deploy the migration before

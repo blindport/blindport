@@ -65,6 +65,16 @@ future DNS resolutions and connections. Established TCP sessions on the failed R
 are lost and must be retried by the application; Blindport has no session migration or
 stream resumption.
 
+Offline entitlement fallback does not make the control plane highly available. Every
+edge must have the same canonical public keyring, its own stable edge ID, and matching
+grace configuration before it is enabled. A restarted Relay can admit a new v2 client
+during a typed API infrastructure outage only from that client certificate and its
+edge-bound signed artifact. Token denials, bad relay secrets, and malformed API replies
+remain fail-closed, and an online authorization result remains authoritative.
+The feature gates are disabled by default, and this framed-tunnel fallback does
+not apply to routed WireGuard. Routed WireGuard continues to require its normal
+enrolled, fail-closed desired-state path.
+
 ## PostgreSQL authority
 
 Expose exactly one authoritative PostgreSQL writer endpoint to every API and worker.
