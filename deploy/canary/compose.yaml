@@ -246,6 +246,11 @@ services:
         uid: "10001"
         gid: "10001"
         mode: 0400
+      - source: relay-heartbeat-keys
+        target: relay-heartbeat-keys
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
       - source: secret-key
         target: secret-key
         uid: "10001"

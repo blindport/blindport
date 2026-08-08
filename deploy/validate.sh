@@ -105,6 +105,7 @@ secret_names = {
     for item in migrate.get("secrets", [])
 }
 assert "credential-encryption-key" in secret_names
+assert "relay-heartbeat-keys" in secret_names
 '
 }
 
@@ -545,7 +546,8 @@ provider_edge_policy_check() {
 import json
 import sys
 
-environment = json.load(sys.stdin)["services"]["backend"]["environment"]
+services = json.load(sys.stdin)["services"]
+environment = services["backend"]["environment"]
 for name in (
     "FRAMED_IP_ENDPOINTS",
     "PORT_HA_EDGES",
@@ -559,6 +561,11 @@ for name in (
 ):
     assert name in environment
 assert environment["RELAY_HEARTBEAT_KEYS_FILE"] == ""
+secret_names = {
+    item if isinstance(item, str) else item.get("source")
+    for item in services["backend"].get("secrets", [])
+}
+assert "relay-heartbeat-keys" in secret_names
 '
 
     docker compose \
