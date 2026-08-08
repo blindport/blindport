@@ -29,6 +29,22 @@ $compose --profile tools run --rm tester forwarding relay-b
 $compose up -d --wait relay-a
 $compose --profile tools run --rm tester forwarding relay-a relay-b
 
+$compose exec -T relay-a test -s /var/lib/blindport/certificate.json
+$compose exec -T relay-b test -s /var/lib/blindport/certificate.json
+$compose stop agent relay-a
+$compose stop backend-a backend-b
+$compose up -d --no-deps relay-a agent
+[ -z "$($compose ps --status running -q backend-a backend-b)" ] || { echo "FAIL API replicas restarted during outage test" >&2; exit 1; }
+$compose --profile tools run --rm tester forwarding relay-a relay-b
+echo "PASS agent and Relay restarted with cached authorization during total API outage"
+
+$compose up -d --wait backend-a backend-b api-lb
+$compose exec -T postgres psql -U blindport -d blindport -c "update subscription set status = 'EXPIRED' where product in ('relay', 'port')"
+$compose --profile tools run --rm tester revoked
+$compose --profile tools run --rm tester unavailable relay-a relay-b
+$compose exec -T postgres psql -U blindport -d blindport -c "update subscription set status = 'ACTIVE' where product in ('relay', 'port')"
+$compose --profile tools run --rm tester forwarding relay-a relay-b
+
 $compose --profile tools run --rm tester concurrency
 
 before="$($compose exec -T postgres psql -U blindport -d blindport -Atc 'select count(*) from subscription')"

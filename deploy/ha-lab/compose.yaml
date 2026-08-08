@@ -34,13 +34,22 @@ x-backend-environment: &backend-environment
   RELAY_YEARLY_SATS: "30000"
   RELAY_CUSTOMER_DOMAINS_ENABLED: "false"
   RELAY_MANAGED_DOMAIN_CAP: "20"
-  RELAY_SHARED_IPS: 192.0.2.10
-  RELAY_SHARED_TCP_PORTS: 12000-12003
-  RELAY_SHARED_UDP_PORTS: 12000-12003
+  RELAY_SHARED_IPS: 10.253.241.10
+  RELAY_SHARED_TCP_PORTS: 12000-12004
+  RELAY_SHARED_UDP_PORTS: 12000-12004
   RELAY_POOL_DOMAINS: relay.test
   RELAY_MANAGED_SUFFIXES: relay.test
   RELAY_CONTROL_URL: relay-a:5443
   RELAY_CONTROL_URLS: relay-a:5443,relay-b:5443
+  PORT_HA_EDGES: '[{"endpoint":"relay-a:5443","ip":"10.253.241.10"},{"endpoint":"relay-b:5443","ip":"10.253.242.10"}]'
+  PORT_HOSTNAME_SUFFIX: port.test
+  OFFLINE_ENTITLEMENTS_ENABLED: "true"
+  OFFLINE_ENTITLEMENT_GRACE_SECONDS: "604800"
+  OFFLINE_ENTITLEMENT_KEY_ID: offline-a
+  OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: /run/offline-key/key.pem
+  RELAY_EDGES: '[{"id":"edge-a","endpoint":"relay-a:5443"},{"id":"edge-b","endpoint":"relay-b:5443"}]'
+  RESOURCE_REUSE_QUARANTINE_SECONDS: "604921"
+  RELAY_RENEWAL_GRACE_SECONDS: "604921"
   RATE_LIMIT_SIGNUP_REQUESTS: "1000"
   RATE_LIMIT_SIGNUP_WINDOW_SECONDS: "60"
   PUBLIC_SITE_URL: http://api-lb:8000
@@ -55,12 +64,15 @@ x-backend-service: &backend-service
   environment: *backend-environment
   volumes:
     - backend-ca:/var/lib/blindport/ca
+    - offline-key:/run/offline-key:ro
   networks:
     - control
     - database
   depends_on:
     postgres:
       condition: service_healthy
+    offline-key-init:
+      condition: service_completed_successfully
   read_only: true
   tmpfs:
     - /tmp:size=64m,mode=1777
@@ -90,9 +102,13 @@ x-relay-service: &relay-service
     BLINDPORT_RELAY_SHARED_UDP_PORTS: ""
     BLINDPORT_RELAY_SNI: :4443
     BLINDPORT_RELAY_MTLS_HOSTS: relay-a,relay-b
+    BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR: /var/lib/blindport
     BLINDPORT_RELAY_ADMIN: :9090
     BLINDPORT_RELAY_WIREGUARD: "0"
     BLINDPORT_RELAY_SHUTDOWN_TIMEOUT: 5s
+    OFFLINE_ENTITLEMENTS_ENABLED: "true"
+    OFFLINE_ENTITLEMENT_PUBLIC_KEYS: '{"offline-a":"ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ"}'
+    OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS: "604800"
   depends_on:
     api-lb:
       condition: service_healthy
@@ -140,17 +156,33 @@ services:
     environment: *backend-environment
     volumes:
       - backend-ca:/var/lib/blindport/ca
+      - offline-key:/run/offline-key:ro
     networks:
       - control
       - database
     depends_on:
       postgres:
         condition: service_healthy
+      offline-key-init:
+        condition: service_completed_successfully
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
     cap_drop: [ALL]
     command: ["blindport-migrate", "upgrade"]
+
+  offline-key-init:
+    <<: *service-defaults
+    image: blindport-ha-backend:local
+    pull_policy: never
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["python", "/lab/offline_key_init.py"]
+    volumes:
+      - ./offline_key_init.py:/lab/offline_key_init.py:ro
+      - offline-key:/run/offline-key
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
 
   state-init:
     <<: *service-defaults
@@ -196,12 +228,20 @@ services:
     networks:
       control:
       edge-a:
+        ipv4_address: 10.253.241.10
+    volumes:
+      - relay-cache-a:/var/lib/blindport
+    command: ["-control", ":5443", "-shared-ips", "10.253.241.10", "-shared-ports", "12000-12004", "-shared-udp-ports", "12000-12004", "-relay-edge-id", "edge-a"]
 
   relay-b:
     <<: *relay-service
     networks:
       control:
       edge-b:
+        ipv4_address: 10.253.242.10
+    volumes:
+      - relay-cache-b:/var/lib/blindport
+    command: ["-control", ":5443", "-shared-ips", "10.253.242.10", "-shared-ports", "12000-12004", "-shared-udp-ports", "12000-12004", "-relay-edge-id", "edge-b"]
 
   origin:
     <<: *service-defaults
@@ -278,8 +318,14 @@ networks:
     internal: true
   edge-a:
     internal: true
+    ipam:
+      config:
+        - subnet: 10.253.241.0/24
   edge-b:
     internal: true
+    ipam:
+      config:
+        - subnet: 10.253.242.0/24
   agent:
     internal: true
 
@@ -287,3 +333,6 @@ volumes:
   postgres-data:
   backend-ca:
   lab-state:
+  offline-key:
+  relay-cache-a:
+  relay-cache-b:

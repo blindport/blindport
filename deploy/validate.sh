@@ -527,6 +527,8 @@ assert services["api-lb"]["image"].startswith("haproxy:3.2.1-alpine@sha256:")
 haproxy = Path(sys.argv[1]).read_text(encoding="utf-8")
 assert "balance roundrobin" in haproxy
 assert "option httpchk GET /api/v1/health/ready" in haproxy
+assert "resolvers docker" in haproxy
+assert "resolvers docker resolve-prefer ipv4" in haproxy
 assert "cookie" not in haproxy.lower()
 assert "server backend-a backend-a:8000" in haproxy
 assert "server backend-b backend-b:8000" in haproxy
@@ -565,6 +567,8 @@ import sys
 relay = json.load(sys.stdin)["services"]["relay"]
 assert relay["environment"]["BLINDPORT_RELAY_IPS"] == ""
 assert relay["environment"]["BLINDPORT_RELAY_PORTS"] == "443"
+assert relay["environment"]["BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR"] == "/var/lib/blindport"
+assert any(volume["target"] == "/var/lib/blindport" for volume in relay["volumes"])
 assert relay["environment"]["OFFLINE_ENTITLEMENTS_ENABLED"] == "false"
 assert relay["environment"]["OFFLINE_ENTITLEMENT_PUBLIC_KEYS"] == ""
 assert relay["environment"]["OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS"] == "604800"

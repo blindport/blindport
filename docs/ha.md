@@ -17,12 +17,22 @@ and uses internal Compose networks. Run it from the repository root:
 ./deploy/ha-lab/run.sh
 ```
 
-The script starts with empty named volumes, migrates the database, checks real TLS
-passthrough through both Relay tunnels, stops one API replica, stops one Relay edge,
-checks new-connection continuity, races twelve payments against four Port sockets,
-and tests a `0015` to head migration round trip without losing subscriptions. A trap
-restores stopped services as needed for later checks and removes all containers,
-networks, and volumes on success or failure.
+The script starts with empty named volumes, migrates the database, and checks real TLS
+passthrough for both Relay and Port claims through both edges. It stops one API replica,
+stops one Relay edge, and checks new-connection continuity. It then stops the agent, one
+Relay, and both API replicas; restarts the agent and Relay without their dependencies;
+and proves new Relay and Port traffic from persisted client authorization, a persisted
+Relay certificate, and edge-bound signed entitlements. After API recovery it applies an
+authoritative denial, verifies empty provisioning and loss of every tunnel, restores the
+claims, races twelve payments against the four remaining Port sockets, and tests a `0015`
+to head migration round trip without losing subscriptions. HAProxy uses Docker's embedded
+DNS at runtime so restarted backend containers can receive new addresses. A trap removes
+all containers, networks, and volumes on success or failure.
+
+The entitlement key initializer derives a deterministic key from an explicit public test
+seed and writes only an owner-only runtime PEM. The lab never uses production credentials
+or commits a private-key artifact. Each Relay has its own persistent certificate-cache
+volume.
 
 ## What the lab cannot prove
 
@@ -33,6 +43,9 @@ synchronous cross-site commit latency, provider route movement, BGP convergence,
 authoritative DNS steering, public certificate issuance, real LND behavior, backup
 restore, or point-in-time recovery. Docker bridge networks do not reproduce Internet
 packet loss, asymmetric routing, MTU differences, or provider anti-spoofing policy.
+The outage sequence does not wait through the seven-day entitlement grace period; focused
+tests cover expiration, while production qualification still needs a configured soak or
+time-controlled environment.
 
 Stopping a container is a deterministic process failure, not a machine power loss.
 The migration test verifies the current image and retained lab rows, not arbitrary
