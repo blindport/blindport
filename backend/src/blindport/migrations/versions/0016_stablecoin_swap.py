@@ -54,9 +54,7 @@ def downgrade() -> None:
 
     op.drop_column("payment", "markup_sats")
     if bind.dialect.name == "postgresql":
-        op.execute(
-            "ALTER TABLE payment ALTER COLUMN method TYPE VARCHAR(32) USING method::text"
-        )
+        op.execute("ALTER TABLE payment ALTER COLUMN method TYPE VARCHAR(32) USING method::text")
         postgresql.ENUM(name="paymentmethod").drop(bind, checkfirst=False)
         postgresql.ENUM(*_OLD_METHODS, name="paymentmethod").create(bind, checkfirst=False)
         op.execute(

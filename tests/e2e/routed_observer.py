@@ -31,7 +31,9 @@ def serve_smtp_probe() -> None:
         while True:
             connection, source = server.accept()
             with connection:
-                connection.sendall(f"220 {source[0]} blindport-policy-test\r\n".encode("ascii"))
+                connection.sendall(
+                    f"220 {source[0]} blindport-policy-test\r\n".encode("ascii")
+                )
 
 
 if __name__ == "__main__":
