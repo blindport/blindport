@@ -26,7 +26,11 @@ services:
         gid: "0"
         mode: 0400
     volumes:
-      - relay-wireguard-state:/var/lib/blindport
+      - type: volume
+        source: relay-wireguard-state
+        target: /var/lib/blindport
+        volume:
+          nocopy: true
     cap_add: [NET_ADMIN, DAC_OVERRIDE]
 
 secrets:
