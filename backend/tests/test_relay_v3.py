@@ -196,9 +196,7 @@ def test_v3_resolve_is_strict_and_returns_exact_subscription_attribution(app_cli
             "relay_domains"
         ] == [exact["domain"]]
 
-    absent = client.post(
-        "/internal/v3/resolve", json={"token": token}, headers=headers
-    )
+    absent = client.post("/internal/v3/resolve", json={"token": token}, headers=headers)
     assert absent.status_code == 200, absent.text
     assert "subscription_id" not in absent.json()
 

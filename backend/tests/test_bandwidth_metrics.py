@@ -30,7 +30,9 @@ def _enable(monkeypatch) -> dict[str, str]:
     from blindport.api import internal
 
     monkeypatch.setattr(internal.settings, "BANDWIDTH_METRICS_ENABLED", True)
-    monkeypatch.setattr(internal.settings, "RELAY_EDGES", '[{"id":"edge-a","endpoint":"relay:5443"}]')
+    monkeypatch.setattr(
+        internal.settings, "RELAY_EDGES", '[{"id":"edge-a","endpoint":"relay:5443"}]'
+    )
     monkeypatch.setattr(
         internal.settings,
         "RELAY_HEARTBEAT_KEYS",
@@ -67,14 +69,34 @@ def test_daily_bandwidth_ingestion_is_idempotent_and_owner_scoped(app_client, mo
     boot_id = str(uuid4())
 
     first = _payload(subscription["id"], boot_id=boot_id, sequence=1, ingress=100, egress=40)
-    assert client.post("/internal/v1/relay/bandwidth/daily", json=first, headers=headers).status_code == 200
-    assert client.post("/internal/v1/relay/bandwidth/daily", json=first, headers=headers).status_code == 200
+    assert (
+        client.post("/internal/v1/relay/bandwidth/daily", json=first, headers=headers).status_code
+        == 200
+    )
+    assert (
+        client.post("/internal/v1/relay/bandwidth/daily", json=first, headers=headers).status_code
+        == 200
+    )
     advanced = _payload(subscription["id"], boot_id=boot_id, sequence=2, ingress=150, egress=70)
-    assert client.post("/internal/v1/relay/bandwidth/daily", json=advanced, headers=headers).status_code == 200
-    out_of_order = _payload(subscription["id"], boot_id=boot_id, sequence=1, ingress=999, egress=999)
-    assert client.post("/internal/v1/relay/bandwidth/daily", json=out_of_order, headers=headers).status_code == 200
+    assert (
+        client.post(
+            "/internal/v1/relay/bandwidth/daily", json=advanced, headers=headers
+        ).status_code
+        == 200
+    )
+    out_of_order = _payload(
+        subscription["id"], boot_id=boot_id, sequence=1, ingress=999, egress=999
+    )
+    assert (
+        client.post(
+            "/internal/v1/relay/bandwidth/daily", json=out_of_order, headers=headers
+        ).status_code
+        == 200
+    )
 
-    result = client.get(f"/api/v2/subscriptions/{subscription['id']}/bandwidth", headers=_auth(owner["token"]))
+    result = client.get(
+        f"/api/v2/subscriptions/{subscription['id']}/bandwidth", headers=_auth(owner["token"])
+    )
     assert result.status_code == 200
     assert result.headers["cache-control"] == "no-store"
     assert result.json()["rows"] == [
@@ -92,7 +114,9 @@ def test_daily_bandwidth_ingestion_is_idempotent_and_owner_scoped(app_client, mo
     )
 
 
-def test_daily_bandwidth_rejects_counter_decrease_without_partial_write(app_client, monkeypatch) -> None:
+def test_daily_bandwidth_rejects_counter_decrease_without_partial_write(
+    app_client, monkeypatch
+) -> None:
     client, factory = app_client
     headers = _enable(monkeypatch)
     owner = client.post("/api/v1/signup").json()
@@ -115,19 +139,35 @@ def test_daily_bandwidth_rejects_counter_decrease_without_partial_write(app_clie
             "boot_id": boot_id,
             "sequence": 2,
             "reports": [
-                {"subscription_id": second["id"], "day": day, "ingress_bytes": 10, "egress_bytes": 10},
-                {"subscription_id": first["id"], "day": day, "ingress_bytes": 99, "egress_bytes": 100},
+                {
+                    "subscription_id": second["id"],
+                    "day": day,
+                    "ingress_bytes": 10,
+                    "egress_bytes": 10,
+                },
+                {
+                    "subscription_id": first["id"],
+                    "day": day,
+                    "ingress_bytes": 99,
+                    "egress_bytes": 100,
+                },
             ],
         },
         headers=headers,
     )
     assert response.status_code == 409
-    assert client.get(f"/api/v2/subscriptions/{first['id']}/bandwidth", headers=_auth(owner["token"])).json()[
-        "rows"
-    ][0]["ingress_bytes"] == "100"
-    assert client.get(f"/api/v2/subscriptions/{second['id']}/bandwidth", headers=_auth(owner["token"])).json()[
-        "rows"
-    ] == []
+    assert (
+        client.get(
+            f"/api/v2/subscriptions/{first['id']}/bandwidth", headers=_auth(owner["token"])
+        ).json()["rows"][0]["ingress_bytes"]
+        == "100"
+    )
+    assert (
+        client.get(
+            f"/api/v2/subscriptions/{second['id']}/bandwidth", headers=_auth(owner["token"])
+        ).json()["rows"]
+        == []
+    )
 
 
 def test_daily_bandwidth_rejects_invalid_reports_and_edge_auth(app_client, monkeypatch) -> None:
@@ -146,10 +186,18 @@ def test_daily_bandwidth_rejects_invalid_reports_and_edge_auth(app_client, monke
         == 422
     )
     duplicate = {**payload, "reports": payload["reports"] * 2}
-    assert client.post("/internal/v1/relay/bandwidth/daily", json=duplicate, headers=headers).status_code == 422
+    assert (
+        client.post(
+            "/internal/v1/relay/bandwidth/daily", json=duplicate, headers=headers
+        ).status_code
+        == 422
+    )
     future = _payload(subscription["id"], boot_id=str(uuid4()), sequence=0, ingress=0, egress=0)
     future["reports"][0]["day"] = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
-    assert client.post("/internal/v1/relay/bandwidth/daily", json=future, headers=headers).status_code == 422
+    assert (
+        client.post("/internal/v1/relay/bandwidth/daily", json=future, headers=headers).status_code
+        == 422
+    )
 
 
 def test_daily_bandwidth_is_hidden_when_disabled(app_client) -> None:
@@ -173,7 +221,9 @@ def test_daily_bandwidth_is_hidden_when_disabled(app_client) -> None:
     assert response.status_code == 404
 
 
-def test_disabled_bandwidth_query_is_hidden_before_subscription_lookup(app_client, monkeypatch) -> None:
+def test_disabled_bandwidth_query_is_hidden_before_subscription_lookup(
+    app_client, monkeypatch
+) -> None:
     client, factory = app_client
     from blindport.api import v2
 
@@ -199,7 +249,9 @@ def test_daily_bandwidth_rejects_int64_aggregate_overflow_without_partial_write(
     assert (
         client.post(
             "/internal/v1/relay/bandwidth/daily",
-            json=_payload(second["id"], boot_id=str(uuid4()), sequence=1, ingress=maximum, egress=0),
+            json=_payload(
+                second["id"], boot_id=str(uuid4()), sequence=1, ingress=maximum, egress=0
+            ),
             headers=headers,
         ).status_code
         == 200
@@ -212,7 +264,12 @@ def test_daily_bandwidth_rejects_int64_aggregate_overflow_without_partial_write(
             "boot_id": str(uuid4()),
             "sequence": 1,
             "reports": [
-                {"subscription_id": first["id"], "day": day, "ingress_bytes": 10, "egress_bytes": 0},
+                {
+                    "subscription_id": first["id"],
+                    "day": day,
+                    "ingress_bytes": 10,
+                    "egress_bytes": 0,
+                },
                 {
                     "subscription_id": second["id"],
                     "day": day,
@@ -248,7 +305,9 @@ def test_cleanup_removes_only_expired_privacy_minimized_rows(app_client, monkeyp
     assert (
         client.post(
             "/internal/v1/relay/bandwidth/daily",
-            json=_payload(subscription["id"], boot_id=str(uuid4()), sequence=1, ingress=10, egress=10),
+            json=_payload(
+                subscription["id"], boot_id=str(uuid4()), sequence=1, ingress=10, egress=10
+            ),
             headers=headers,
         ).status_code
         == 200

@@ -31,7 +31,9 @@ class BandwidthAggregateOverflowError(ValueError):
 class BandwidthReport:
     """Validated inbound relay totals without traffic-level metadata."""
 
-    def __init__(self, subscription_id: UUID, day: date, ingress_bytes: int, egress_bytes: int) -> None:
+    def __init__(
+        self, subscription_id: UUID, day: date, ingress_bytes: int, egress_bytes: int
+    ) -> None:
         self.subscription_id = subscription_id
         self.day = day
         self.ingress_bytes = ingress_bytes
