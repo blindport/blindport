@@ -544,8 +544,8 @@ summary { display: flex; min-height: 44px; align-items: center; cursor: pointer;
 .admin-metrics { margin-bottom: 2.5rem; grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .admin-metrics .metric-attention { box-shadow: inset 0 4px 0 #c88a12; }
 .admin-metrics .metric-danger { box-shadow: inset 0 4px 0 var(--danger); }
-.section-heading { display: flex; margin-bottom: 1rem; align-items: end; justify-content: space-between; gap: 2rem; }
-.section-heading h2, .section-heading p { margin-bottom: 0; }
+.admin-page .section-heading { display: flex; margin-bottom: 1rem; align-items: end; justify-content: space-between; gap: 2rem; }
+.admin-page .section-heading h2, .admin-page .section-heading p { margin-bottom: 0; }
 .admin-charts { margin-bottom: 3rem; }
 .chart-grid { display: grid; grid-template-columns: minmax(240px, 0.75fr) minmax(240px, 0.75fr) minmax(420px, 1.5fr); gap: 1rem; }
 .admin-chart { min-height: 290px; margin: 0; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
@@ -733,7 +733,7 @@ td { font-size: 0.88rem; }
   .admin-metrics div:nth-child(3) { border-right: 1px solid var(--line); }
   .admin-metrics div:nth-child(n + 4) { border-top: 1px solid var(--line); }
   .admin-metrics div:nth-child(even) { border-right: 0; }
-  .section-heading, .workspace-heading { align-items: stretch; flex-direction: column; gap: 0.8rem; }
+  .admin-page .section-heading, .workspace-heading { align-items: stretch; flex-direction: column; gap: 0.8rem; }
   .chart-grid { grid-template-columns: 1fr; }
   .trend-chart { grid-column: auto; }
   .page-size-form { grid-template-columns: minmax(0, 1fr) 90px auto; }

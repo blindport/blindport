@@ -356,6 +356,8 @@ def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
     assert ".dashboard-sidebar" in css
     assert "overflow-x: clip" in css
     assert "a { color: var(--accent-dark); overflow-wrap: anywhere; }" in css
+    assert re.search(r"(?m)^\.admin-page \.section-heading \{ display: flex;", css)
+    assert not re.search(r"(?m)^\.section-heading \{ display: flex;", css)
     assert "linear-gradient" not in css
     assert "radial-gradient" not in css
     assert "--radius: 4px" in css
