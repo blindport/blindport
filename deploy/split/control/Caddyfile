@@ -22,7 +22,7 @@
 	}
 
 	@relay_internal {
-		path /internal/v1/* /internal/v2/*
+		path /internal/v1/* /internal/v2/* /internal/v3/*
 		remote_ip {$RELAY_PRIVATE_CIDRS}
 	}
 	@internal path /internal/*

@@ -337,7 +337,7 @@ import sys
 caddy, compose, environment = (
     Path(path).read_text(encoding="utf-8") for path in sys.argv[1:]
 )
-assert "path /internal/v1/* /internal/v2/*" in caddy
+assert "path /internal/v1/* /internal/v2/* /internal/v3/*" in caddy
 assert "remote_ip {$RELAY_PRIVATE_CIDRS}" in caddy
 assert caddy.index("handle @relay_internal") < caddy.index("handle @internal")
 assert "RELAY_PRIVATE_CIDRS: ${RELAY_PRIVATE_CIDRS}" in compose
