@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -19,8 +20,17 @@ func TestProxyPropagatesBothTCPHalfCloses(t *testing.T) {
 	_ = leftClient.SetDeadline(deadline)
 	_ = rightServer.SetDeadline(deadline)
 
+	var observedLeftToRight atomic.Int64
+	var observedRightToLeft atomic.Int64
 	proxyDone := make(chan Result, 1)
-	go func() { proxyDone <- Proxy(leftProxy, rightProxy) }()
+	go func() {
+		proxyDone <- ProxyObserved(
+			leftProxy,
+			rightProxy,
+			func(written int) { observedLeftToRight.Add(int64(written)) },
+			func(written int) { observedRightToLeft.Add(int64(written)) },
+		)
+	}()
 	request := []byte("request")
 	response := bytes.Repeat([]byte("response"), 1024)
 	serverDone := make(chan error, 1)
@@ -63,6 +73,28 @@ func TestProxyPropagatesBothTCPHalfCloses(t *testing.T) {
 	if result.LeftToRightErr != nil || result.RightToLeftErr != nil {
 		t.Fatalf("clean half-close errors = %v, %v", result.LeftToRightErr, result.RightToLeftErr)
 	}
+	if observedLeftToRight.Load() != int64(len(request)) || observedRightToLeft.Load() != int64(len(response)) {
+		t.Fatalf("observed totals = %d/%d", observedLeftToRight.Load(), observedRightToLeft.Load())
+	}
+}
+
+func TestProxyObservedCountsSuccessfulPartialWriteBeforeError(t *testing.T) {
+	wantErr := errors.New("partial destination failure")
+	left := &scriptedEndpoint{reader: bytes.NewReader([]byte("abcdef"))}
+	right := &scriptedEndpoint{
+		reader: bytes.NewReader(nil),
+		write: func([]byte) (int, error) {
+			return 3, wantErr
+		},
+	}
+	var observed atomic.Int64
+	result := ProxyObserved(left, right, func(written int) { observed.Add(int64(written)) }, nil)
+	if result.LeftToRight != 3 || !errors.Is(result.LeftToRightErr, wantErr) {
+		t.Fatalf("left-to-right result = %d/%v", result.LeftToRight, result.LeftToRightErr)
+	}
+	if observed.Load() != 3 {
+		t.Fatalf("observed bytes = %d, want 3", observed.Load())
+	}
 }
 
 func TestProxyAbortsBothEndpointsAfterCopyError(t *testing.T) {
@@ -98,6 +130,24 @@ type errorEndpoint struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 }
+
+type scriptedEndpoint struct {
+	reader io.Reader
+	write  func([]byte) (int, error)
+}
+
+func (e *scriptedEndpoint) Read(payload []byte) (int, error) {
+	return e.reader.Read(payload)
+}
+
+func (e *scriptedEndpoint) Write(payload []byte) (int, error) {
+	if e.write != nil {
+		return e.write(payload)
+	}
+	return len(payload), nil
+}
+
+func (*scriptedEndpoint) Close() error { return nil }
 
 func (e *errorEndpoint) Read([]byte) (int, error) {
 	if e.blockRead {

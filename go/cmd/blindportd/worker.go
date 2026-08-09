@@ -21,6 +21,7 @@ type tlsMaterial struct {
 }
 
 type workerKey struct {
+	accountName    string
 	subscriptionID string
 	relayAddr      string
 }
@@ -53,7 +54,7 @@ func (s *workerSupervisor) Reconcile(plans []workerPlan) error {
 	desired := make(map[workerKey]workerPlan, len(plans))
 	entitlements := make(map[workerKey]string, len(plans))
 	for _, plan := range plans {
-		key := workerKey{subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr}
+		key := workerKey{accountName: plan.AccountName, subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr}
 		if _, exists := desired[key]; exists {
 			return fmt.Errorf("duplicate worker plan for subscription %s relay %s", plan.SubscriptionID, plan.RelayAddr)
 		}
@@ -124,7 +125,7 @@ func (s *workerSupervisor) Shutdown() {
 }
 
 func sameWorkerPlan(a, b workerPlan) bool {
-	if a.SubscriptionID != b.SubscriptionID || a.RelayAddr != b.RelayAddr || a.EdgeID != b.EdgeID || a.Upstream != b.Upstream ||
+	if a.AccountName != b.AccountName || a.SubscriptionID != b.SubscriptionID || a.RelayAddr != b.RelayAddr || a.EdgeID != b.EdgeID || a.Upstream != b.Upstream ||
 		a.HTTPChallengeUpstream != b.HTTPChallengeUpstream || a.TLSMode != b.TLSMode || (a.Claim == nil) != (b.Claim == nil) {
 		return false
 	}
@@ -173,21 +174,21 @@ func runWorker(ctx context.Context, log *slog.Logger, plan workerPlan, token str
 // preserves the established worker while a refreshed entitlement is installed.
 func runWorkerWithEntitlement(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config, automatic *acmeDomainManager, entitlement func(workerKey) (string, bool)) {
 	if plan.TLSMode == tlsModeAutomatic && automatic == nil {
-		log.Error("automatic TLS manager unavailable", "subscription_id", plan.SubscriptionID, "relay", plan.RelayAddr)
+		log.Error("automatic TLS manager unavailable", "account", plan.AccountName, "subscription_id", plan.SubscriptionID, "relay", plan.RelayAddr)
 		return
 	}
 	backoff := time.Second
 	for ctx.Err() == nil {
 		proof := ""
 		if entitlement != nil {
-			proof, _ = entitlement(workerKey{subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr})
+			proof, _ = entitlement(workerKey{accountName: plan.AccountName, subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr})
 		}
 		sessionDuration, err := runOnceManagedWithEntitlement(ctx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic, proof)
 		if ctx.Err() != nil {
 			return
 		}
 		if err != nil {
-			log.Warn("tunnel error", "err", err, "relay", plan.RelayAddr, "subscription_id", plan.SubscriptionID)
+			log.Warn("tunnel error", "err", err, "account", plan.AccountName, "relay", plan.RelayAddr, "subscription_id", plan.SubscriptionID)
 		}
 		if sessionDuration >= stableSessionDuration {
 			backoff = time.Second

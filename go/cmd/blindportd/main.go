@@ -79,15 +79,22 @@ func main() {
 	dockerPollInterval := flag.Duration("docker-poll-interval", envDurationDefault("BLINDPORT_DOCKER_POLL_INTERVAL", 10*time.Second), "Docker discovery and backend reconciliation interval")
 	insecureSkipTLS := flag.Bool("insecure-skip-tls", os.Getenv("BLINDPORT_INSECURE_SKIP_TLS") == "1", "skip mTLS on the control plane (insecure, dev only)")
 	wireguardMode := flag.Bool("wireguard", envEnabled("BLINDPORT_WIREGUARD"), "configure the routed WireGuard Blindport IP plane instead of framed tunnels (Linux only)")
+	wireguardGateway := flag.Bool("wireguard-gateway", envEnabled("BLINDPORT_WIREGUARD_GATEWAY"), "route all IPv4 traffic through the WireGuard relay with a local kill switch (implies -wireguard)")
 	wireguardInterface := flag.String("wireguard-interface", envDefault("BLINDPORT_WIREGUARD_INTERFACE", "bpwg0"), "routed WireGuard interface name")
 	wireguardTable := flag.Int("wireguard-route-table", envIntDefault("BLINDPORT_WIREGUARD_ROUTE_TABLE", 51820), "policy routing table for routed replies")
 	wireguardPriority := flag.Int("wireguard-rule-priority", envIntDefault("BLINDPORT_WIREGUARD_RULE_PRIORITY", 10000), "base priority for source policy rules")
+	wireguardInboundTCP := flag.String("wireguard-inbound-tcp-ports", os.Getenv("BLINDPORT_WIREGUARD_INBOUND_TCP_PORTS"), "gateway inbound TCP ports/ranges, for example 80,443,8000-8010")
+	wireguardInboundUDP := flag.String("wireguard-inbound-udp-ports", os.Getenv("BLINDPORT_WIREGUARD_INBOUND_UDP_PORTS"), "gateway inbound UDP ports/ranges, for example 53,51820")
+	wireguardInboundICMP := flag.Bool("wireguard-inbound-icmp", envEnabled("BLINDPORT_WIREGUARD_INBOUND_ICMP"), "allow ICMP echo requests arriving through the WireGuard gateway")
 	serverName := flag.String("server-name", os.Getenv("BLINDPORT_SERVER_NAME"), "TLS ServerName for every relay (defaults independently to each relay host)")
 	socks5Address := flag.String("socks5", os.Getenv("BLINDPORT_SOCKS5"), "SOCKS5 proxy address for backend and relay connections (host:port)")
 	stateDir := flag.String("state-dir", defaultCredentialStateDir(), "private directory for persistent client identity (or BLINDPORT_STATE_DIR)")
 	acmeEmail := flag.String("acme-email", os.Getenv("BLINDPORT_ACME_EMAIL"), "optional ACME account contact email")
 	acmeDirectory := flag.String("acme-directory", envDefault("BLINDPORT_ACME_DIRECTORY_URL", lego.LEDirectoryProduction), "ACME directory URL for automatic Relay TLS")
 	flag.Parse()
+	wireguardEnabled := *wireguardMode || *wireguardGateway
+	setFlags := make(map[string]bool)
+	flag.Visit(func(item *flag.Flag) { setFlags[item.Name] = true })
 	if *showVersion {
 		fmt.Fprintf(os.Stdout, "blindportd %s\n", version)
 		return
@@ -97,7 +104,7 @@ func main() {
 			configPath: *configPath, tokenPath: *tokenFile, stateDir: *stateDir,
 			backendURL: *backendURL, relayOverride: *relayOverride, serverName: *serverName,
 			socks5Address: *socks5Address, acmeEmail: *acmeEmail, acmeDirectory: *acmeDirectory,
-			insecureSkipTLS: *insecureSkipTLS, wireguard: *wireguardMode, docker: *dockerEnabled,
+			insecureSkipTLS: *insecureSkipTLS, wireguard: wireguardEnabled, docker: *dockerEnabled,
 			input: os.Stdin, output: os.Stdout,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "blindportd: install user service: %v\n", err)
@@ -107,7 +114,26 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if err := validateOutboundMode(*wireguardMode, *socks5Address); err != nil {
+	var staticDocument staticConfigDocument
+	if *configPath != "" {
+		loadedDocument, configErr := loadStaticConfigDocument(*configPath)
+		if configErr != nil {
+			logger.Error("load config", "err", configErr)
+			os.Exit(2)
+		}
+		staticDocument = loadedDocument
+		if staticDocument.IsMultiAccount() {
+			if err := validateStaticV3Invocation(wireguardEnabled, *wireguardGateway, *dockerEnabled, setFlags); err != nil {
+				logger.Error("configure version 3 config", "err", err)
+				os.Exit(2)
+			}
+			if err := validateStaticAccountRuntimeMappings(staticDocument.Accounts, *dockerEnabled); err != nil {
+				logger.Error("configure version 3 config", "err", err)
+				os.Exit(2)
+			}
+		}
+	}
+	if err := validateOutboundMode(wireguardEnabled, *socks5Address); err != nil {
 		logger.Error("configure outbound mode", "err", err)
 		os.Exit(2)
 	}
@@ -115,6 +141,41 @@ func main() {
 	if err != nil {
 		logger.Error("configure outbound transport", "err", err)
 		os.Exit(2)
+	}
+	if staticDocument.IsMultiAccount() {
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		options := framedRuntimeOptions{
+			backend: *backendURL, serverName: *serverName, insecureSkipTLS: *insecureSkipTLS, relayOverride: *relayOverride,
+			acmeDirectory: *acmeDirectory, acmeEmail: *acmeEmail, pollInterval: provisioningRefreshInterval,
+		}
+		var runtimeErr error
+		if *dockerEnabled {
+			if err := validateDockerPollInterval(*dockerPollInterval); err != nil {
+				logger.Error("configure Docker discovery", "err", err)
+				os.Exit(2)
+			}
+			logger.Warn("Docker daemon access is root-equivalent even when Blindport only lists containers", "host", *dockerHost)
+			dockerClient, err := newDockerClient(*dockerHost)
+			if err != nil {
+				logger.Error("create Docker client", "err", err)
+				os.Exit(2)
+			}
+			defer func() {
+				if err := dockerClient.Close(); err != nil {
+					logger.Warn("close Docker client", "err", err)
+				}
+			}()
+			options.pollInterval = *dockerPollInterval
+			runtimeErr = runDockerAccountRuntimes(ctx, logger, staticDocument.Accounts, dockerClient, outbound, options)
+		} else {
+			runtimeErr = runStaticAccountRuntimes(ctx, logger, staticDocument.Accounts, outbound, options)
+		}
+		if runtimeErr != nil && !errors.Is(runtimeErr, context.Canceled) {
+			logger.Error("account runtimes stopped", "err", runtimeErr)
+			os.Exit(1)
+		}
+		return
 	}
 	token, err := loadToken(*tokenFlag, *tokenFile)
 	if err == nil && token == "" && *tokenFile == defaultTokenPath && defaultTokenPath != legacyTokenFile {
@@ -136,7 +197,7 @@ func main() {
 	defer cancel()
 	notifyAgentUpdate(ctx, logger, outbound.httpClient, *backendURL, token)
 
-	if *wireguardMode {
+	if wireguardEnabled {
 		if *insecureSkipTLS {
 			logger.Error("routed WireGuard requires the enrolled client identity; unset BLINDPORT_INSECURE_SKIP_TLS")
 			os.Exit(2)
@@ -156,6 +217,10 @@ func main() {
 			deviceName:   *wireguardInterface,
 			routeTable:   *wireguardTable,
 			rulePriority: *wireguardPriority,
+			gateway:      *wireguardGateway,
+			inboundTCP:   *wireguardInboundTCP,
+			inboundUDP:   *wireguardInboundUDP,
+			inboundICMP:  *wireguardInboundICMP,
 		}); err != nil {
 			logger.Error("routed WireGuard plane failed", "err", err)
 			os.Exit(1)
@@ -166,12 +231,7 @@ func main() {
 	multiMapping := *configPath != "" || *dockerEnabled
 	var mappings []mapping
 	if *configPath != "" {
-		staticMappings, err := loadStaticConfig(*configPath)
-		if err != nil {
-			logger.Error("load config", "err", err)
-			os.Exit(2)
-		}
-		mappings = append(mappings, staticMappings...)
+		mappings = append(mappings, staticDocument.Mappings...)
 	}
 	if *dockerEnabled {
 		if err := validateDockerPollInterval(*dockerPollInterval); err != nil {
@@ -225,15 +285,40 @@ func main() {
 	}
 }
 
+func validateStaticV3Invocation(wireguard, gateway, docker bool, setFlags map[string]bool) error {
+	if wireguard || gateway || setFlags["wireguard"] || setFlags["wireguard-gateway"] || setFlags["wireguard-interface"] || setFlags["wireguard-route-table"] || setFlags["wireguard-rule-priority"] || setFlags["wireguard-inbound-tcp-ports"] || setFlags["wireguard-inbound-udp-ports"] || setFlags["wireguard-inbound-icmp"] {
+		return errors.New("config version 3 does not support WireGuard mode")
+	}
+	for _, name := range []string{"BLINDPORT_WIREGUARD", "BLINDPORT_WIREGUARD_GATEWAY", "BLINDPORT_WIREGUARD_INTERFACE", "BLINDPORT_WIREGUARD_ROUTE_TABLE", "BLINDPORT_WIREGUARD_RULE_PRIORITY", "BLINDPORT_WIREGUARD_INBOUND_TCP_PORTS", "BLINDPORT_WIREGUARD_INBOUND_UDP_PORTS", "BLINDPORT_WIREGUARD_INBOUND_ICMP"} {
+		if _, configured := os.LookupEnv(name); configured {
+			return errors.New("config version 3 does not support WireGuard settings")
+		}
+	}
+	for _, name := range []string{"kind", "ip", "port", "transport", "domain", "upstream", "http-challenge-upstream"} {
+		if setFlags[name] {
+			return errors.New("config version 3 does not support legacy single-subscription flags")
+		}
+	}
+	for _, name := range []string{"BLINDPORT_KIND", "BLINDPORT_IP", "BLINDPORT_PORT", "BLINDPORT_TRANSPORT", "BLINDPORT_DOMAIN", "BLINDPORT_UPSTREAM", "BLINDPORT_HTTP_CHALLENGE_UPSTREAM"} {
+		if _, configured := os.LookupEnv(name); configured {
+			return errors.New("config version 3 does not support legacy single-subscription settings")
+		}
+	}
+	return nil
+}
+
 type framedRuntimeOptions struct {
-	backend         string
-	stateDir        string
-	serverName      string
-	insecureSkipTLS bool
-	relayOverride   string
-	acmeDirectory   string
-	acmeEmail       string
-	pollInterval    time.Duration
+	accountName        string
+	backend            string
+	stateDir           string
+	serverName         string
+	insecureSkipTLS    bool
+	relayOverride      string
+	acmeDirectory      string
+	acmeEmail          string
+	pollInterval       time.Duration
+	dockerAccountNames []string
+	dockerDiscovery    dockerMappingDiscovery
 }
 
 func runFramedProvisioner(ctx context.Context, logger *slog.Logger, token string, outbound *outboundTransport, coordinator *provisioningCoordinator, options framedRuntimeOptions) error {
@@ -281,12 +366,29 @@ func runFramedProvisioner(ctx context.Context, logger *slog.Logger, token string
 	})
 	defer supervisor.Shutdown()
 
-	reconciler := automaticPlanReconciler{registry: registry, workers: supervisor}
+	var reconciler planReconciler = automaticPlanReconciler{registry: registry, workers: supervisor}
+	if options.accountName != "" {
+		reconciler = accountPlanReconciler{accountName: options.accountName, reconciler: reconciler}
+	}
 	return runProvisioningReconciler(ctx, func(fetchCtx context.Context) (provisioningResult, error) {
 		return fetchProvisioning(fetchCtx, outbound.httpClient, options.backend, token, credentials, options.insecureSkipTLS)
 	}, coordinator, reconciler, options.pollInterval, func(message string, err error) {
 		logger.Warn(message, "err", err)
 	})
+}
+
+type accountPlanReconciler struct {
+	accountName string
+	reconciler  planReconciler
+}
+
+func (r accountPlanReconciler) Reconcile(plans []workerPlan) error {
+	scoped := make([]workerPlan, len(plans))
+	copy(scoped, plans)
+	for i := range scoped {
+		scoped[i].AccountName = r.accountName
+	}
+	return r.reconciler.Reconcile(scoped)
 }
 
 func runDockerFramed(ctx context.Context, logger *slog.Logger, docker dockerContainerLister, mappings []mapping, token string, outbound *outboundTransport, options framedRuntimeOptions) error {
@@ -331,16 +433,19 @@ func runDockerFramed(ctx context.Context, logger *slog.Logger, docker dockerCont
 		runWorkerWithEntitlement(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof)
 	})
 	defer supervisor.Shutdown()
+	var reconciler planReconciler = automaticPlanReconciler{registry: registry, workers: supervisor}
+	if options.accountName != "" {
+		reconciler = accountPlanReconciler{accountName: options.accountName, reconciler: reconciler}
+	}
 	agent := &dockerAgent{
-		docker: docker, static: mappings, orders: &orderAPIClient{client: outbound.httpClient, backend: options.backend, token: token},
+		docker: docker, discovery: options.dockerDiscovery,
+		accountName: options.accountName, accountNames: options.dockerAccountNames,
+		static: mappings, orders: &orderAPIClient{client: outbound.httpClient, backend: options.backend, token: token},
 		fetchProvisioning: func(fetchCtx context.Context) (provisioningResult, error) {
 			return fetchProvisioning(fetchCtx, outbound.httpClient, options.backend, token, credentials, options.insecureSkipTLS)
 		},
-		supervisor: automaticPlanReconciler{registry: registry, workers: supervisor}, relayOverride: options.relayOverride,
+		supervisor: reconciler, relayOverride: options.relayOverride,
 		pollInterval: options.pollInterval, logger: logger, now: time.Now, orderCache: make(map[string]*orderCacheEntry),
-	}
-	if err := agent.reconcile(ctx); err != nil {
-		return err
 	}
 	logger.Info("continuous Docker discovery started", "poll_interval", options.pollInterval, "static_mappings", len(mappings))
 	agent.run(ctx)
@@ -559,7 +664,11 @@ func exchangeHelloWithEntitlement(conn net.Conn, token string, claim *protocol.C
 	}
 	if entitlement != "" {
 		hello.Entitlement = entitlement
-		hello.Capabilities = append(hello.Capabilities, protocol.CapabilityOfflineEntitlementV1)
+		if claim != nil && claim.Scope == protocol.RelayHostnameScopeWildcard {
+			hello.Capabilities = append(hello.Capabilities, protocol.CapabilityOfflineEntitlementV2)
+		} else {
+			hello.Capabilities = append(hello.Capabilities, protocol.CapabilityOfflineEntitlementV1)
+		}
 	}
 	if err := protocol.WriteFrame(conn, hello); err != nil {
 		return tunnelCapabilities{}, fmt.Errorf("send hello: %w", err)

@@ -191,6 +191,41 @@ permanent same-host HTTPS redirect directly from the relay and never reach the
 agent. Legacy mode exposes the same setting through `--http-challenge-upstream` or
 `BLINDPORT_HTTP_CHALLENGE_UPSTREAM`.
 
+Version 3 runs several named local accounts in one process. Each account has an
+owner-only token file, a non-overlapping private state directory, and its own
+mappings, credentials, authorization cache, ACME state, and tunnel workers:
+
+```json
+{
+  "version": 3,
+  "accounts": [
+    {
+      "name": "public",
+      "token_file": "/run/secrets/blindport-public",
+      "state_dir": "/var/lib/blindport/accounts/public",
+      "mappings": []
+    },
+    {
+      "name": "private",
+      "token_file": "/run/secrets/blindport-private",
+      "state_dir": "/var/lib/blindport/accounts/private",
+      "mappings": [
+        {
+          "subscription_id": "45645645-6456-4456-8456-456456456456",
+          "upstream": "private-api:8443",
+          "tls_mode": "passthrough"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Account names are lowercase stable IDs. Token and state paths must be absolute,
+canonical, unique, and non-overlapping. Without Docker discovery, every account
+must contain at least one static mapping. Version 3 does not support routed
+WireGuard or legacy single-subscription flags.
+
 Every configured subscription must appear in the backend's active provisioning
 response. Blindport Relay mappings create one independent tunnel worker for every
 provisioned relay endpoint. Framed Blindport IP and Blindport Port provisioning contains
@@ -286,6 +321,25 @@ Automatic mode also requires `.acme_terms_accepted: "true"`; omitted mode keeps
 legacy Docker mappings in passthrough mode. All provisioned relay-edge workers
 for one hostname share one in-process certificate and HTTP-01 challenge manager.
 
+With a version 3 config, every Docker mapping must also select one configured
+local account name. Arbitrary account UUIDs and names absent from the config are
+rejected:
+
+```yaml
+labels:
+  tech.blindport.mapping.web.account: "public"
+  tech.blindport.mapping.web.product: "relay"
+  tech.blindport.mapping.web.domain: "web.relay.blindport.com"
+  tech.blindport.mapping.web.upstream: "web:8080"
+```
+
+The `.account` value is used only inside this `blindportd` process and is never
+sent as backend authority. The selected account runtime makes order and
+provisioning requests with its configured bearer token. Single-account version
+1 and 2 Docker deployments omit `.account`; specifying it outside version 3 is
+rejected. A missing or unknown selector invalidates the complete Docker snapshot,
+so every account retains its last valid workers.
+
 The backend creates a pending subscription exactly once for each mapping name.
 Changing that name's product, domain, transport, or billing term is rejected; use
 a new name for a different order. Identical declarations from rolling replicas
@@ -294,6 +348,13 @@ the backend creates and reconciles one linked initial payment. Managed Relay
 names can proceed immediately; customer-owned names wait for DNS verification.
 Without NWC, the order appears in the dashboard pending manual payment. Automatic
 renewal remains a separate dashboard setting.
+
+In version 3, the pending subscription appears only in the dashboard belonging
+to the selected account token. Existing NWC auto-payment settings for that
+account are reused. Two local account names configured with the same bearer token
+still identify one backend account, so incompatible declarations that reuse the
+same order key are rejected by the backend. Product declarations and local order
+caches otherwise remain isolated by configured account name.
 
 Successful snapshots add, update, and remove tunnel workers without restarting
 the daemon. Removing a label stops its local forwarding but does not cancel or

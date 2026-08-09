@@ -75,6 +75,7 @@ type payload struct {
 	Port         uint16 `json:"port"`
 	Transport    string `json:"transport"`
 	Domain       string `json:"domain"`
+	Scope        string `json:"scope,omitempty"`
 	IssuedAt     uint64 `json:"iat"`
 	NotBefore    uint64 `json:"nbf"`
 	PaidThrough  uint64 `json:"paid_through"`
@@ -197,7 +198,7 @@ func decodePayload(raw []byte) (payload, error) {
 }
 
 func validatePayload(value payload) error {
-	if value.Type != "blindport-offline-entitlement" || value.Version != 1 || !validStableID(value.KeyID) || !validStableID(value.Edge) || !validUUID(value.Account) || !validUUID(value.Subscription) || !validUUID(value.Instance) || len(value.IP) > 45 || len(value.Domain) > 253 || len(value.ClientKey) != 43 || len(value.TokenID) != 22 {
+	if value.Type != "blindport-offline-entitlement" || (value.Version != 1 && value.Version != 2) || !validStableID(value.KeyID) || !validStableID(value.Edge) || !validUUID(value.Account) || !validUUID(value.Subscription) || !validUUID(value.Instance) || len(value.IP) > 45 || len(value.Domain) > 253 || len(value.ClientKey) != 43 || len(value.TokenID) != 22 {
 		return errors.New("invalid entitlement payload")
 	}
 	if _, err := decodeRawBase64(value.ClientKey, ed25519.PublicKeySize); err != nil {
@@ -206,7 +207,16 @@ func validatePayload(value payload) error {
 	if _, err := decodeRawBase64(value.TokenID, 16); err != nil {
 		return errors.New("invalid entitlement payload")
 	}
-	claim := protocol.Claim{Kind: protocol.ClaimKind(value.Kind), IP: value.IP, Port: value.Port, Transport: protocol.Transport(value.Transport), Domain: value.Domain}
+	scope := protocol.RelayHostnameScopeExact
+	if value.Version == 2 {
+		if value.Scope != string(protocol.RelayHostnameScopeWildcard) || value.Kind != string(protocol.ClaimRelay) {
+			return errors.New("invalid entitlement payload")
+		}
+		scope = protocol.RelayHostnameScopeWildcard
+	} else if value.Scope != "" {
+		return errors.New("invalid entitlement payload")
+	}
+	claim := protocol.Claim{Kind: protocol.ClaimKind(value.Kind), IP: value.IP, Port: value.Port, Transport: protocol.Transport(value.Transport), Domain: value.Domain, Scope: scope}
 	if err := protocol.ValidateClaim(&claim); err != nil || !canonicalClaim(value) {
 		return errors.New("invalid entitlement payload")
 	}
@@ -272,7 +282,11 @@ func canonicalIP(address netip.Addr) string {
 }
 
 func sameClaim(value payload, expected protocol.Claim) bool {
-	return value.Kind == string(expected.Kind) && value.IP == expected.IP && value.Port == expected.Port && value.Transport == string(expected.Transport) && value.Domain == expected.Domain
+	scope := protocol.RelayHostnameScopeExact
+	if value.Version == 2 {
+		scope = protocol.RelayHostnameScopeWildcard
+	}
+	return value.Kind == string(expected.Kind) && value.IP == expected.IP && value.Port == expected.Port && value.Transport == string(expected.Transport) && value.Domain == expected.Domain && scope == expected.Scope
 }
 
 func verifyTimes(value payload, now time.Time, allowedGrace time.Duration) (*Verified, error) {

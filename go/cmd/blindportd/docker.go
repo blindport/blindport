@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
@@ -26,22 +27,88 @@ type dockerContainerLister interface {
 	ContainerList(context.Context, client.ContainerListOptions) (client.ContainerListResult, error)
 }
 
+type dockerAccountScope struct {
+	allowed map[string]struct{}
+}
+
+type dockerMappingDiscovery interface {
+	discover(context.Context) ([]mapping, error)
+}
+
+type sharedDockerDiscovery struct {
+	docker       dockerContainerLister
+	accountNames []string
+	static       []mapping
+	interval     time.Duration
+	now          func() time.Time
+
+	mu         sync.Mutex
+	validUntil time.Time
+	snapshot   []mapping
+	err        error
+}
+
+func newSharedDockerDiscovery(docker dockerContainerLister, accounts []staticAccount, interval time.Duration) (*sharedDockerDiscovery, error) {
+	if docker == nil || validateDockerPollInterval(interval) != nil {
+		return nil, errors.New("invalid shared Docker discovery configuration")
+	}
+	accountNames := make([]string, len(accounts))
+	var static []mapping
+	for index, account := range accounts {
+		accountNames[index] = account.Name
+		static = append(static, account.Mappings...)
+	}
+	if _, err := newDockerAccountScope(accountNames); err != nil {
+		return nil, err
+	}
+	return &sharedDockerDiscovery{
+		docker: docker, accountNames: accountNames, static: append([]mapping(nil), static...),
+		interval: interval, now: time.Now,
+	}, nil
+}
+
+func (d *sharedDockerDiscovery) discover(ctx context.Context) ([]mapping, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := d.now()
+	if d.validUntil.IsZero() || !now.Before(d.validUntil) {
+		d.snapshot, d.err = discoverDockerMappingsForAccounts(ctx, d.docker, d.accountNames)
+		if d.err == nil {
+			d.err = validateDockerSnapshot(d.static, d.snapshot)
+		}
+		d.validUntil = d.now().Add(d.interval)
+	}
+	return append([]mapping(nil), d.snapshot...), d.err
+}
+
 func discoverDockerMappings(ctx context.Context, dockerClient dockerContainerLister) ([]mapping, error) {
-	return discoverDockerMappingsWithin(ctx, dockerClient, dockerDiscoveryTimeout)
+	return discoverDockerMappingsWithinScope(ctx, dockerClient, dockerDiscoveryTimeout, nil)
 }
 
 func discoverDockerMappingsWithin(ctx context.Context, dockerClient dockerContainerLister, timeout time.Duration) ([]mapping, error) {
+	return discoverDockerMappingsWithinScope(ctx, dockerClient, timeout, nil)
+}
+
+func discoverDockerMappingsForAccounts(ctx context.Context, dockerClient dockerContainerLister, accountNames []string) ([]mapping, error) {
+	scope, err := newDockerAccountScope(accountNames)
+	if err != nil {
+		return nil, err
+	}
+	return discoverDockerMappingsWithinScope(ctx, dockerClient, dockerDiscoveryTimeout, scope)
+}
+
+func discoverDockerMappingsWithinScope(ctx context.Context, dockerClient dockerContainerLister, timeout time.Duration, scope *dockerAccountScope) ([]mapping, error) {
 	discoveryCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	result, err := dockerClient.ContainerList(discoveryCtx, client.ContainerListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list running Docker containers: %w", err)
 	}
-	containers := result.Items
+	containers := append(result.Items[:0:0], result.Items...)
 	sort.Slice(containers, func(i, j int) bool { return containers[i].ID < containers[j].ID })
 	var mappings []mapping
 	for _, container := range containers {
-		parsed, err := parseDockerLabels(container.ID, container.Labels)
+		parsed, err := parseDockerLabelsWithinScope(container.ID, container.Labels, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -52,6 +119,23 @@ func discoverDockerMappingsWithin(ctx context.Context, dockerClient dockerContai
 		return nil, err
 	}
 	return mappings, nil
+}
+
+func newDockerAccountScope(accountNames []string) (*dockerAccountScope, error) {
+	if len(accountNames) == 0 || len(accountNames) > maxStaticAccounts {
+		return nil, errors.New("Docker account names are required")
+	}
+	allowed := make(map[string]struct{}, len(accountNames))
+	for _, name := range accountNames {
+		if !staticAccountName.MatchString(name) {
+			return nil, fmt.Errorf("invalid Docker account name %q", name)
+		}
+		if _, duplicate := allowed[name]; duplicate {
+			return nil, fmt.Errorf("duplicate Docker account name %q", name)
+		}
+		allowed[name] = struct{}{}
+	}
+	return &dockerAccountScope{allowed: allowed}, nil
 }
 
 func newDockerClient(host string) (*client.Client, error) {
@@ -79,7 +163,12 @@ func validateDockerHost(host string) error {
 }
 
 func parseDockerLabels(containerID string, labels map[string]string) ([]mapping, error) {
+	return parseDockerLabelsWithinScope(containerID, labels, nil)
+}
+
+func parseDockerLabelsWithinScope(containerID string, labels map[string]string, scope *dockerAccountScope) ([]mapping, error) {
 	type labelPair struct {
+		account       string
 		subscription  string
 		product       string
 		domain        string
@@ -90,6 +179,7 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 		tlsMode       string
 		acmeTerms     string
 		hasSub        bool
+		hasAccount    bool
 		hasProduct    bool
 		hasDomain     bool
 		hasTransport  bool
@@ -112,6 +202,8 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 		}
 		pair := pairs[name]
 		switch field {
+		case "account":
+			pair.account, pair.hasAccount = value, true
 		case "subscription":
 			pair.subscription, pair.hasSub = value, true
 		case "product":
@@ -144,6 +236,18 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 	result := make([]mapping, 0, len(names))
 	for _, name := range names {
 		pair := pairs[name]
+		if scope == nil {
+			if pair.hasAccount {
+				return nil, fmt.Errorf("container %s mapping %q: account requires config version 3 Docker discovery", shortContainerID(containerID), name)
+			}
+		} else {
+			if !pair.hasAccount {
+				return nil, fmt.Errorf("container %s mapping %q requires an account label", shortContainerID(containerID), name)
+			}
+			if _, allowed := scope.allowed[pair.account]; !allowed {
+				return nil, fmt.Errorf("container %s mapping %q selects unknown account %q", shortContainerID(containerID), name, pair.account)
+			}
+		}
 		if pair.hasSub == pair.hasProduct {
 			return nil, fmt.Errorf("container %s mapping %q requires exactly one of subscription or product", shortContainerID(containerID), name)
 		}
@@ -151,6 +255,7 @@ func parseDockerLabels(containerID string, labels map[string]string) ([]mapping,
 			return nil, fmt.Errorf("container %s mapping %q requires an upstream label", shortContainerID(containerID), name)
 		}
 		item := mapping{
+			AccountName:           pair.account,
 			OrderKey:              name,
 			Upstream:              pair.upstream,
 			HTTPChallengeUpstream: pair.httpChallenge,
@@ -206,19 +311,23 @@ func normalizeDockerMappings(mappings []mapping) ([]mapping, error) {
 		if err := validateOrderDeclaration(item); err != nil {
 			return nil, err
 		}
-		if previous, ok := declarations[item.OrderKey]; ok {
+		declarationKey := item.AccountName + "\x00" + item.OrderKey
+		if previous, ok := declarations[declarationKey]; ok {
 			if !sameOrderDeclaration(previous, item) {
 				return nil, fmt.Errorf("conflicting Docker declarations for order key %q in %s and %s", item.OrderKey, previous.Source, item.Source)
 			}
 			continue
 		}
-		declarations[item.OrderKey] = item
+		declarations[declarationKey] = item
 		result = append(result, item)
 	}
 	if err := validateMappings(legacy); err != nil {
 		return nil, err
 	}
 	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].AccountName != result[j].AccountName {
+			return result[i].AccountName < result[j].AccountName
+		}
 		if result[i].OrderKey != result[j].OrderKey {
 			return result[i].OrderKey < result[j].OrderKey
 		}
@@ -279,10 +388,20 @@ func validateOrderDeclaration(item mapping) error {
 }
 
 func sameOrderDeclaration(a, b mapping) bool {
-	return a.OrderKey == b.OrderKey && a.Product == b.Product && a.Domain == b.Domain &&
+	return a.AccountName == b.AccountName && a.OrderKey == b.OrderKey && a.Product == b.Product && a.Domain == b.Domain &&
 		a.Transport == b.Transport && a.BillingTerm == b.BillingTerm && a.Upstream == b.Upstream &&
 		a.HTTPChallengeUpstream == b.HTTPChallengeUpstream && a.TLSMode == b.TLSMode &&
 		a.ACMETermsAccepted == b.ACMETermsAccepted
+}
+
+func dockerMappingsForAccount(mappings []mapping, accountName string) []mapping {
+	selected := make([]mapping, 0, len(mappings))
+	for _, item := range mappings {
+		if item.AccountName == accountName {
+			selected = append(selected, item)
+		}
+	}
+	return selected
 }
 
 func validateDockerSnapshot(static, docker []mapping) error {

@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/blindport/blindport/internal/protocol"
 )
 
 const maxResponseBody = 64 << 10
@@ -80,11 +82,60 @@ func New(backendURL, secret string) (*Resolver, error) {
 
 // Resolution is the resolver's reply.
 type Resolution struct {
-	AccountID    string      `json:"account_id"`
-	UserID       int64       `json:"user_id"`
-	IPs          []string    `json:"ip_ips"`
-	RelayDomains []string    `json:"relay_domains"`
-	PortLeases   []PortLease `json:"port_leases"`
+	AccountID      string                 `json:"account_id"`
+	SubscriptionID string                 `json:"subscription_id"`
+	UserID         int64                  `json:"user_id"`
+	IPs            []string               `json:"ip_ips"`
+	RelayDomains   []string               `json:"relay_domains"`
+	RelayClaims    []AuthorizedRelayClaim `json:"relay_claims"`
+	PortLeases     []PortLease            `json:"port_leases"`
+}
+
+// AuthorizedRelayClaim is one scope-aware Relay hostname authorization.
+// RelayDomains remains for legacy exact hostname responses. Backend "exact"
+// scope values are normalized to the protocol's zero-value exact scope.
+type AuthorizedRelayClaim struct {
+	Domain string                      `json:"domain"`
+	Scope  protocol.RelayHostnameScope `json:"scope,omitempty"`
+}
+
+// UnmarshalJSON accepts the backend's explicit scope vocabulary while keeping
+// the protocol Claim zero value canonical for exact scopes.
+func (c *AuthorizedRelayClaim) UnmarshalJSON(raw []byte) error {
+	var wire struct {
+		Domain string  `json:"domain"`
+		Scope  *string `json:"scope"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	if wire.Scope == nil {
+		return errors.New("relay claim scope is required")
+	}
+	var scope protocol.RelayHostnameScope
+	switch *wire.Scope {
+	case "exact":
+		scope = protocol.RelayHostnameScopeExact
+	case string(protocol.RelayHostnameScopeWildcard):
+		scope = protocol.RelayHostnameScopeWildcard
+	default:
+		return errors.New("invalid relay claim scope")
+	}
+	claim := protocol.Claim{Kind: protocol.ClaimRelay, Domain: wire.Domain, Scope: scope}
+	if err := protocol.ValidateClaim(&claim); err != nil {
+		return errors.New("invalid relay claim")
+	}
+	*c = AuthorizedRelayClaim{Domain: wire.Domain, Scope: scope}
+	return nil
 }
 
 // PortLease is one authorized shared TCP or UDP socket.
@@ -94,14 +145,22 @@ type PortLease struct {
 	Transport    string `json:"transport"`
 }
 
-// Resolve looks up a bearer token's resource bindings.
-func (r *Resolver) Resolve(ctx context.Context, token string) (*Resolution, error) {
-	body, err := json.Marshal(map[string]string{"token": token})
+// Resolve looks up a bearer token's resource bindings. V3 receives the claim
+// binding; rollout-era endpoints retain their token-only request shape.
+func (r *Resolver) Resolve(ctx context.Context, token string, claim *protocol.Claim) (*Resolution, error) {
+	v3Body, err := json.Marshal(struct {
+		Token string          `json:"token"`
+		Claim *protocol.Claim `json:"claim,omitempty"`
+	}{Token: token, Claim: claim})
+	if err != nil {
+		return nil, infrastructure("encode resolve request", err)
+	}
+	legacyBody, err := json.Marshal(map[string]string{"token": token})
 	if err != nil {
 		return nil, infrastructure("encode resolve request", err)
 	}
 	var out Resolution
-	err = r.postJSON(ctx, "/internal/v2/resolve", body, &out, true)
+	err = r.postJSON(ctx, "/internal/v3/resolve", v3Body, &out, true)
 	if err == nil {
 		return &out, nil
 	}
@@ -109,8 +168,19 @@ func (r *Resolver) Resolve(ctx context.Context, token string) (*Resolution, erro
 	if !errors.As(err, &typed) || typed.Status != http.StatusNotFound {
 		return nil, err
 	}
+	if claim != nil && claim.Scope == protocol.RelayHostnameScopeWildcard {
+		return nil, &Error{Kind: ErrorDenied, Status: http.StatusNotFound, Err: errors.New("wildcard claims require v3 resolution")}
+	}
 	out = Resolution{}
-	if err = r.postJSON(ctx, "/internal/v1/resolve", body, &out, true); err != nil {
+	err = r.postJSON(ctx, "/internal/v2/resolve", legacyBody, &out, true)
+	if err == nil {
+		return &out, nil
+	}
+	if !errors.As(err, &typed) || typed.Status != http.StatusNotFound {
+		return nil, err
+	}
+	out = Resolution{}
+	if err = r.postJSON(ctx, "/internal/v1/resolve", legacyBody, &out, true); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -122,6 +192,13 @@ type WireGuardPeer struct {
 	AllowedPrefixes []string `json:"allowed_prefixes"`
 }
 
+// PrefixBinding attributes one active routed /32 to a subscription. It is
+// deliberately kept separate from normal peer authorization state.
+type PrefixBinding struct {
+	Prefix         string `json:"prefix"`
+	SubscriptionID string `json:"subscription_id"`
+}
+
 // WireGuardDesiredState is the complete routed-plane snapshot for one relay.
 type WireGuardDesiredState struct {
 	Revision            string          `json:"revision"`
@@ -129,25 +206,56 @@ type WireGuardDesiredState struct {
 	ManagedPrefixes     []string        `json:"managed_prefixes"`
 	Peers               []WireGuardPeer `json:"peers"`
 	SMTPAllowedPrefixes []string        `json:"smtp_allowed_prefixes"`
+	PrefixBindings      []PrefixBinding `json:"prefix_bindings"`
+}
+
+// These response types deliberately model each deployed endpoint separately.
+// Keeping the wire contracts distinct makes newer fields protocol errors when
+// returned by an older endpoint.
+type wireGuardPeersV3Wire struct {
+	Revision            string          `json:"revision"`
+	GeneratedAt         string          `json:"generated_at"`
+	ManagedPrefixes     []string        `json:"managed_prefixes"`
+	Peers               []WireGuardPeer `json:"peers"`
+	SMTPAllowedPrefixes []string        `json:"smtp_allowed_prefixes"`
+	PrefixBindings      []PrefixBinding `json:"prefix_bindings"`
+}
+
+type wireGuardPeersV2Wire struct {
+	Revision            string          `json:"revision"`
+	GeneratedAt         string          `json:"generated_at"`
+	ManagedPrefixes     []string        `json:"managed_prefixes"`
+	Peers               []WireGuardPeer `json:"peers"`
+	SMTPAllowedPrefixes []string        `json:"smtp_allowed_prefixes"`
+}
+
+type wireGuardPeersV1Wire struct {
+	Revision        string          `json:"revision"`
+	GeneratedAt     string          `json:"generated_at"`
+	ManagedPrefixes []string        `json:"managed_prefixes"`
+	Peers           []WireGuardPeer `json:"peers"`
 }
 
 // WireGuardPeers fetches the complete desired routed-plane state.
 func (r *Resolver) WireGuardPeers(ctx context.Context) (*WireGuardDesiredState, error) {
-	var out WireGuardDesiredState
-	err := r.getJSON(ctx, "/internal/v2/wireguard/peers", &out)
+	var v3 wireGuardPeersV3Wire
+	err := r.getJSON(ctx, "/internal/v3/wireguard/peers", &v3)
 	if err == nil {
-		return &out, nil
+		return &WireGuardDesiredState{Revision: v3.Revision, GeneratedAt: v3.GeneratedAt, ManagedPrefixes: v3.ManagedPrefixes, Peers: v3.Peers, SMTPAllowedPrefixes: v3.SMTPAllowedPrefixes, PrefixBindings: v3.PrefixBindings}, nil
 	}
 	var typed *Error
 	if !errors.As(err, &typed) || typed.Status != http.StatusNotFound {
 		return nil, err
 	}
-	var legacy struct {
-		Revision        string          `json:"revision"`
-		GeneratedAt     string          `json:"generated_at"`
-		ManagedPrefixes []string        `json:"managed_prefixes"`
-		Peers           []WireGuardPeer `json:"peers"`
+	var v2 wireGuardPeersV2Wire
+	err = r.getJSON(ctx, "/internal/v2/wireguard/peers", &v2)
+	if err == nil {
+		return &WireGuardDesiredState{Revision: v2.Revision, GeneratedAt: v2.GeneratedAt, ManagedPrefixes: v2.ManagedPrefixes, Peers: v2.Peers, SMTPAllowedPrefixes: v2.SMTPAllowedPrefixes}, nil
 	}
+	if !errors.As(err, &typed) || typed.Status != http.StatusNotFound {
+		return nil, err
+	}
+	var legacy wireGuardPeersV1Wire
 	if err = r.getJSON(ctx, "/internal/v1/wireguard/peers", &legacy); err != nil {
 		return nil, err
 	}
@@ -157,6 +265,79 @@ func (r *Resolver) WireGuardPeers(ctx context.Context) (*WireGuardDesiredState, 
 		ManagedPrefixes: legacy.ManagedPrefixes,
 		Peers:           legacy.Peers,
 	}, nil
+}
+
+// DailyBandwidthReport is one subscriber-relative UTC-day total.
+type DailyBandwidthReport struct {
+	SubscriptionID string `json:"subscription_id"`
+	Day            string `json:"day"`
+	IngressBytes   int64  `json:"ingress_bytes"`
+	EgressBytes    int64  `json:"egress_bytes"`
+}
+
+// DailyBandwidthBatch is an idempotent relay report. No resource or traffic
+// metadata is included in this contract.
+type DailyBandwidthBatch struct {
+	EdgeID   string                 `json:"edge_id"`
+	BootID   string                 `json:"boot_id"`
+	Sequence int64                  `json:"sequence"`
+	Reports  []DailyBandwidthReport `json:"reports"`
+}
+
+// ReportDailyBandwidth posts one bounded idempotent daily report batch.
+func (r *Resolver) ReportDailyBandwidth(ctx context.Context, token string, batch DailyBandwidthBatch) error {
+	if !isLowerHexToken(token) {
+		return protocolFailure("validate bandwidth token", errors.New("heartbeat token must be exactly 64 lowercase hexadecimal characters"))
+	}
+	if batch.EdgeID == "" || len(batch.EdgeID) > 32 || batch.Sequence < 0 || len(batch.Reports) == 0 || len(batch.Reports) > 1000 {
+		return protocolFailure("validate bandwidth request", errors.New("invalid bandwidth report batch"))
+	}
+	if !canonicalUUID(batch.BootID) {
+		return protocolFailure("validate bandwidth request", errors.New("invalid boot ID"))
+	}
+	for _, report := range batch.Reports {
+		if !canonicalUUID(report.SubscriptionID) || !canonicalDay(report.Day) || report.IngressBytes < 0 || report.EgressBytes < 0 {
+			return protocolFailure("validate bandwidth request", errors.New("invalid bandwidth report"))
+		}
+	}
+	body, err := json.Marshal(batch)
+	if err != nil {
+		return infrastructure("encode bandwidth request", err)
+	}
+	var acknowledgment struct {
+		Status string `json:"status"`
+	}
+	if err := r.postJSONWithHeader(ctx, "/internal/v1/relay/bandwidth/daily", body, &acknowledgment, false, "X-Relay-Heartbeat-Token", token); err != nil {
+		return err
+	}
+	if acknowledgment.Status != "accepted" {
+		return protocolFailure("validate bandwidth response", errors.New("unexpected bandwidth status"))
+	}
+	return nil
+}
+
+func canonicalUUID(value string) bool {
+	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	for i := range value {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			continue
+		}
+		c := value[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalDay(value string) bool {
+	if len(value) != len("2006-01-02") {
+		return false
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	return err == nil && parsed.Format("2006-01-02") == value
 }
 
 // RelayCert is the materials issued by POST /internal/v1/relay/cert.

@@ -243,6 +243,10 @@ type wireGuardAgentOptions struct {
 	deviceName   string
 	routeTable   int
 	rulePriority int
+	gateway      bool
+	inboundTCP   string
+	inboundUDP   string
+	inboundICMP  bool
 }
 
 func validateWireGuardAgentOptions(options wireGuardAgentOptions) error {
@@ -257,6 +261,20 @@ func validateWireGuardAgentOptions(options wireGuardAgentOptions) error {
 			"WireGuard rule priority must be within 1-%d so leased-source traffic precedes the main route table",
 			linuxMainRulePriority-1,
 		)
+	}
+	if options.gateway && options.rulePriority >= linuxMainRulePriority-1 {
+		return fmt.Errorf("WireGuard gateway rule priority must be within 1-%d so both gateway rules precede the main route table", linuxMainRulePriority-2)
+	}
+	if !options.gateway && (options.inboundTCP != "" || options.inboundUDP != "" || options.inboundICMP) {
+		return errors.New("WireGuard inbound gateway settings require WireGuard gateway mode")
+	}
+	if options.gateway {
+		if _, err := wgnet.ParsePortRanges(options.inboundTCP); err != nil {
+			return fmt.Errorf("WireGuard inbound TCP ports: %w", err)
+		}
+		if _, err := wgnet.ParsePortRanges(options.inboundUDP); err != nil {
+			return fmt.Errorf("WireGuard inbound UDP ports: %w", err)
+		}
 	}
 	return nil
 }
@@ -293,10 +311,13 @@ func runWireGuard(ctx context.Context, log *slog.Logger, credentials *credential
 	if err := validateWireGuardClientConfig(config, publicKey); err != nil {
 		return fmt.Errorf("invalid WireGuard provisioning: %w", err)
 	}
-	if options.rulePriority > linuxMainRulePriority-len(config.AssignedPrefixes) {
+	if options.gateway && len(config.AssignedPrefixes) != 1 {
+		return errors.New("WireGuard gateway requires exactly one assigned IPv4 /32")
+	}
+	if !options.gateway && options.rulePriority > linuxMainRulePriority-len(config.AssignedPrefixes) {
 		return errors.New("WireGuard source rules would overlap the Linux main route-table priority")
 	}
-	if err := wgnet.ConfigureAgent(wgnet.AgentConfig{
+	agentConfig := wgnet.AgentConfig{
 		DeviceName:          options.deviceName,
 		PrivateKey:          key,
 		RelayPublicKey:      config.RelayPublicKey,
@@ -306,14 +327,32 @@ func runWireGuard(ctx context.Context, log *slog.Logger, credentials *credential
 		PersistentKeepalive: time.Duration(config.PersistentKeepaliveSeconds) * time.Second,
 		RouteTable:          options.routeTable,
 		RulePriority:        options.rulePriority,
-	}); err != nil {
+	}
+	if options.gateway {
+		tcpPorts, err := wgnet.ParsePortRanges(options.inboundTCP)
+		if err != nil {
+			return fmt.Errorf("WireGuard inbound TCP ports: %w", err)
+		}
+		udpPorts, err := wgnet.ParsePortRanges(options.inboundUDP)
+		if err != nil {
+			return fmt.Errorf("WireGuard inbound UDP ports: %w", err)
+		}
+		if err := wgnet.ConfigureGatewayAgent(wgnet.GatewayConfig{
+			AgentConfig: agentConfig, TCPPorts: tcpPorts, UDPPorts: udpPorts, AllowICMP: options.inboundICMP,
+		}); err != nil {
+			return err
+		}
+		log.Info("WireGuard gateway configured", "device", options.deviceName, "prefix", config.AssignedPrefixes[0], "endpoint", config.Endpoint)
+	} else if err := wgnet.ConfigureAgent(agentConfig); err != nil {
 		return err
 	}
-	log.Info("routed WireGuard plane configured",
-		"device", options.deviceName,
-		"prefixes", config.AssignedPrefixes,
-		"endpoint", config.Endpoint,
-		"mtu", config.MTU)
+	if !options.gateway {
+		log.Info("routed WireGuard plane configured",
+			"device", options.deviceName,
+			"prefixes", config.AssignedPrefixes,
+			"endpoint", config.Endpoint,
+			"mtu", config.MTU)
+	}
 	<-ctx.Done()
 	return nil
 }

@@ -105,6 +105,9 @@ type planReconciler interface {
 
 type dockerAgent struct {
 	docker            dockerContainerLister
+	discovery         dockerMappingDiscovery
+	accountName       string
+	accountNames      []string
 	static            []mapping
 	orders            *orderAPIClient
 	fetchConfig       func(context.Context) ([]provisioning, error)
@@ -136,7 +139,18 @@ func (a *dockerAgent) run(ctx context.Context) {
 }
 
 func (a *dockerAgent) reconcile(ctx context.Context) error {
-	snapshot, err := discoverDockerMappings(ctx, a.docker)
+	var snapshot []mapping
+	var err error
+	if a.discovery != nil {
+		snapshot, err = a.discovery.discover(ctx)
+	} else if a.accountName == "" {
+		snapshot, err = discoverDockerMappings(ctx, a.docker)
+	} else {
+		snapshot, err = discoverDockerMappingsForAccounts(ctx, a.docker, a.accountNames)
+	}
+	if err == nil && a.accountName != "" {
+		snapshot = dockerMappingsForAccount(snapshot, a.accountName)
+	}
 	if err != nil {
 		a.logger.Warn("discover Docker mappings", "err", err)
 	} else if err := validateDockerSnapshot(a.static, snapshot); err != nil {
@@ -150,6 +164,14 @@ func (a *dockerAgent) reconcile(ctx context.Context) error {
 	if err != nil {
 		a.logger.Warn("resolve Docker orders", "err", err)
 	}
+	allMappings := append(append([]mapping(nil), a.static...), resolved...)
+	if err := validateMappings(allMappings); err != nil {
+		a.logger.Warn("validate resolved Docker mappings", "err", err)
+		if reconcileErr := a.supervisor.Reconcile(nil); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {
+			a.logger.Warn("stop tunnel workers after invalid resolved mappings", "err", reconcileErr)
+		}
+		return err
+	}
 	result, err := a.provision(ctx)
 	if err != nil {
 		a.logger.Warn("fetch config", "err", err)
@@ -160,9 +182,32 @@ func (a *dockerAgent) reconcile(ctx context.Context) error {
 		}
 		return err
 	}
-	mappings := append(append([]mapping(nil), a.static...), resolved...)
-	coordinator := newMappingProvisioningCoordinator(mappings, a.relayOverride, true)
-	plans, err := coordinator.plans(result)
+	orderKeys := make(map[string]struct{})
+	for _, item := range a.desired {
+		if item.Product != "" {
+			orderKeys[item.AccountName+"\x00"+item.OrderKey] = struct{}{}
+		}
+	}
+	strictMappings := append([]mapping(nil), a.static...)
+	optionalMappings := make([]mapping, 0, len(resolved))
+	for _, item := range resolved {
+		if _, optional := orderKeys[item.AccountName+"\x00"+item.OrderKey]; optional {
+			optionalMappings = append(optionalMappings, item)
+		} else {
+			strictMappings = append(strictMappings, item)
+		}
+	}
+	staticCoordinator := newMappingProvisioningCoordinator(strictMappings, a.relayOverride, false)
+	plans, err := staticCoordinator.plans(result)
+	if err == nil {
+		dynamicCoordinator := newMappingProvisioningCoordinator(optionalMappings, a.relayOverride, true)
+		dynamicPlans, dynamicErr := dynamicCoordinator.plans(result)
+		if dynamicErr != nil {
+			err = dynamicErr
+		} else {
+			plans = append(plans, dynamicPlans...)
+		}
+	}
 	if err != nil {
 		a.logger.Warn("build Docker tunnel plans", "err", err)
 		if reconcileErr := a.supervisor.Reconcile(nil); reconcileErr != nil && !errors.Is(reconcileErr, context.Canceled) {

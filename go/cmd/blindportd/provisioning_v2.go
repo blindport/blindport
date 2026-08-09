@@ -25,16 +25,18 @@ import (
 )
 
 const (
-	authorizationStateName    = "authorization.json"
-	authorizationCacheVersion = 1
-	maxAuthorizationCacheSize = maxProvisioningJSON + 1024
-	maxV2Subscriptions        = 1000
-	maxV2Edges                = 16
-	maxEntitlementBytes       = 2048
-	maxEntitlementPayload     = 1024
-	entitlementSignature      = 64
-	generationBits            = 31
-	maxV2Unix                 = uint64((1<<63 - 1) >> generationBits)
+	authorizationStateName      = "authorization.json"
+	authorizationCacheVersion   = 1
+	authorizationV3StateName    = "authorization-v3.json"
+	authorizationV3CacheVersion = 3
+	maxAuthorizationCacheSize   = maxProvisioningJSON + 1024
+	maxV2Subscriptions          = 1000
+	maxV2Edges                  = 16
+	maxEntitlementBytes         = 2048
+	maxEntitlementPayload       = 1024
+	entitlementSignature        = 64
+	generationBits              = 31
+	maxV2Unix                   = uint64((1<<63 - 1) >> generationBits)
 )
 
 var v2EdgeID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
@@ -45,12 +47,15 @@ type provisioningSource string
 const (
 	provisioningOnlineV2 provisioningSource = "online_v2"
 	provisioningCacheV2  provisioningSource = "cache_v2"
+	provisioningOnlineV3 provisioningSource = "online_v3"
+	provisioningCacheV3  provisioningSource = "cache_v3"
 	provisioningOnlineV1 provisioningSource = "online_v1"
 )
 
 type provisioningResult struct {
 	V1     []provisioning
 	V2     *provisioningV2
+	V3     *provisioningV3
 	Source provisioningSource
 }
 
@@ -231,7 +236,7 @@ func fetchProvisioning(ctx context.Context, client *http.Client, backend, token 
 	return fetchProvisioningWithCache(ctx, client, backend, token, credentials, insecureSkipTLS, cache)
 }
 
-// fetchProvisioningWithCache selects v2 when available. It snapshots the
+// fetchProvisioningWithCache selects v3, then v2 when unavailable. It snapshots the
 // identity around network and cache I/O, without holding the credential mutex.
 func fetchProvisioningWithCache(ctx context.Context, client *http.Client, backend, token string, credentials *credentialManager, insecureSkipTLS bool, cache authorizationCacheStore) (provisioningResult, error) {
 	if client == nil {
@@ -254,6 +259,40 @@ func fetchProvisioningWithCache(ctx context.Context, client *http.Client, backen
 	// runs. Retry once if it installs a new generation in that interval.
 	for attempt := 0; attempt < 2; attempt++ {
 		identity := credentials.identity()
+		v3Cache := authorizationCache{stateDir: credentials.stateDir}
+		v3, rawV3, err := fetchProvisioningV3(ctx, client, backend, token, identity.instanceID)
+		if err == nil {
+			if validateV3Identity(v3, identity.instanceID, identity.generation) != nil || !credentials.hasIdentity(identity) {
+				continue
+			}
+			if err := v3Cache.storeV3(identity, rawV3, v3); err != nil {
+				return provisioningResult{}, errors.New("authorization cache update failure")
+			}
+			if !credentials.hasIdentity(identity) {
+				continue
+			}
+			return provisioningResult{V3: v3, Source: provisioningOnlineV3}, nil
+		}
+		var v3Err *v3FetchError
+		if !errors.As(err, &v3Err) {
+			return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal}
+		}
+		if v3Err.kind == v2Infrastructure {
+			if !credentials.hasIdentity(identity) {
+				continue
+			}
+			cached, cacheErr := v3Cache.loadV3(identity.instanceID, identity.generation, time.Now())
+			if !credentials.hasIdentity(identity) {
+				continue
+			}
+			if cacheErr == nil {
+				return provisioningResult{V3: cached, Source: provisioningCacheV3}, nil
+			}
+			return provisioningResult{}, &provisioningFetchError{kind: provisioningInfrastructure}
+		}
+		if v3Err.kind != v2FeatureUnavailable {
+			return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal}
+		}
 		config, raw, err := fetchProvisioningV2(ctx, client, backend, token, identity.instanceID)
 		if err == nil {
 			if validateV2Identity(config, identity.instanceID, identity.generation) != nil || !credentials.hasIdentity(identity) {
@@ -508,6 +547,7 @@ type entitlementMetadata struct {
 	Port         uint16 `json:"port"`
 	Transport    string `json:"transport"`
 	Domain       string `json:"domain"`
+	Scope        string `json:"scope,omitempty"`
 	IssuedAt     uint64 `json:"iat"`
 	NotBefore    uint64 `json:"nbf"`
 	PaidThrough  uint64 `json:"paid_through"`
@@ -517,7 +557,23 @@ type entitlementMetadata struct {
 }
 
 func (p *entitlementMetadata) UnmarshalJSON(raw []byte) error {
-	if !hasExactJSONFields(raw, "typ", "v", "kid", "account", "subscription", "instance", "client_pk", "edge", "kind", "ip", "port", "transport", "domain", "iat", "nbf", "paid_through", "grace_through", "generation", "jti") {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return errors.New("invalid entitlement metadata")
+	}
+	versionRaw, ok := fields["v"]
+	if !ok {
+		return errors.New("invalid entitlement metadata")
+	}
+	var version uint64
+	if json.Unmarshal(versionRaw, &version) != nil {
+		return errors.New("invalid entitlement metadata")
+	}
+	names := []string{"typ", "v", "kid", "account", "subscription", "instance", "client_pk", "edge", "kind", "ip", "port", "transport", "domain", "iat", "nbf", "paid_through", "grace_through", "generation", "jti"}
+	if version == 2 {
+		names = append(names, "scope")
+	}
+	if !hasExactJSONFields(raw, names...) {
 		return errors.New("invalid entitlement metadata")
 	}
 	type plain entitlementMetadata
@@ -558,7 +614,10 @@ func parseEntitlementMetadata(value string) (entitlementMetadata, error) {
 }
 
 func validateEntitlementMetadata(payload entitlementMetadata, now time.Time) error {
-	if payload.Type != "blindport-offline-entitlement" || payload.Version != 1 || !entitlementStableID.MatchString(payload.KeyID) || !isCanonicalInstanceID(payload.Account) || !isCanonicalInstanceID(payload.Subscription) || !isCanonicalInstanceID(payload.Instance) || !entitlementStableID.MatchString(payload.Edge) || len(payload.IP) > 45 || len(payload.Domain) > 253 || payload.IssuedAt > maxV2Unix || payload.NotBefore > maxV2Unix || payload.PaidThrough > maxV2Unix || payload.GraceThrough > maxV2Unix || payload.IssuedAt != payload.NotBefore || payload.IssuedAt > payload.PaidThrough || payload.PaidThrough > payload.GraceThrough || payload.GraceThrough-payload.PaidThrough > uint64((7*24*time.Hour)/time.Second) || payload.Generation > uint64(1<<63-1) || payload.Generation&((1<<generationBits)-1) == 0 || payload.Generation != payload.PaidThrough<<generationBits|(payload.Generation&((1<<generationBits)-1)) || time.Unix(int64(payload.IssuedAt), 0).UTC().After(now.UTC().Add(60*time.Second)) || now.UTC().After(time.Unix(int64(payload.GraceThrough), 0).UTC()) {
+	if payload.Type != "blindport-offline-entitlement" || (payload.Version != 1 && payload.Version != 2) || !entitlementStableID.MatchString(payload.KeyID) || !isCanonicalInstanceID(payload.Account) || !isCanonicalInstanceID(payload.Subscription) || !isCanonicalInstanceID(payload.Instance) || !entitlementStableID.MatchString(payload.Edge) || len(payload.IP) > 45 || len(payload.Domain) > 253 || payload.IssuedAt > maxV2Unix || payload.NotBefore > maxV2Unix || payload.PaidThrough > maxV2Unix || payload.GraceThrough > maxV2Unix || payload.IssuedAt != payload.NotBefore || payload.IssuedAt > payload.PaidThrough || payload.PaidThrough > payload.GraceThrough || payload.GraceThrough-payload.PaidThrough > uint64((7*24*time.Hour)/time.Second) || payload.Generation > uint64(1<<63-1) || payload.Generation&((1<<generationBits)-1) == 0 || payload.Generation != payload.PaidThrough<<generationBits|(payload.Generation&((1<<generationBits)-1)) || time.Unix(int64(payload.IssuedAt), 0).UTC().After(now.UTC().Add(60*time.Second)) || now.UTC().After(time.Unix(int64(payload.GraceThrough), 0).UTC()) {
+		return errors.New("invalid")
+	}
+	if (payload.Version == 1 && payload.Scope != "") || (payload.Version == 2 && (payload.Scope != "wildcard" || payload.Kind != string(protocol.ClaimRelay))) {
 		return errors.New("invalid")
 	}
 	if _, err := decodeCanonicalRawBase64(payload.ClientKey, 32); err != nil {
@@ -567,7 +626,11 @@ func validateEntitlementMetadata(payload entitlementMetadata, now time.Time) err
 	if _, err := decodeCanonicalRawBase64(payload.TokenID, 16); err != nil {
 		return errors.New("invalid")
 	}
-	if err := validateCanonicalClaim(provisioningV2Claim{Kind: protocol.ClaimKind(payload.Kind), IP: payload.IP, Port: payload.Port, Transport: protocol.Transport(payload.Transport), Domain: payload.Domain}); err != nil {
+	claim := protocol.Claim{Kind: protocol.ClaimKind(payload.Kind), IP: payload.IP, Port: payload.Port, Transport: protocol.Transport(payload.Transport), Domain: payload.Domain}
+	if payload.Version == 2 {
+		claim.Scope = protocol.RelayHostnameScopeWildcard
+	}
+	if protocol.ValidateClaim(&claim) != nil || (claim.IP != "" && !canonicalIP(claim.IP)) {
 		return errors.New("invalid")
 	}
 	return nil
@@ -718,14 +781,18 @@ func parseAuthorizationCache(raw []byte, instanceID string, generation int, now 
 }
 
 func (c authorizationCache) readRaw() ([]byte, error) {
-	info, err := os.Lstat(c.path())
+	return readAuthorizationCache(c.path())
+}
+
+func readAuthorizationCache(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || validateStaticConfigOwner(info) != nil {
 		return nil, errors.New("unsafe cache")
 	}
-	file, err := os.Open(c.path())
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -739,6 +806,92 @@ func (c authorizationCache) readRaw() ([]byte, error) {
 		return nil, errors.New("unsafe cache")
 	}
 	return raw, nil
+}
+
+func (c authorizationCache) v3Path() string {
+	return filepath.Join(c.stateDir, authorizationV3StateName)
+}
+
+func (c authorizationCache) storeV3(identity credentialIdentity, raw []byte, config *provisioningV3) error {
+	if !isCanonicalInstanceID(identity.instanceID) || identity.generation < 1 || identity.generation > maxCredentialGeneration || config == nil || validateProvisioningV3(config, time.Now()) != nil || len(raw) == 0 || len(raw) > maxProvisioningJSON {
+		return errors.New("invalid v3 authorization cache")
+	}
+	decoded, err := parseProvisioningV3(raw, time.Now())
+	if err != nil || !reflect.DeepEqual(decoded, config) || validateV3Identity(config, identity.instanceID, identity.generation) != nil {
+		return errors.New("invalid v3 authorization cache")
+	}
+	stored, err := json.Marshal(authorizationCacheEnvelope{Version: authorizationV3CacheVersion, InstanceID: identity.instanceID, Generation: identity.generation, Response: json.RawMessage(raw)})
+	if err != nil || len(stored) > maxAuthorizationCacheSize {
+		return errors.New("invalid v3 authorization cache")
+	}
+	return writeAuthorizationCache(c.stateDir, c.v3Path(), stored)
+}
+
+func (c authorizationCache) loadV3(instanceID string, generation int, now time.Time) (*provisioningV3, error) {
+	raw, err := readAuthorizationCache(c.v3Path())
+	if err != nil {
+		return nil, errors.New("v3 authorization cache is unavailable")
+	}
+	if len(raw) == 0 || len(raw) > maxAuthorizationCacheSize || rejectDuplicateJSONKeys(raw) != nil || !isCanonicalInstanceID(instanceID) || generation < 1 || generation > maxCredentialGeneration {
+		return nil, errors.New("invalid v3 authorization cache")
+	}
+	var envelope authorizationCacheEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err != nil || rejectTrailingJSON(decoder) != nil || envelope.Version != authorizationV3CacheVersion || envelope.InstanceID != instanceID || envelope.Generation != generation {
+		return nil, errors.New("invalid v3 authorization cache")
+	}
+	config, err := parseProvisioningV3(envelope.Response, now)
+	if err != nil || validateV3Identity(config, envelope.InstanceID, envelope.Generation) != nil {
+		return nil, errors.New("invalid v3 authorization cache")
+	}
+	return config, nil
+}
+
+func writeAuthorizationCache(stateDir, path string, stored []byte) error {
+	if err := prepareCredentialStateDir(stateDir); err != nil {
+		return errors.New("authorization cache state is unsafe")
+	}
+	if info, err := os.Lstat(path); err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || validateStaticConfigOwner(info) != nil) {
+		return errors.New("authorization cache file is unsafe")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return errors.New("authorization cache file is unavailable")
+	}
+	temporary, err := os.CreateTemp(stateDir, ".authorization-*")
+	if err != nil {
+		return errors.New("write authorization cache")
+	}
+	temporaryPath := temporary.Name()
+	cleanup := func() { _ = temporary.Close(); _ = os.Remove(temporaryPath) }
+	if err := temporary.Chmod(0o600); err != nil {
+		cleanup()
+		return errors.New("write authorization cache")
+	}
+	if _, err := temporary.Write(stored); err != nil {
+		cleanup()
+		return errors.New("write authorization cache")
+	}
+	if err := temporary.Sync(); err != nil {
+		cleanup()
+		return errors.New("write authorization cache")
+	}
+	if err := temporary.Close(); err != nil {
+		cleanup()
+		return errors.New("write authorization cache")
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		cleanup()
+		return errors.New("write authorization cache")
+	}
+	directory, err := os.Open(stateDir)
+	if err != nil {
+		return errors.New("write authorization cache")
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return errors.New("write authorization cache")
+	}
+	return nil
 }
 
 func entitlementInstance(value string) (string, error) {

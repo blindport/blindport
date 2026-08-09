@@ -64,7 +64,7 @@ func TestOrderAPIClientSendsContractAndAcceptsFullResponse(t *testing.T) {
 	defer server.Close()
 	client := &orderAPIClient{client: server.Client(), backend: server.URL + "/", token: "SECRET"}
 	response, err := client.put(context.Background(), mapping{
-		OrderKey: "web", Product: "relay", Domain: "web.example", Transport: "tcp", BillingTerm: "yearly",
+		AccountName: "public", OrderKey: "web", Product: "relay", Domain: "web.example", Transport: "tcp", BillingTerm: "yearly",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +172,119 @@ func TestDockerAgentPendingToActiveRepeatedSnapshotAndRemoval(t *testing.T) {
 	}
 }
 
+func TestDockerAgentsScopeOrdersAndRemovalByConfiguredAccount(t *testing.T) {
+	var mu sync.Mutex
+	requests := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		requests[token]++
+		mu.Unlock()
+		subscriptionID := testSubscriptionID1
+		if token == "PRIVATE" {
+			subscriptionID = testSubscriptionID2
+		}
+		_, _ = io.WriteString(w, `{"order_key":"web","subscription":{"id":"`+subscriptionID+`","status":"active"},"state":"active"}`)
+	}))
+	defer server.Close()
+	fake := &fakeDockerClient{containers: []containertypes.Summary{
+		{ID: "public", Labels: accountOrderLabels("public", "web", "public:443")},
+		{ID: "private", Labels: accountOrderLabels("private", "web", "private:443")},
+	}}
+	now := time.Unix(1_700_000_000, 0)
+	discovery, err := newSharedDockerDiscovery(fake, []staticAccount{{Name: "public"}, {Name: "private"}}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery.now = func() time.Time { return now }
+	publicPlans := &recordingPlanReconciler{}
+	privatePlans := &recordingPlanReconciler{}
+	newAgent := func(accountName, token, subscriptionID string, plans *recordingPlanReconciler) *dockerAgent {
+		return &dockerAgent{
+			docker: fake, discovery: discovery,
+			accountName: accountName, accountNames: []string{"public", "private"},
+			orders: &orderAPIClient{client: server.Client(), backend: server.URL, token: token},
+			fetchConfig: func(context.Context) ([]provisioning, error) {
+				return []provisioning{{
+					SubscriptionID: subscriptionID, Product: "relay", Domain: "web.example",
+					RelayEndpoint: "edge.example:5443", Transport: "tcp",
+				}}, nil
+			},
+			supervisor: plans, pollInterval: time.Second,
+			logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now,
+			orderCache: make(map[string]*orderCacheEntry),
+		}
+	}
+	publicAgent := newAgent("public", "PUBLIC", testSubscriptionID1, publicPlans)
+	privateAgent := newAgent("private", "PRIVATE", testSubscriptionID2, privatePlans)
+	if err := publicAgent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateAgent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	publicRequests, privateRequests := requests["PUBLIC"], requests["PRIVATE"]
+	mu.Unlock()
+	if publicRequests != 1 || privateRequests != 1 || len(publicAgent.orderCache) != 1 || len(privateAgent.orderCache) != 1 || fake.calls != 1 {
+		t.Fatalf("requests/cache/discovery = %d/%d, %d/%d, %d", publicRequests, privateRequests, len(publicAgent.orderCache), len(privateAgent.orderCache), fake.calls)
+	}
+	publicSnapshots, privateSnapshots := publicPlans.snapshots(), privatePlans.snapshots()
+	if len(publicSnapshots) != 1 || len(publicSnapshots[0]) != 1 || publicSnapshots[0][0].AccountName != "public" || publicSnapshots[0][0].Upstream != "public:443" {
+		t.Fatalf("public plans = %+v", publicSnapshots)
+	}
+	if len(privateSnapshots) != 1 || len(privateSnapshots[0]) != 1 || privateSnapshots[0][0].AccountName != "private" || privateSnapshots[0][0].Upstream != "private:443" {
+		t.Fatalf("private plans = %+v", privateSnapshots)
+	}
+
+	fake.containers = []containertypes.Summary{{ID: "private", Labels: accountOrderLabels("private", "web", "private:443")}}
+	now = now.Add(time.Second)
+	if err := publicAgent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := privateAgent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(publicAgent.orderCache) != 0 || len(privateAgent.orderCache) != 1 {
+		t.Fatalf("cache after public removal = %d/%d", len(publicAgent.orderCache), len(privateAgent.orderCache))
+	}
+	publicSnapshots, privateSnapshots = publicPlans.snapshots(), privatePlans.snapshots()
+	if len(publicSnapshots[len(publicSnapshots)-1]) != 0 || len(privateSnapshots[len(privateSnapshots)-1]) != 1 {
+		t.Fatalf("plans after public removal = %+v/%+v", publicSnapshots, privateSnapshots)
+	}
+}
+
+func TestDockerAgentRetainsAccountSnapshotOnUnknownSelector(t *testing.T) {
+	fake := &fakeDockerClient{containers: []containertypes.Summary{{ID: "public", Labels: map[string]string{
+		dockerMappingPrefix + "web.account":      "public",
+		dockerMappingPrefix + "web.subscription": testSubscriptionID1,
+		dockerMappingPrefix + "web.upstream":     "public:443",
+	}}}}
+	reconciler := &recordingPlanReconciler{}
+	agent := &dockerAgent{
+		docker: fake, accountName: "public", accountNames: []string{"public"}, supervisor: reconciler,
+		fetchConfig: func(context.Context) ([]provisioning, error) {
+			return []provisioning{{SubscriptionID: testSubscriptionID1, Product: "relay", Domain: "web.example", RelayEndpoint: "edge.example:5443"}}, nil
+		},
+		pollInterval: time.Second, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now,
+		orderCache: make(map[string]*orderCacheEntry),
+	}
+	if err := agent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake.containers = append(fake.containers, containertypes.Summary{ID: "unknown", Labels: accountOrderLabels("unknown", "bad", "bad:443")})
+	if err := agent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.desired) != 1 || agent.desired[0].AccountName != "public" {
+		t.Fatalf("desired snapshot after unknown account = %+v", agent.desired)
+	}
+	snapshots := reconciler.snapshots()
+	if len(snapshots) != 2 || len(snapshots[1]) != 1 {
+		t.Fatalf("worker snapshot after unknown account = %+v", snapshots)
+	}
+}
+
 func TestDockerAgentRetainsSnapshotAndWorkersAcrossTransientFailures(t *testing.T) {
 	fake := &fakeDockerClient{containers: []containertypes.Summary{{ID: "legacy", Labels: dockerLabels("web", testSubscriptionID42, "web:443")}}}
 	reconciler := &recordingPlanReconciler{}
@@ -225,7 +338,6 @@ func TestDockerAgentV2PlansFailureHandlingAndRecovery(t *testing.T) {
 		docker: &fakeDockerClient{},
 		static: []mapping{
 			{SubscriptionID: testSubscriptionID1, Upstream: "app:80"},
-			{SubscriptionID: testSubscriptionID2, Upstream: "missing:80"},
 		},
 		fetchProvisioning: func(context.Context) (provisioningResult, error) {
 			response := responses[index]
@@ -373,6 +485,42 @@ func TestDockerAgentRunStaysAliveWithZeroMappings(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("agent did not stop after cancellation")
+	}
+}
+
+func TestDockerAgentRunRetriesInitialProvisioningFailure(t *testing.T) {
+	fake := &fakeDockerClient{containers: []containertypes.Summary{{ID: "legacy", Labels: dockerLabels("web", testSubscriptionID42, "web:443")}}}
+	reconciler := &recordingPlanReconciler{}
+	var fetches int
+	agent := newTestDockerAgent(fake, nil, reconciler, func(context.Context) ([]provisioning, error) {
+		fetches++
+		if fetches == 1 {
+			return nil, errors.New("backend unavailable")
+		}
+		return []provisioning{{
+			SubscriptionID: testSubscriptionID42, Product: "relay", Domain: "web.example", RelayEndpoint: "edge.example:5443",
+		}}, nil
+	})
+	agent.pollInterval = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		agent.run(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for len(reconciler.snapshots()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	snapshots := reconciler.snapshots()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("agent did not stop after recovery")
+	}
+	if len(snapshots) != 1 || len(snapshots[0]) != 1 || fetches < 2 {
+		t.Fatalf("recovery snapshots/fetches = %+v/%d", snapshots, fetches)
 	}
 }
 

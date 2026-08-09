@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +102,97 @@ func TestLoadStaticConfigVersion2TLSModes(t *testing.T) {
 	if len(mappings) != 2 || mappings[0].TLSMode != tlsModeAutomatic || !mappings[0].ACMETermsAccepted || mappings[1].TLSMode != tlsModePassthrough {
 		t.Fatalf("version 2 mappings = %+v", mappings)
 	}
+}
+
+func TestLoadStaticConfigDocumentVersion3(t *testing.T) {
+	path := writeConfig(t, `{"version":3,"accounts":[
+{"name":"public","token_file":"/run/secrets/blindport-public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"public:443"}]},
+{"name":"private.api","token_file":"/run/secrets/blindport-private","state_dir":"/var/lib/blindport/accounts/private-api","mappings":[{"subscription_id":"22222222-2222-4222-8222-222222222222","upstream":"private:8443","tls_mode":"automatic","acme_terms_accepted":true}]}
+]}`, 0o600)
+
+	cfg, err := loadStaticConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.IsMultiAccount() || len(cfg.Accounts) != 2 || cfg.Accounts[0].Mappings[0].Source == "" {
+		t.Fatalf("version 3 config = %+v", cfg)
+	}
+	account, ok := cfg.Account("private.api")
+	if !ok || account.TokenFile != "/run/secrets/blindport-private" || account.Mappings[0].SubscriptionID != testSubscriptionID2 {
+		t.Fatalf("Account() = %+v, %v", account, ok)
+	}
+}
+
+func TestLoadStaticConfigVersion3RequiresRuntimeDispatch(t *testing.T) {
+	path := writeConfig(t, `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/blindport-public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"public:443"}]}]}`, 0o600)
+	if _, err := loadStaticConfig(path); !errors.Is(err, errStaticConfigV3RuntimeUnsupported) {
+		t.Fatalf("loadStaticConfig() error = %v, want v3 runtime dispatch error", err)
+	}
+}
+
+func TestLoadStaticConfigVersion3RejectsInvalidAccounts(t *testing.T) {
+	validAccount := func(name, tokenFile, stateDir, subscriptionID string) string {
+		return `{"name":"` + name + `","token_file":"` + tokenFile + `","state_dir":"` + stateDir + `","mappings":[{"subscription_id":"` + subscriptionID + `","upstream":"app:80"}]}`
+	}
+	accounts := func(values ...string) string {
+		return `{"version":3,"accounts":[` + strings.Join(values, ",") + `]}`
+	}
+	base := validAccount("public", "/run/secrets/public", "/var/lib/blindport/accounts/public", testSubscriptionID1)
+	tests := map[string]string{
+		"unknown document field":                 accounts(base)[:len(accounts(base))-1] + `,"extra":true}`,
+		"unknown account field":                  `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}],"extra":true}]}`,
+		"inline token":                           `{"version":3,"accounts":[{"name":"public","token":"secret","token_file":"/run/secrets/public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}]}]}`,
+		"legacy mappings field":                  `{"version":3,"mappings":[]}`,
+		"unknown mapping field":                  `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","extra":true}]}]}`,
+		"missing accounts":                       `{"version":3,"accounts":[]}`,
+		"too many accounts":                      accounts(makeAccounts(validAccount, maxStaticAccounts+1)...),
+		"invalid account name":                   accounts(validAccount("Public", "/run/secrets/public", "/var/lib/blindport/accounts/public", testSubscriptionID1)),
+		"duplicate account name":                 accounts(base, validAccount("public", "/run/secrets/second", "/var/lib/blindport/accounts/second", testSubscriptionID2)),
+		"relative token file":                    accounts(validAccount("public", "secrets/public", "/var/lib/blindport/accounts/public", testSubscriptionID1)),
+		"traversal token file":                   accounts(validAccount("public", "/run/secrets/../public", "/var/lib/blindport/accounts/public", testSubscriptionID1)),
+		"root token file":                        accounts(validAccount("public", "/", "/var/lib/blindport/accounts/public", testSubscriptionID1)),
+		"duplicate token file":                   accounts(base, validAccount("private", "/run/secrets/public", "/var/lib/blindport/accounts/private", testSubscriptionID2)),
+		"relative state dir":                     accounts(validAccount("public", "/run/secrets/public", "state/public", testSubscriptionID1)),
+		"traversal state dir":                    accounts(validAccount("public", "/run/secrets/public", "/var/lib/blindport/accounts/../public", testSubscriptionID1)),
+		"root state dir":                         accounts(validAccount("public", "/run/secrets/public", "/", testSubscriptionID1)),
+		"duplicate state dir":                    accounts(base, validAccount("private", "/run/secrets/private", "/var/lib/blindport/accounts/public", testSubscriptionID2)),
+		"overlapping state dirs":                 accounts(base, validAccount("private", "/run/secrets/private", "/var/lib/blindport/accounts/public/child", testSubscriptionID2)),
+		"duplicate subscriptions within account": `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"},{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"other:80"}]}]}`,
+		"duplicate subscriptions":                accounts(base, validAccount("private", "/run/secrets/private", "/var/lib/blindport/accounts/private", testSubscriptionID1)),
+	}
+	for name, document := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, document, 0o600)
+			if _, err := loadStaticConfigDocument(path); err == nil {
+				t.Fatal("loadStaticConfigDocument() succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadStaticConfigVersion3AllowsDockerOnlyAccounts(t *testing.T) {
+	path := writeConfig(t, `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/public","state_dir":"/var/lib/blindport/accounts/public","mappings":[]}]}`, 0o600)
+	document, err := loadStaticConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Accounts) != 1 || len(document.Accounts[0].Mappings) != 0 {
+		t.Fatalf("document = %+v", document)
+	}
+	if err := validateStaticAccountRuntimeMappings(document.Accounts, false); err == nil {
+		t.Fatal("Docker-only account was accepted without Docker discovery")
+	}
+	if err := validateStaticAccountRuntimeMappings(document.Accounts, true); err != nil {
+		t.Fatalf("Docker-only account was rejected with Docker discovery: %v", err)
+	}
+}
+
+func makeAccounts(account func(string, string, string, string) string, count int) []string {
+	accounts := make([]string, count)
+	for i := range accounts {
+		accounts[i] = account(fmt.Sprintf("account%d", i), fmt.Sprintf("/run/secrets/account%d", i), fmt.Sprintf("/var/lib/blindport/accounts/account%d", i), testSubscriptionID1)
+	}
+	return accounts
 }
 
 func TestLoadStaticConfigRejectsUnsafeFiles(t *testing.T) {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/blindport/blindport/internal/protocol"
 )
 
 const testHeartbeatToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -144,6 +146,91 @@ func TestReportHeartbeatRejectsInvalidTokenBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestReportDailyBandwidthSendsAcceptedBatch(t *testing.T) {
+	batch := DailyBandwidthBatch{
+		EdgeID: "relay-1", BootID: "018f47b8-2c36-7d4e-9a51-123456789abc", Sequence: 7,
+		Reports: []DailyBandwidthReport{{
+			SubscriptionID: "118f47b8-2c36-7d4e-9a51-123456789abc", Day: "2026-08-09", IngressBytes: 12, EgressBytes: 34,
+		}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/relay/bandwidth/daily" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Relay-Secret"); got != "secret" {
+			t.Fatalf("X-Relay-Secret = %q", got)
+		}
+		if got := r.Header.Get("X-Relay-Heartbeat-Token"); got != testHeartbeatToken {
+			t.Fatalf("X-Relay-Heartbeat-Token = %q", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `{"edge_id":"relay-1","boot_id":"018f47b8-2c36-7d4e-9a51-123456789abc","sequence":7,"reports":[{"subscription_id":"118f47b8-2c36-7d4e-9a51-123456789abc","day":"2026-08-09","ingress_bytes":12,"egress_bytes":34}]}`
+		if got := string(body); got != want {
+			t.Fatalf("request body = %s, want %s", got, want)
+		}
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+	defer server.Close()
+
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolver.ReportDailyBandwidth(context.Background(), testHeartbeatToken, batch); err != nil {
+		t.Fatalf("ReportDailyBandwidth() error = %v", err)
+	}
+}
+
+func TestReportDailyBandwidthRejectsInvalidBatchesBeforeNetwork(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer server.Close()
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := DailyBandwidthBatch{
+		EdgeID: "relay-1", BootID: "018f47b8-2c36-7d4e-9a51-123456789abc",
+		Reports: []DailyBandwidthReport{{SubscriptionID: "118f47b8-2c36-7d4e-9a51-123456789abc", Day: "2026-08-09"}},
+	}
+	for _, batch := range []DailyBandwidthBatch{
+		{},
+		{EdgeID: valid.EdgeID, BootID: valid.BootID},
+		{EdgeID: valid.EdgeID, BootID: "bad", Reports: valid.Reports},
+		{EdgeID: valid.EdgeID, BootID: valid.BootID, Sequence: -1, Reports: valid.Reports},
+		{EdgeID: valid.EdgeID, BootID: valid.BootID, Reports: []DailyBandwidthReport{{SubscriptionID: valid.Reports[0].SubscriptionID, Day: "2026-2-9"}}},
+	} {
+		if err := resolver.ReportDailyBandwidth(context.Background(), testHeartbeatToken, batch); !IsKind(err, ErrorProtocol) {
+			t.Fatalf("ReportDailyBandwidth() error = %v, want protocol error", err)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("bandwidth requests = %d, want 0", calls.Load())
+	}
+}
+
+func TestReportDailyBandwidthRejectsStrictResponses(t *testing.T) {
+	batch := DailyBandwidthBatch{
+		EdgeID: "relay-1", BootID: "018f47b8-2c36-7d4e-9a51-123456789abc",
+		Reports: []DailyBandwidthReport{{SubscriptionID: "118f47b8-2c36-7d4e-9a51-123456789abc", Day: "2026-08-09"}},
+	}
+	for _, body := range []string{`{"status":"rejected"}`, `{"status":"accepted","extra":true}`, `{}`} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+		resolver, err := New(server.URL, "secret")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = resolver.ReportDailyBandwidth(context.Background(), testHeartbeatToken, batch)
+		server.Close()
+		if !IsKind(err, ErrorProtocol) {
+			t.Fatalf("ReportDailyBandwidth() error = %v, want protocol error", err)
+		}
+	}
+}
+
 func TestResolveDecodesPortLeases(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("X-Relay-Secret"); got != "secret" {
@@ -158,7 +245,7 @@ func TestResolveDecodesPortLeases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	resolution, err := resolver.Resolve(context.Background(), "token")
+	resolution, err := resolver.Resolve(context.Background(), "token", nil)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
@@ -167,6 +254,127 @@ func TestResolveDecodesPortLeases(t *testing.T) {
 	}
 	if resolution.AccountID != "018f47b8-2c36-7d4e-9a51-123456789abc" || resolution.UserID != 42 {
 		t.Fatalf("resolution identity = account %q, user %d", resolution.AccountID, resolution.UserID)
+	}
+}
+
+func TestResolveIncludesClaimScopeWithoutChangingExactJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		claim    *protocol.Claim
+		wantBody string
+	}{
+		{
+			name:     "exact",
+			claim:    &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example"},
+			wantBody: `{"token":"token","claim":{"kind":"relay","domain":"public.example"}}`,
+		},
+		{
+			name:     "wildcard",
+			claim:    &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard},
+			wantBody: `{"token":"token","claim":{"kind":"relay","domain":"public.example","scope":"wildcard"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := string(body); got != test.wantBody {
+					t.Fatalf("request body = %s, want %s", got, test.wantBody)
+				}
+				_, _ = w.Write([]byte(`{"account_id":"018f47b8-2c36-7d4e-9a51-123456789abc","user_id":42,"ip_ips":[],"relay_domains":[],"relay_claims":[{"domain":"public.example","scope":"wildcard"}],"port_leases":[]}`))
+			}))
+			defer server.Close()
+			resolver, err := New(server.URL, "secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolution, err := resolver.Resolve(context.Background(), "token", test.claim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(resolution.RelayClaims) != 1 || resolution.RelayClaims[0].Domain != "public.example" || resolution.RelayClaims[0].Scope != protocol.RelayHostnameScopeWildcard {
+				t.Fatalf("relay claims = %+v", resolution.RelayClaims)
+			}
+		})
+	}
+}
+
+func TestResolveUsesV3ThenRollingSafeFallback(t *testing.T) {
+	var paths, bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, r.URL.Path)
+		bodies = append(bodies, string(body))
+		if r.URL.Path == "/internal/v3/resolve" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"account_id":"018f47b8-2c36-7d4e-9a51-123456789abc","user_id":42,"ip_ips":[],"relay_domains":["public.example"],"port_leases":[]}`))
+	}))
+	defer server.Close()
+	resolver, err := New(server.URL, "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example"}
+	if _, err := resolver.Resolve(context.Background(), "token", claim); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(paths, ","), "/internal/v3/resolve,/internal/v2/resolve"; got != want {
+		t.Fatalf("paths = %q, want %q", got, want)
+	}
+	if bodies[0] != `{"token":"token","claim":{"kind":"relay","domain":"public.example"}}` || bodies[1] != `{"token":"token"}` {
+		t.Fatalf("request bodies = %q", bodies)
+	}
+	paths, bodies = nil, nil
+	wildcard := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	if _, err := resolver.Resolve(context.Background(), "token", wildcard); !IsKind(err, ErrorDenied) || len(paths) != 1 {
+		t.Fatalf("wildcard fallback = %v, paths = %v", err, paths)
+	}
+}
+
+func TestResolveDecodesStructuredRelayClaimScopes(t *testing.T) {
+	tests := []struct {
+		name      string
+		claimJSON string
+		wantScope protocol.RelayHostnameScope
+		wantErr   bool
+	}{
+		{name: "exact", claimJSON: `{"domain":"public.example","scope":"exact"}`},
+		{name: "wildcard", claimJSON: `{"domain":"public.example","scope":"wildcard"}`, wantScope: protocol.RelayHostnameScopeWildcard},
+		{name: "unknown", claimJSON: `{"domain":"public.example","scope":"other"}`, wantErr: true},
+		{name: "missing", claimJSON: `{"domain":"public.example"}`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"account_id":"018f47b8-2c36-7d4e-9a51-123456789abc","user_id":42,"ip_ips":[],"relay_domains":[],"relay_claims":[` + test.claimJSON + `],"port_leases":[]}`))
+			}))
+			defer server.Close()
+			resolver, err := New(server.URL, "secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolution, err := resolver.Resolve(context.Background(), "token", nil)
+			if test.wantErr {
+				if !IsKind(err, ErrorProtocol) {
+					t.Fatalf("Resolve() error = %v, want protocol error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(resolution.RelayClaims) != 1 || resolution.RelayClaims[0].Scope != test.wantScope {
+				t.Fatalf("relay claims = %+v, want scope %q", resolution.RelayClaims, test.wantScope)
+			}
+		})
 	}
 }
 
@@ -192,7 +400,7 @@ func TestResolveAcceptsNewAndLegacyIdentityFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resolution, err := resolver.Resolve(context.Background(), "token")
+			resolution, err := resolver.Resolve(context.Background(), "token", nil)
 			if err != nil {
 				t.Fatalf("Resolve() error = %v", err)
 			}
@@ -224,7 +432,7 @@ func TestResolveFallsBackToLegacyEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolution, err := resolver.Resolve(context.Background(), "token")
+	resolution, err := resolver.Resolve(context.Background(), "token", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +462,7 @@ func TestResolveLegacyFallbackPreservesTokenDenial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolver.Resolve(context.Background(), "token"); !IsKind(err, ErrorDenied) {
+	if _, err := resolver.Resolve(context.Background(), "token", nil); !IsKind(err, ErrorDenied) {
 		t.Fatalf("Resolve() error = %v, want typed denial", err)
 	}
 	if v2Calls.Load() != 1 || v1Calls.Load() != 1 {
@@ -273,7 +481,7 @@ func TestResolveDoesNotFallbackAfterNonNotFoundFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolver.Resolve(context.Background(), "token"); !IsKind(err, ErrorInfrastructure) {
+	if _, err := resolver.Resolve(context.Background(), "token", nil); !IsKind(err, ErrorInfrastructure) {
 		t.Fatalf("Resolve() error = %v, want infrastructure", err)
 	}
 	if calls.Load() != 1 {
@@ -283,7 +491,7 @@ func TestResolveDoesNotFallbackAfterNonNotFoundFailure(t *testing.T) {
 
 func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/internal/v2/wireguard/peers" {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/v3/wireguard/peers" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("X-Relay-Secret"); got != "secret" {
@@ -293,7 +501,8 @@ func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 		_, _ = w.Write([]byte(`{"revision":"abc","generated_at":"2026-07-18T00:00:00Z",` +
 			`"managed_prefixes":["198.51.100.20/32"],` +
 			`"peers":[{"public_key":"k","allowed_prefixes":["198.51.100.20/32"]}],` +
-			`"smtp_allowed_prefixes":["198.51.100.20/32"]}`))
+			`"smtp_allowed_prefixes":["198.51.100.20/32"],` +
+			`"prefix_bindings":[{"prefix":"198.51.100.20/32","subscription_id":"118f47b8-2c36-7d4e-9a51-123456789abc"}]}`))
 	}))
 	defer server.Close()
 
@@ -305,7 +514,7 @@ func TestWireGuardPeersFetchesCompleteSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WireGuardPeers() error = %v", err)
 	}
-	if state.Revision != "abc" || len(state.Peers) != 1 || state.Peers[0].PublicKey != "k" || len(state.SMTPAllowedPrefixes) != 1 {
+	if state.Revision != "abc" || len(state.Peers) != 1 || state.Peers[0].PublicKey != "k" || len(state.SMTPAllowedPrefixes) != 1 || len(state.PrefixBindings) != 1 {
 		t.Fatalf("state = %+v", state)
 	}
 
@@ -326,7 +535,7 @@ func TestWireGuardPeersFallsBackToV1WithoutSMTPExceptions(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if r.URL.Path == "/internal/v2/wireguard/peers" {
+		if r.URL.Path == "/internal/v3/wireguard/peers" || r.URL.Path == "/internal/v2/wireguard/peers" {
 			http.NotFound(w, r)
 			return
 		}
@@ -341,7 +550,7 @@ func TestWireGuardPeersFallsBackToV1WithoutSMTPExceptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(paths, ",") != "/internal/v2/wireguard/peers,/internal/v1/wireguard/peers" || state.SMTPAllowedPrefixes != nil {
+	if strings.Join(paths, ",") != "/internal/v3/wireguard/peers,/internal/v2/wireguard/peers,/internal/v1/wireguard/peers" || state.SMTPAllowedPrefixes != nil || state.PrefixBindings != nil {
 		t.Fatalf("paths/state = %v/%+v", paths, state)
 	}
 }
@@ -352,12 +561,14 @@ func TestWireGuardPeersRetainsStrictDecodingOnV2AndV1(t *testing.T) {
 		v2   bool
 		body string
 	}{
+		{name: "v2 rejects v3 prefix bindings", v2: true, body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"smtp_allowed_prefixes":[],"prefix_bindings":[]}`},
 		{name: "v2 unknown field", v2: true, body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"smtp_allowed_prefixes":[],"extra":true}`},
-		{name: "v1 does not accept v2 field", body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"smtp_allowed_prefixes":[]}`},
+		{name: "v1 rejects SMTP field", body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"smtp_allowed_prefixes":[]}`},
+		{name: "v1 rejects prefix bindings", body: `{"revision":"r","generated_at":"now","managed_prefixes":[],"peers":[],"prefix_bindings":[]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if !test.v2 && r.URL.Path == "/internal/v2/wireguard/peers" {
+				if r.URL.Path == "/internal/v3/wireguard/peers" || (!test.v2 && r.URL.Path == "/internal/v2/wireguard/peers") {
 					http.NotFound(w, r)
 					return
 				}
@@ -395,7 +606,7 @@ func TestResolveClassifiesStatus(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
-			_, err = resolver.Resolve(context.Background(), "token")
+			_, err = resolver.Resolve(context.Background(), "token", nil)
 			if !IsKind(err, tt.kind) {
 				t.Fatalf("Resolve() error = %v, want kind %q", err, tt.kind)
 			}
@@ -416,7 +627,7 @@ func TestResponseDecodeIsBoundedAndStrict(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
-		_, err = resolver.Resolve(context.Background(), "token")
+		_, err = resolver.Resolve(context.Background(), "token", nil)
 		server.Close()
 		if !IsKind(err, ErrorProtocol) {
 			t.Fatalf("Resolve() error = %v, want protocol", err)
@@ -445,7 +656,7 @@ func TestResolveHonorsContext(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = resolver.Resolve(ctx, "token")
+	_, err = resolver.Resolve(ctx, "token", nil)
 	var typed *Error
 	if !errors.As(err, &typed) || typed.Kind != ErrorInfrastructure {
 		t.Fatalf("Resolve() error = %v", err)
@@ -467,7 +678,7 @@ func TestResolverDoesNotFollowRedirectsWithRelaySecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	_, err = resolver.Resolve(context.Background(), "token")
+	_, err = resolver.Resolve(context.Background(), "token", nil)
 	var typed *Error
 	if !errors.As(err, &typed) || typed.Kind != ErrorProtocol || typed.Status != http.StatusTemporaryRedirect {
 		t.Fatalf("Resolve() error = %v, want protocol status %d", err, http.StatusTemporaryRedirect)

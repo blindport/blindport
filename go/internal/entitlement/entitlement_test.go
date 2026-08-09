@@ -168,6 +168,32 @@ func TestVerifyRejectsSignatureAndBindings(t *testing.T) {
 	}
 }
 
+func TestVerifyV2WildcardScopeBinding(t *testing.T) {
+	data := loadFixture(t)
+	value := data.Claims
+	value.Version = 2
+	value.Kind = string(protocol.ClaimRelay)
+	value.IP, value.Port, value.Transport = "", 0, ""
+	value.Domain = "public.example"
+	value.Scope = string(protocol.RelayHostnameScopeWildcard)
+	options := fixtureOptions(t, data)
+	options.Artifact = signedPayload(t, value)
+	options.Claim = protocol.Claim{Kind: protocol.ClaimRelay, Domain: value.Domain, Scope: protocol.RelayHostnameScopeWildcard}
+	if _, err := Verify(options); err != nil {
+		t.Fatalf("Verify(v2 wildcard) = %v", err)
+	}
+	options.Claim.Scope = protocol.RelayHostnameScopeExact
+	if _, err := Verify(options); err == nil {
+		t.Fatal("Verify accepted v2 wildcard for exact claim")
+	}
+	value.Scope = ""
+	options.Claim.Scope = protocol.RelayHostnameScopeWildcard
+	options.Artifact = signedPayload(t, value)
+	if _, err := Verify(options); err == nil {
+		t.Fatal("Verify accepted v2 wildcard without scope")
+	}
+}
+
 func TestVerifyTimeBoundaries(t *testing.T) {
 	data := loadFixture(t)
 	tests := []struct {

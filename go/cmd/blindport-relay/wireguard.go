@@ -32,6 +32,7 @@ type wireGuardManager struct {
 	maxStaleness time.Duration
 	health       *relayHealth
 	metrics      *relayMetrics
+	accounting   *wireGuardBandwidthAccounting
 	lastSuccess  time.Time
 	failedClosed bool
 }
@@ -131,11 +132,16 @@ func newWireGuardManager(
 	interval, maxStaleness time.Duration,
 	health *relayHealth,
 	metrics *relayMetrics,
+	accounting ...*wireGuardBandwidthAccounting,
 ) *wireGuardManager {
+	var coordinator *wireGuardBandwidthAccounting
+	if len(accounting) > 0 {
+		coordinator = accounting[0]
+	}
 	return &wireGuardManager{
 		log: log, fetcher: fetcher, reconciler: reconciler,
 		interval: interval, maxStaleness: maxStaleness,
-		health: health, metrics: metrics,
+		health: health, metrics: metrics, accounting: coordinator,
 	}
 }
 
@@ -159,11 +165,49 @@ func (m *wireGuardManager) cycle(ctx context.Context) {
 	now := time.Now()
 	if err == nil {
 		desired := desiredStateFromResponse(state)
+		var bindings []wgnet.PrefixBinding
+		skipApply := false
+		if m.accounting != nil {
+			bindings, skipApply, err = m.accounting.prepare(state)
+			if err != nil {
+				m.log.Warn("synchronize WireGuard bandwidth accounting failed")
+				m.health.wgState.Store(wgUnavailable)
+				m.failClosedIfStale(now, "WireGuard bandwidth accounting failures")
+				return
+			}
+			if skipApply && m.failedClosed {
+				skipApply = false
+			}
+		}
+		if skipApply {
+			if err := m.accounting.appliedState(bindings, state.Revision); err != nil {
+				m.log.Warn("install WireGuard bandwidth accounting failed")
+				m.health.wgState.Store(wgUnavailable)
+				m.failClosed("WireGuard bandwidth accounting install failure")
+				return
+			}
+			m.lastSuccess = now
+			m.failedClosed = false
+			m.health.wgState.Store(wgHealthy)
+			return
+		}
 		if applyErr := m.reconciler.Apply(desired); applyErr != nil {
 			m.log.Warn("apply WireGuard desired state failed")
 			m.health.wgState.Store(wgUnavailable)
-			m.failClosedIfStale(now, "desired-state apply failures")
+			if m.accounting != nil && m.accounting.applied && !m.accounting.present && !samePrefixBindings(m.accounting.bindings, bindings) {
+				m.failClosed("desired-state apply failed after accounting removal")
+			} else {
+				m.failClosedIfStale(now, "desired-state apply failures")
+			}
 			return
+		}
+		if m.accounting != nil {
+			if err := m.accounting.appliedState(bindings, state.Revision); err != nil {
+				m.log.Warn("install WireGuard bandwidth accounting failed")
+				m.health.wgState.Store(wgUnavailable)
+				m.failClosed("WireGuard bandwidth accounting install failure")
+				return
+			}
 		}
 		m.lastSuccess = now
 		m.failedClosed = false
@@ -173,6 +217,11 @@ func (m *wireGuardManager) cycle(ctx context.Context) {
 		return
 	}
 	m.log.Warn("fetch WireGuard desired state failed")
+	if m.accounting != nil {
+		if collectErr := m.accounting.collect(); collectErr != nil {
+			m.log.Warn("collect WireGuard bandwidth accounting failed")
+		}
+	}
 	m.failClosedIfStale(now, "stale backend state")
 }
 
@@ -186,6 +235,9 @@ func (m *wireGuardManager) failClosedIfStale(now time.Time, reason string) {
 func (m *wireGuardManager) failClosed(reason string) {
 	if m.failedClosed {
 		return
+	}
+	if m.accounting != nil {
+		m.accounting.close()
 	}
 	if failErr := m.reconciler.FailClosed(); failErr != nil {
 		m.log.Error("fail closed WireGuard plane failed")

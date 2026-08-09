@@ -53,6 +53,34 @@ func validateToken(token string) error {
 	return nil
 }
 
+func loadStaticAccountToken(path string) (string, error) {
+	if err := validateStaticConfigPath(path, "token_file"); err != nil {
+		return "", errors.New("invalid account token file")
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("unsafe account token file")
+	}
+	file, err := openStaticConfig(path)
+	if err != nil {
+		return "", errors.New("open account token file")
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || validateAccountTokenOwner(info) != nil {
+		return "", errors.New("unsafe account token file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 8193))
+	if err != nil || len(data) > 8192 {
+		return "", errors.New("invalid account token file")
+	}
+	token := strings.TrimSpace(string(data))
+	if err := validateToken(token); err != nil {
+		return "", errors.New("invalid account token")
+	}
+	return token, nil
+}
+
 func promptAndStoreToken(path string, input *os.File, output io.Writer) (string, error) {
 	if input == nil || !term.IsTerminal(int(input.Fd())) {
 		return "", nil

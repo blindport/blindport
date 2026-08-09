@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"reflect"
@@ -271,15 +272,43 @@ type countingResolver struct {
 	calls int
 }
 
-func (r *countingResolver) Resolve(context.Context, string) (*relayauth.Resolution, error) {
+func (r *countingResolver) Resolve(context.Context, string, *protocol.Claim) (*relayauth.Resolution, error) {
 	r.calls++
 	return nil, errors.New("unexpected resolver call")
 }
 
 type allowedResolver struct{}
 
-func (*allowedResolver) Resolve(context.Context, string) (*relayauth.Resolution, error) {
+func (*allowedResolver) Resolve(context.Context, string, *protocol.Claim) (*relayauth.Resolution, error) {
 	return &relayauth.Resolution{UserID: 42, IPs: []string{"203.0.113.10"}}, nil
+}
+
+type subscriptionChangingResolver struct{}
+
+func (*subscriptionChangingResolver) Resolve(context.Context, string, *protocol.Claim) (*relayauth.Resolution, error) {
+	return &relayauth.Resolution{UserID: 42, IPs: []string{"203.0.113.10"}, SubscriptionID: testSubscriptionTwo}, nil
+}
+
+func TestReauthorizationClosesChangedSubscriptionAttribution(t *testing.T) {
+	raw, peer := net.Pipe()
+	defer peer.Close()
+	tunnelConn := tunnel.New(raw, nil)
+	r := &relay{
+		log: slog.New(slog.NewTextHandler(io.Discard, nil)), resolver: &subscriptionChangingResolver{},
+		metrics:        &relayMetrics{health: newRelayHealth(false, time.Minute, time.Minute)},
+		reauthInterval: 5 * time.Millisecond, reauthMaxStale: time.Second,
+		bandwidth: testBandwidthReporter(),
+	}
+	done := make(chan struct{})
+	go r.watchAuthorization(
+		context.Background(), "token", &protocol.Claim{Kind: protocol.ClaimIP, IP: "203.0.113.10"},
+		nil, nil, testSubscriptionOne, tunnelConn, done,
+	)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("tunnel remained open after subscription attribution changed")
+	}
 }
 
 func TestControlAdmissionIsReleasedAfterHello(t *testing.T) {
@@ -329,9 +358,10 @@ func TestControlAdmissionIsReleasedAfterHello(t *testing.T) {
 func TestTunnelRegistryReplacementAndShutdown(t *testing.T) {
 	health := newRelayHealth(false, time.Minute, time.Minute)
 	r := &relay{
-		metrics:    &relayMetrics{health: health},
-		tunnels:    map[string]*tunnel.Conn{},
-		allTunnels: map[*tunnel.Conn]struct{}{},
+		metrics:             &relayMetrics{health: health},
+		tunnels:             map[string]*tunnel.Conn{},
+		tunnelSubscriptions: map[*tunnel.Conn]string{},
+		allTunnels:          map[*tunnel.Conn]struct{}{},
 	}
 	firstRaw, firstPeer := net.Pipe()
 	secondRaw, secondPeer := net.Pipe()
@@ -343,12 +373,15 @@ func TestTunnelRegistryReplacementAndShutdown(t *testing.T) {
 	second := tunnel.New(secondRaw, nil)
 	third := tunnel.New(thirdRaw, nil)
 
-	r.registerTunnel("ip:203.0.113.10", protocol.ClaimIP, first)
-	r.registerTunnel("ip:203.0.113.10", protocol.ClaimIP, second)
+	r.registerTunnel("ip:203.0.113.10", protocol.ClaimIP, first, bandwidthTestUUID(1))
+	r.registerTunnel("ip:203.0.113.10", protocol.ClaimIP, second, bandwidthTestUUID(2))
 	assertPeerClosed(t, firstPeer)
 	r.unregisterTunnel("ip:203.0.113.10", protocol.ClaimIP, first)
 	if got := r.getTunnel("ip:203.0.113.10"); got != second {
 		t.Fatalf("replacement tunnel = %p, want %p", got, second)
+	}
+	if got, subscriptionID := r.getTunnelSubscription("ip:203.0.113.10"); got != second || subscriptionID != bandwidthTestUUID(2) {
+		t.Fatalf("replacement binding = %p/%q", got, subscriptionID)
 	}
 
 	r.registerTunnel("domain:alice.example", protocol.ClaimRelay, third)
@@ -450,6 +483,83 @@ func TestPortClaimKeyAndAuthorization(t *testing.T) {
 	claim.Transport = protocol.TransportUDP
 	if claimAllowed(resolution, claim) {
 		t.Fatal("claimAllowed() accepted a different transport")
+	}
+}
+
+func TestRelayClaimScopeKeysAuthorizationAndSNILookup(t *testing.T) {
+	health := newRelayHealth(false, time.Minute, time.Minute)
+	r := &relay{
+		metrics:    &relayMetrics{health: health},
+		tunnels:    map[string]*tunnel.Conn{},
+		allTunnels: map[*tunnel.Conn]struct{}{},
+		sniEnabled: true,
+	}
+	exactRaw, exactPeer := net.Pipe()
+	wildcardRaw, wildcardPeer := net.Pipe()
+	longerRaw, longerPeer := net.Pipe()
+	defer exactPeer.Close()
+	defer wildcardPeer.Close()
+	defer longerPeer.Close()
+	exact := tunnel.New(exactRaw, nil)
+	wildcard := tunnel.New(wildcardRaw, nil)
+	longer := tunnel.New(longerRaw, nil)
+	exactClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "api.public.example"}
+	wildcardClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	longerClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "api.public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	r.registerTunnel(claimKey(exactClaim), exactClaim.Kind, exact)
+	r.registerTunnel(claimKey(wildcardClaim), wildcardClaim.Kind, wildcard)
+	r.registerTunnel(claimKey(longerClaim), longerClaim.Kind, longer)
+	defer r.unregisterTunnel(claimKey(exactClaim), exactClaim.Kind, exact)
+	defer r.unregisterTunnel(claimKey(wildcardClaim), wildcardClaim.Kind, wildcard)
+	defer r.unregisterTunnel(claimKey(longerClaim), longerClaim.Kind, longer)
+
+	if got, want := claimKey(exactClaim), "domain:api.public.example"; got != want {
+		t.Fatalf("exact claim key = %q, want %q", got, want)
+	}
+	if got, want := claimKey(wildcardClaim), "domain:wildcard:public.example"; got != want {
+		t.Fatalf("wildcard claim key = %q, want %q", got, want)
+	}
+	for _, test := range []struct {
+		hostname string
+		wantKey  string
+		wantOK   bool
+	}{
+		{hostname: "api.public.example", wantKey: claimKey(exactClaim), wantOK: true},
+		{hostname: "v1.api.public.example", wantKey: claimKey(longerClaim), wantOK: true},
+		{hostname: "public.example"},
+		{hostname: "badpublic.example"},
+	} {
+		key, ok := r.relayTunnelKey(test.hostname)
+		if key != test.wantKey || ok != test.wantOK {
+			t.Fatalf("relayTunnelKey(%q) = %q, %t; want %q, %t", test.hostname, key, ok, test.wantKey, test.wantOK)
+		}
+	}
+
+	resolution := &relayauth.Resolution{
+		RelayDomains: []string{"legacy.example"},
+		RelayClaims: []relayauth.AuthorizedRelayClaim{
+			{Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard},
+		},
+	}
+	if !claimAllowed(resolution, &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "legacy.example"}) {
+		t.Fatal("legacy exact authorization was rejected")
+	}
+	if claimAllowed(resolution, &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "legacy.example", Scope: protocol.RelayHostnameScopeWildcard}) {
+		t.Fatal("legacy exact authorization authorized a wildcard claim")
+	}
+	if !claimAllowed(resolution, wildcardClaim) {
+		t.Fatal("scope-aware wildcard authorization was rejected")
+	}
+	if claimAllowed(resolution, &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example"}) {
+		t.Fatal("wildcard authorization authorized an exact claim")
+	}
+	if r.servesClaim(wildcardClaim) != true {
+		t.Fatal("SNI-enabled relay rejected wildcard claim")
+	}
+	r.sniEnabled = false
+	r.challengeEnabled = true
+	if r.servesClaim(wildcardClaim) {
+		t.Fatal("HTTP-only relay accepted wildcard claim")
 	}
 }
 

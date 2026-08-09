@@ -63,3 +63,14 @@ type AgentConfig struct {
 
 // ConfigureAgent is unavailable outside Linux.
 func ConfigureAgent(AgentConfig) error { return ErrUnsupportedPlatform }
+
+// GatewayConfig mirrors the Linux all-traffic gateway configuration.
+type GatewayConfig struct {
+	AgentConfig
+	TCPPorts  []PortRange
+	UDPPorts  []PortRange
+	AllowICMP bool
+}
+
+// ConfigureGatewayAgent is unavailable outside Linux.
+func ConfigureGatewayAgent(GatewayConfig) error { return ErrUnsupportedPlatform }

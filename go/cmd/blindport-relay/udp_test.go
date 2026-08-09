@@ -5,11 +5,13 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
+	"github.com/blindport/blindport/internal/relayauth"
 	"github.com/blindport/blindport/internal/tunnel"
 )
 
@@ -29,9 +31,11 @@ func TestUDPPortAssociatesSourcesAndPreservesDatagrams(t *testing.T) {
 	health := newRelayHealth(false, time.Minute, time.Minute)
 	r := &relay{
 		log: slog.Default(), limits: limits, metrics: &relayMetrics{health: health},
-		udpAssociationIdle: 500 * time.Millisecond,
-		tunnels:            make(map[string]*tunnel.Conn),
-		allTunnels:         make(map[*tunnel.Conn]struct{}),
+		udpAssociationIdle:  500 * time.Millisecond,
+		tunnels:             make(map[string]*tunnel.Conn),
+		tunnelSubscriptions: make(map[*tunnel.Conn]string),
+		allTunnels:          make(map[*tunnel.Conn]struct{}),
+		bandwidth:           testBandwidthReporter(),
 	}
 	relayRaw, agentRaw := net.Pipe()
 	relayTunnel := tunnel.New(relayRaw, nil)
@@ -52,7 +56,7 @@ func TestUDPPortAssociatesSourcesAndPreservesDatagrams(t *testing.T) {
 	go func() { _ = relayTunnel.Run() }()
 	go func() { _ = agentTunnel.Run() }()
 	key := "port:udp:" + net.JoinHostPort(udpAddr.IP.String(), strconv.Itoa(udpAddr.Port))
-	r.registerTunnel(key, protocol.ClaimPort, relayTunnel)
+	r.registerTunnel(key, protocol.ClaimPort, relayTunnel, testSubscriptionOne)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	serveDone := make(chan struct{})
@@ -101,6 +105,15 @@ func TestUDPPortAssociatesSourcesAndPreservesDatagrams(t *testing.T) {
 	}
 	if got := r.metrics.udp.associations.total.Load(); got != 2 {
 		t.Fatalf("UDP association total = %d, want 2", got)
+	}
+	wantBandwidth := []relayauth.DailyBandwidthReport{{
+		SubscriptionID: testSubscriptionOne,
+		Day:            "2026-08-09",
+		IngressBytes:   protocol.MaxDatagramPayloadSize,
+		EgressBytes:    protocol.MaxDatagramPayloadSize,
+	}}
+	if got := r.bandwidth.acc.snapshot(); !reflect.DeepEqual(got, wantBandwidth) {
+		t.Fatalf("UDP bandwidth = %+v", got)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for r.metrics.udp.associations.active.Load() != 0 && time.Now().Before(deadline) {

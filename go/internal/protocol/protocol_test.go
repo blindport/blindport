@@ -84,6 +84,11 @@ func TestValidateClaim(t *testing.T) {
 		{name: "port domain", claim: &Claim{Kind: ClaimPort, IP: "203.0.113.20", Port: 10000, Transport: TransportTCP, Domain: "bad.example"}, wantErr: true},
 		{name: "relay uppercase", claim: &Claim{Kind: ClaimRelay, Domain: "Alice.Example"}, wantErr: true},
 		{name: "relay ip", claim: &Claim{Kind: ClaimRelay, Domain: "127.0.0.1"}, wantErr: true},
+		{name: "relay wildcard", claim: &Claim{Kind: ClaimRelay, Domain: "public.example", Scope: RelayHostnameScopeWildcard}},
+		{name: "relay wildcard marker", claim: &Claim{Kind: ClaimRelay, Domain: "*.public.example", Scope: RelayHostnameScopeWildcard}, wantErr: true},
+		{name: "relay unsupported scope", claim: &Claim{Kind: ClaimRelay, Domain: "public.example", Scope: "exact"}, wantErr: true},
+		{name: "ip scope", claim: &Claim{Kind: ClaimIP, IP: "203.0.113.10", Scope: RelayHostnameScopeWildcard}, wantErr: true},
+		{name: "port scope", claim: &Claim{Kind: ClaimPort, IP: "203.0.113.20", Port: 10000, Transport: TransportTCP, Scope: RelayHostnameScopeWildcard}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,6 +97,23 @@ func TestValidateClaim(t *testing.T) {
 				t.Fatalf("ValidateClaim() error = %v, wantErr %t", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRelayClaimScopeJSONCompatibility(t *testing.T) {
+	exact, err := json.Marshal(Claim{Kind: ClaimRelay, Domain: "public.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(exact), `{"kind":"relay","domain":"public.example"}`; got != want {
+		t.Fatalf("exact claim JSON = %s, want %s", got, want)
+	}
+	wildcard, err := json.Marshal(Claim{Kind: ClaimRelay, Domain: "public.example", Scope: RelayHostnameScopeWildcard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(wildcard), `{"kind":"relay","domain":"public.example","scope":"wildcard"}`; got != want {
+		t.Fatalf("wildcard claim JSON = %s, want %s", got, want)
 	}
 }
 

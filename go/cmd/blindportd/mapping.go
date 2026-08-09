@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,9 +17,15 @@ import (
 	"github.com/google/uuid"
 )
 
-const maxConfigSize = 1 << 20
+const (
+	maxConfigSize     = 1 << 20
+	maxStaticAccounts = 16
+)
+
+var errStaticConfigV3RuntimeUnsupported = errors.New("config version 3 multi-account runtime dispatch is not yet supported")
 
 type mapping struct {
+	AccountName           string `json:"-"`
 	SubscriptionID        string `json:"subscription_id"`
 	Upstream              string `json:"upstream"`
 	HTTPChallengeUpstream string `json:"http_challenge_upstream,omitempty"`
@@ -37,7 +44,40 @@ type staticConfig struct {
 	Mappings []mapping `json:"mappings"`
 }
 
+// staticConfigDocument retains account boundaries for the future multi-account runtime.
+type staticConfigDocument struct {
+	Version  int             `json:"version"`
+	Mappings []mapping       `json:"mappings,omitempty"`
+	Accounts []staticAccount `json:"accounts,omitempty"`
+}
+
+type staticAccount struct {
+	Name      string    `json:"name"`
+	TokenFile string    `json:"token_file"`
+	StateDir  string    `json:"state_dir"`
+	Mappings  []mapping `json:"mappings"`
+}
+
+type staticConfigV3 struct {
+	Version  int             `json:"version"`
+	Accounts []staticAccount `json:"accounts"`
+}
+
+func (cfg staticConfigDocument) IsMultiAccount() bool {
+	return cfg.Version == 3
+}
+
+func (cfg staticConfigDocument) Account(name string) (staticAccount, bool) {
+	for _, account := range cfg.Accounts {
+		if account.Name == name {
+			return account, true
+		}
+	}
+	return staticAccount{}, false
+}
+
 type workerPlan struct {
+	AccountName           string
 	SubscriptionID        string
 	RelayAddr             string
 	EdgeID                string
@@ -64,65 +104,179 @@ func loadOwnerOnlyStaticConfig(path string) ([]mapping, error) {
 }
 
 func loadStaticConfigWithPermissions(path string, ownerOnly bool) ([]mapping, error) {
+	cfg, err := loadStaticConfigDocumentWithPermissions(path, ownerOnly)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.IsMultiAccount() {
+		return nil, errStaticConfigV3RuntimeUnsupported
+	}
+	return cfg.Mappings, nil
+}
+
+func loadStaticConfigDocument(path string) (staticConfigDocument, error) {
+	return loadStaticConfigDocumentWithPermissions(path, false)
+}
+
+func loadStaticConfigDocumentWithPermissions(path string, ownerOnly bool) (staticConfigDocument, error) {
 	f, err := openStaticConfig(path)
 	if err != nil {
-		return nil, fmt.Errorf("open config %q: %w", path, err)
+		return staticConfigDocument{}, fmt.Errorf("open config %q: %w", path, err)
 	}
 	defer f.Close()
 	openedInfo, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("inspect opened config %q: %w", path, err)
+		return staticConfigDocument{}, fmt.Errorf("inspect opened config %q: %w", path, err)
 	}
 	if !openedInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("config %q must be a regular file", path)
+		return staticConfigDocument{}, fmt.Errorf("config %q must be a regular file", path)
 	}
 	if openedInfo.Mode().Perm()&0o022 != 0 {
-		return nil, fmt.Errorf("config %q must not be writable by group or others", path)
+		return staticConfigDocument{}, fmt.Errorf("config %q must not be writable by group or others", path)
 	}
 	if ownerOnly && openedInfo.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("config %q must be owner-only (mode 0600 or stricter)", path)
+		return staticConfigDocument{}, fmt.Errorf("config %q must be owner-only (mode 0600 or stricter)", path)
 	}
 	if err := validateStaticConfigOwner(openedInfo); err != nil {
-		return nil, fmt.Errorf("config %q: %w", path, err)
+		return staticConfigDocument{}, fmt.Errorf("config %q: %w", path, err)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigSize+1))
 	if err != nil {
-		return nil, fmt.Errorf("read config %q: %w", path, err)
+		return staticConfigDocument{}, fmt.Errorf("read config %q: %w", path, err)
 	}
 	if len(data) > maxConfigSize {
-		return nil, fmt.Errorf("config %q exceeds %d bytes", path, maxConfigSize)
+		return staticConfigDocument{}, fmt.Errorf("config %q exceeds %d bytes", path, maxConfigSize)
+	}
+	return parseStaticConfigDocument(path, data)
+}
+
+func parseStaticConfigDocument(path string, data []byte) (staticConfigDocument, error) {
+	var version struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &version); err == nil && version.Version == 3 {
+		return parseStaticConfigV3(path, data)
 	}
 
 	var cfg staticConfig
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("decode config %q: %w", path, err)
+		return staticConfigDocument{}, fmt.Errorf("decode config %q: %w", path, err)
 	}
 	if err := rejectTrailingJSON(decoder); err != nil {
-		return nil, fmt.Errorf("decode config %q: %w", path, err)
+		return staticConfigDocument{}, fmt.Errorf("decode config %q: %w", path, err)
 	}
 	if cfg.Version != 1 && cfg.Version != 2 {
-		return nil, fmt.Errorf("config %q has unsupported version %d", path, cfg.Version)
+		return staticConfigDocument{}, fmt.Errorf("config %q has unsupported version %d", path, cfg.Version)
 	}
 	if len(cfg.Mappings) == 0 {
-		return nil, fmt.Errorf("config %q must contain at least one mapping", path)
+		return staticConfigDocument{}, fmt.Errorf("config %q must contain at least one mapping", path)
 	}
 	for i := range cfg.Mappings {
 		cfg.Mappings[i].Source = fmt.Sprintf("config %q mapping %d", path, i)
 		if cfg.Version == 1 {
 			if cfg.Mappings[i].TLSMode != "" || cfg.Mappings[i].ACMETermsAccepted {
-				return nil, fmt.Errorf("%s: TLS settings require config version 2", cfg.Mappings[i].Source)
+				return staticConfigDocument{}, fmt.Errorf("%s: TLS settings require config version 2", cfg.Mappings[i].Source)
 			}
 			cfg.Mappings[i].TLSMode = tlsModePassthrough
 		} else if cfg.Mappings[i].TLSMode == "" {
-			return nil, fmt.Errorf("%s: config version 2 requires an explicit tls_mode", cfg.Mappings[i].Source)
+			return staticConfigDocument{}, fmt.Errorf("%s: config version 2 requires an explicit tls_mode", cfg.Mappings[i].Source)
 		}
 	}
 	if err := validateMappings(cfg.Mappings); err != nil {
-		return nil, err
+		return staticConfigDocument{}, err
 	}
-	return cfg.Mappings, nil
+	return staticConfigDocument{Version: cfg.Version, Mappings: cfg.Mappings}, nil
+}
+
+func parseStaticConfigV3(path string, data []byte) (staticConfigDocument, error) {
+	var cfg staticConfigV3
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
+		return staticConfigDocument{}, fmt.Errorf("decode config %q: %w", path, err)
+	}
+	if err := rejectTrailingJSON(decoder); err != nil {
+		return staticConfigDocument{}, fmt.Errorf("decode config %q: %w", path, err)
+	}
+	if cfg.Version != 3 {
+		return staticConfigDocument{}, fmt.Errorf("config %q has unsupported version %d", path, cfg.Version)
+	}
+	if err := validateStaticAccounts(cfg.Accounts, path); err != nil {
+		return staticConfigDocument{}, err
+	}
+	return staticConfigDocument{Version: cfg.Version, Accounts: cfg.Accounts}, nil
+}
+
+var staticAccountName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,31}$`)
+
+func validateStaticAccounts(accounts []staticAccount, path string) error {
+	if len(accounts) == 0 || len(accounts) > maxStaticAccounts {
+		return fmt.Errorf("config %q must contain between 1 and %d accounts", path, maxStaticAccounts)
+	}
+	seenNames := make(map[string]struct{}, len(accounts))
+	seenTokenFiles := make(map[string]string, len(accounts))
+	seenStateDirs := make(map[string]string, len(accounts))
+	allMappings := make([]mapping, 0)
+	for i := range accounts {
+		account := &accounts[i]
+		if !staticAccountName.MatchString(account.Name) {
+			return fmt.Errorf("config %q account %d: name must be a lowercase stable ID", path, i)
+		}
+		if _, exists := seenNames[account.Name]; exists {
+			return fmt.Errorf("config %q has duplicate account name %q", path, account.Name)
+		}
+		seenNames[account.Name] = struct{}{}
+		if err := validateStaticConfigPath(account.TokenFile, "token_file"); err != nil {
+			return fmt.Errorf("config %q account %q: %w", path, account.Name, err)
+		}
+		if previous, exists := seenTokenFiles[account.TokenFile]; exists {
+			return fmt.Errorf("config %q accounts %q and %q share token_file %q", path, previous, account.Name, account.TokenFile)
+		}
+		seenTokenFiles[account.TokenFile] = account.Name
+		if err := validateStaticConfigPath(account.StateDir, "state_dir"); err != nil {
+			return fmt.Errorf("config %q account %q: %w", path, account.Name, err)
+		}
+		if previous, exists := seenStateDirs[account.StateDir]; exists {
+			return fmt.Errorf("config %q accounts %q and %q share state_dir %q", path, previous, account.Name, account.StateDir)
+		}
+		for existingDir, existingName := range seenStateDirs {
+			if pathsOverlap(account.StateDir, existingDir) {
+				return fmt.Errorf("config %q accounts %q and %q have overlapping state_dir paths", path, existingName, account.Name)
+			}
+		}
+		seenStateDirs[account.StateDir] = account.Name
+		for mappingIndex := range account.Mappings {
+			account.Mappings[mappingIndex].AccountName = account.Name
+			account.Mappings[mappingIndex].Source = fmt.Sprintf("config %q account %q mapping %d", path, account.Name, mappingIndex)
+		}
+		allMappings = append(allMappings, account.Mappings...)
+	}
+	return validateMappings(allMappings)
+}
+
+func validateStaticAccountRuntimeMappings(accounts []staticAccount, dockerEnabled bool) error {
+	if dockerEnabled {
+		return nil
+	}
+	for _, account := range accounts {
+		if len(account.Mappings) == 0 {
+			return fmt.Errorf("account %q must contain at least one mapping when Docker discovery is disabled", account.Name)
+		}
+	}
+	return nil
+}
+
+func validateStaticConfigPath(path, field string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return fmt.Errorf("%s must be an absolute, clean, non-root path", field)
+	}
+	return nil
+}
+
+func pathsOverlap(first, second string) bool {
+	return first == second || strings.HasPrefix(first, second+string(filepath.Separator)) || strings.HasPrefix(second, first+string(filepath.Separator))
 }
 
 func rejectTrailingJSON(decoder *json.Decoder) error {
@@ -299,6 +453,7 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 				return nil, fmt.Errorf("subscription %s has invalid edge claim: %w", item.SubscriptionID, err)
 			}
 			plans = append(plans, workerPlan{
+				AccountName:           item.AccountName,
 				SubscriptionID:        item.SubscriptionID,
 				RelayAddr:             assignment.RelayEndpoint,
 				Upstream:              item.Upstream,

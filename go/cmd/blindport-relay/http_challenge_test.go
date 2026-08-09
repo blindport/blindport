@@ -4,15 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
+	"github.com/blindport/blindport/internal/relayauth"
 	"github.com/blindport/blindport/internal/tunnel"
 )
 
@@ -100,7 +103,8 @@ func TestHTTPChallengeListenerRoutesOnlyPort80AndCloses(t *testing.T) {
 	health := newRelayHealth(false, time.Minute, time.Minute)
 	r := &relay{
 		log: slog.Default(), limits: limits, metrics: &relayMetrics{health: health},
-		tunnels: make(map[string]*tunnel.Conn), allTunnels: make(map[*tunnel.Conn]struct{}),
+		tunnels: make(map[string]*tunnel.Conn), tunnelSubscriptions: make(map[*tunnel.Conn]string),
+		allTunnels: make(map[*tunnel.Conn]struct{}), bandwidth: testBandwidthReporter(),
 	}
 	relayRaw, agentRaw := net.Pipe()
 	relayTunnel := tunnel.New(relayRaw, nil)
@@ -120,7 +124,7 @@ func TestHTTPChallengeListenerRoutesOnlyPort80AndCloses(t *testing.T) {
 	})
 	go func() { _ = relayTunnel.Run() }()
 	go func() { _ = agentTunnel.Run() }()
-	r.registerTunnel("domain:example.com", protocol.ClaimRelay, relayTunnel)
+	r.registerTunnel("domain:example.com", protocol.ClaimRelay, relayTunnel, testSubscriptionOne)
 	defer r.unregisterTunnel("domain:example.com", protocol.ClaimRelay, relayTunnel)
 	defer agentTunnel.Close()
 
@@ -174,7 +178,32 @@ func TestHTTPChallengeListenerRoutesOnlyPort80AndCloses(t *testing.T) {
 	if r.metrics.challenge[challengeSuccess].Load() != 1 || r.metrics.streams[claimKindIndex(protocol.ClaimRelay)].total.Load() != 1 {
 		t.Fatal("successful challenge metrics were not recorded")
 	}
+	reports := r.bandwidth.acc.snapshot()
+	if len(reports) != 1 || reports[0].SubscriptionID != testSubscriptionOne || reports[0].Day != "2026-08-09" || reports[0].IngressBytes <= 0 || reports[0].EgressBytes <= 0 {
+		t.Fatalf("HTTP-01 bandwidth = %+v", reports)
+	}
 }
+
+func TestBandwidthCountingWriterCountsSuccessfulPartialWrite(t *testing.T) {
+	wantErr := errors.New("partial write")
+	reporter := testBandwidthReporter()
+	writer := bandwidthCountingWriter{
+		Writer: partialHTTPWriter{err: wantErr}, subscriptionID: testSubscriptionOne,
+		direction: bandwidthIngress, reporter: reporter,
+	}
+	n, err := writer.Write([]byte("proof"))
+	if n != 2 || !errors.Is(err, wantErr) {
+		t.Fatalf("write = %d/%v", n, err)
+	}
+	want := []relayauth.DailyBandwidthReport{{SubscriptionID: testSubscriptionOne, Day: "2026-08-09", IngressBytes: 2}}
+	if got := reporter.acc.snapshot(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("bandwidth = %+v", got)
+	}
+}
+
+type partialHTTPWriter struct{ err error }
+
+func (w partialHTTPWriter) Write([]byte) (int, error) { return 2, w.err }
 
 func TestHTTPChallengeNoTunnelDoesNotOpenGeneralProxy(t *testing.T) {
 	r := newChallengeTestRelay(t, 10, 2)
@@ -185,6 +214,34 @@ func TestHTTPChallengeNoTunnelDoesNotOpenGeneralProxy(t *testing.T) {
 		close(done)
 	}()
 	_, _ = io.WriteString(client, "GET "+challengePathPrefix+"token HTTP/1.1\r\nHost: absent.example\r\n\r\n")
+	response, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	_ = client.Close()
+	<-done
+	if response.StatusCode != http.StatusNotFound || r.metrics.challenge[challengeNoTunnel].Load() != 1 {
+		t.Fatalf("response/metric = %d/%d", response.StatusCode, r.metrics.challenge[challengeNoTunnel].Load())
+	}
+}
+
+func TestHTTPChallengeDoesNotRouteWildcardClaims(t *testing.T) {
+	r := newChallengeTestRelay(t, 10, 2)
+	wildcardRaw, wildcardPeer := net.Pipe()
+	defer wildcardPeer.Close()
+	wildcard := tunnel.New(wildcardRaw, nil)
+	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	r.registerTunnel(claimKey(claim), claim.Kind, wildcard)
+	defer r.unregisterTunnel(claimKey(claim), claim.Kind, wildcard)
+
+	client, server := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		r.handleHTTPChallengeConn(&challengeAddrConn{Conn: server})
+		close(done)
+	}()
+	_, _ = io.WriteString(client, "GET "+challengePathPrefix+"token HTTP/1.1\r\nHost: a.public.example\r\n\r\n")
 	response, err := http.ReadResponse(bufio.NewReader(client), nil)
 	if err != nil {
 		t.Fatal(err)

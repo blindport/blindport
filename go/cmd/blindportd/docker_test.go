@@ -16,15 +16,63 @@ type fakeDockerClient struct {
 	err        error
 	options    client.ContainerListOptions
 	wait       bool
+	calls      int
 }
 
 func (f *fakeDockerClient) ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+	f.calls++
 	f.options = options
 	if f.wait {
 		<-ctx.Done()
 		return client.ContainerListResult{}, ctx.Err()
 	}
 	return client.ContainerListResult{Items: f.containers}, f.err
+}
+
+func TestSharedDockerDiscoveryCachesImmutableGloballyValidatedSnapshot(t *testing.T) {
+	fake := &fakeDockerClient{containers: []containertypes.Summary{
+		{ID: "public", Labels: accountOrderLabels("public", "web", "public:443")},
+		{ID: "private", Labels: accountOrderLabels("private", "api", "private:443")},
+	}}
+	accounts := []staticAccount{
+		{Name: "public", Mappings: []mapping{{AccountName: "public", SubscriptionID: testSubscriptionID1, Upstream: "static:80", Source: "public static"}}},
+		{Name: "private"},
+	}
+	now := time.Unix(1_700_000_000, 0)
+	discovery, err := newSharedDockerDiscovery(fake, accounts, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery.now = func() time.Time { return now }
+	first, err := discovery.discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first[0].Upstream = "mutated:443"
+	second, err := discovery.discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 1 || len(second) != 2 || second[0].Upstream == "mutated:443" {
+		t.Fatalf("cached snapshot/calls = %+v/%d", second, fake.calls)
+	}
+	now = now.Add(time.Second)
+	if _, err := discovery.discover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 2 {
+		t.Fatalf("refresh calls = %d", fake.calls)
+	}
+
+	fake.containers = []containertypes.Summary{{ID: "private", Labels: map[string]string{
+		dockerMappingPrefix + "existing.account":      "private",
+		dockerMappingPrefix + "existing.subscription": testSubscriptionID1,
+		dockerMappingPrefix + "existing.upstream":     "private:80",
+	}}}
+	now = now.Add(time.Second)
+	if _, err := discovery.discover(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate subscription_id") {
+		t.Fatalf("cross-account duplicate error = %v", err)
+	}
 }
 
 func TestValidateDockerHostAllowsOnlyAbsoluteLocalUnixSockets(t *testing.T) {
@@ -129,6 +177,54 @@ func TestParseDockerOrderLabelsDefaultsAndFields(t *testing.T) {
 	ip := byKey["framed-address"]
 	if ip.Product != "ip" || ip.Transport != "tcp" || ip.BillingTerm != "monthly" {
 		t.Fatalf("IP declaration = %+v", ip)
+	}
+}
+
+func TestParseDockerLabelsRequiresConfiguredAccountInV3(t *testing.T) {
+	scope, err := newDockerAccountScope([]string{"public", "private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{
+		dockerMappingPrefix + "web.account":  "public",
+		dockerMappingPrefix + "web.product":  "relay",
+		dockerMappingPrefix + "web.domain":   "web.example",
+		dockerMappingPrefix + "web.upstream": "web:443",
+	}
+	mappings, err := parseDockerLabelsWithinScope("container-id", labels, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mappings) != 1 || mappings[0].AccountName != "public" || mappings[0].OrderKey != "web" {
+		t.Fatalf("account mapping = %+v", mappings)
+	}
+	if _, err := parseDockerLabels("container-id", labels); err == nil || !strings.Contains(err.Error(), "config version 3") {
+		t.Fatalf("legacy account label error = %v", err)
+	}
+	delete(labels, dockerMappingPrefix+"web.account")
+	if _, err := parseDockerLabelsWithinScope("container-id", labels, scope); err == nil || !strings.Contains(err.Error(), "requires an account") {
+		t.Fatalf("missing account error = %v", err)
+	}
+	labels[dockerMappingPrefix+"web.account"] = "other"
+	if _, err := parseDockerLabelsWithinScope("container-id", labels, scope); err == nil || !strings.Contains(err.Error(), `unknown account "other"`) {
+		t.Fatalf("unknown account error = %v", err)
+	}
+}
+
+func TestDiscoverDockerMappingsScopesSameOrderKeyByAccount(t *testing.T) {
+	fake := &fakeDockerClient{containers: []containertypes.Summary{
+		{ID: "public", Labels: accountOrderLabels("public", "web", "public:443")},
+		{ID: "private", Labels: accountOrderLabels("private", "web", "private:443")},
+	}}
+	mappings, err := discoverDockerMappingsForAccounts(context.Background(), fake, []string{"public", "private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mappings) != 2 || mappings[0].AccountName != "private" || mappings[1].AccountName != "public" || mappings[0].OrderKey != "web" || mappings[1].OrderKey != "web" {
+		t.Fatalf("account-scoped declarations = %+v", mappings)
+	}
+	if got := dockerMappingsForAccount(mappings, "public"); len(got) != 1 || got[0].Upstream != "public:443" {
+		t.Fatalf("public declarations = %+v", got)
 	}
 }
 
@@ -314,5 +410,14 @@ func dockerLabels(name, subscription, upstream string) map[string]string {
 	return map[string]string{
 		dockerMappingPrefix + name + ".subscription": subscription,
 		dockerMappingPrefix + name + ".upstream":     upstream,
+	}
+}
+
+func accountOrderLabels(account, name, upstream string) map[string]string {
+	return map[string]string{
+		dockerMappingPrefix + name + ".account":  account,
+		dockerMappingPrefix + name + ".product":  "relay",
+		dockerMappingPrefix + name + ".domain":   "web.example",
+		dockerMappingPrefix + name + ".upstream": upstream,
 	}
 }

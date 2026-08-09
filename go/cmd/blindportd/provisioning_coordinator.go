@@ -37,6 +37,16 @@ func newLegacyProvisioningCoordinator(selection legacySelection, upstream, httpC
 }
 
 func (c *provisioningCoordinator) plans(result provisioningResult) ([]workerPlan, error) {
+	if result.V3 != nil {
+		mappings, err := c.planMappingsV3(result.V3)
+		if err != nil {
+			return nil, err
+		}
+		if c.allowMissing {
+			return buildAvailableV3MappingPlans(mappings, result.V3, c.relayOverride)
+		}
+		return buildV3MappingPlans(mappings, result.V3, c.relayOverride)
+	}
 	if result.V2 != nil {
 		mappings, err := c.planMappingsV2(result.V2)
 		if err != nil {
@@ -58,6 +68,41 @@ func (c *provisioningCoordinator) plans(result provisioningResult) ([]workerPlan
 		return buildAvailableMappingPlans(mappings, result.V1, c.relayOverride)
 	}
 	return buildMappingPlans(mappings, result.V1, c.relayOverride)
+}
+
+func (c *provisioningCoordinator) planMappingsV3(config *provisioningV3) ([]mapping, error) {
+	if c.legacy == nil {
+		return c.mappings, nil
+	}
+	if c.legacy.subscriptionID == "" {
+		rows := make([]provisioning, 0, len(config.Subscriptions))
+		for _, subscription := range config.Subscriptions {
+			if subscription.RelayHostnameScope == "wildcard" {
+				continue
+			}
+			if len(subscription.Edges) == 0 {
+				return nil, errors.New("v3 subscription has no edges")
+			}
+			row := provisioning{RelayEndpoint: subscription.Edges[0].Endpoint, Product: subscription.Product, Transport: subscription.Transport, SubscriptionID: subscription.SubscriptionID}
+			if subscription.AssignedIP != nil {
+				row.AssignedIP = *subscription.AssignedIP
+			}
+			if subscription.AssignedPort != nil {
+				row.AssignedPort = *subscription.AssignedPort
+			}
+			if subscription.Domain != nil {
+				row.Domain = *subscription.Domain
+			}
+			rows = append(rows, row)
+		}
+		plans, err := buildLegacyPlans(rows, c.legacy.selection, c.legacy.upstream, c.legacy.httpChallengeUpstream, "")
+		if err != nil || len(plans) == 0 {
+			return nil, errors.New("legacy provisioning selected no exact v3 worker")
+		}
+		c.legacy.subscriptionID = plans[0].SubscriptionID
+		c.legacy.upstream = plans[0].Upstream
+	}
+	return []mapping{{SubscriptionID: c.legacy.subscriptionID, Upstream: c.legacy.upstream, HTTPChallengeUpstream: c.legacy.httpChallengeUpstream, TLSMode: tlsModePassthrough, Source: "legacy flags"}}, nil
 }
 
 func (c *provisioningCoordinator) planMappingsV1(config []provisioning) ([]mapping, error) {

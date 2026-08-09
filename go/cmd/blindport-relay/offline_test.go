@@ -45,7 +45,7 @@ type staticResolver struct {
 	err        error
 }
 
-func (r staticResolver) Resolve(context.Context, string) (*relayauth.Resolution, error) {
+func (r staticResolver) Resolve(context.Context, string, *protocol.Claim) (*relayauth.Resolution, error) {
 	return r.resolution, r.err
 }
 

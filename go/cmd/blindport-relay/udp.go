@@ -17,16 +17,17 @@ const udpAssociationQueueSize = 32
 const udpAssociationQueueByteSize = udpAssociationQueueSize * protocol.MaxDataPayloadSize
 
 type udpAssociation struct {
-	forwarder *udpForwarder
-	key       string
-	source    net.Addr
-	tunnel    *tunnel.Conn
-	queue     chan []byte
-	queued    atomic.Int64
-	done      chan struct{}
-	release   func()
-	stream    *tunnel.Stream
-	once      sync.Once
+	forwarder      *udpForwarder
+	key            string
+	source         net.Addr
+	tunnel         *tunnel.Conn
+	subscriptionID string
+	queue          chan []byte
+	queued         atomic.Int64
+	done           chan struct{}
+	release        func()
+	stream         *tunnel.Stream
+	once           sync.Once
 }
 
 type udpForwarder struct {
@@ -113,7 +114,7 @@ func (a *udpAssociation) enqueue(payload []byte) bool {
 }
 
 func (f *udpForwarder) createAssociation(key string, source net.Addr) *udpAssociation {
-	t := f.relay.getTunnel(f.claimKey)
+	t, subscriptionID := f.relay.getTunnelSubscription(f.claimKey)
 	if t == nil {
 		return nil
 	}
@@ -123,7 +124,7 @@ func (f *udpForwarder) createAssociation(key string, source net.Addr) *udpAssoci
 		return nil
 	}
 	association := &udpAssociation{
-		forwarder: f, key: key, source: source, tunnel: t,
+		forwarder: f, key: key, source: source, tunnel: t, subscriptionID: subscriptionID,
 		queue: make(chan []byte, udpAssociationQueueSize), done: make(chan struct{}), release: release,
 	}
 	f.mu.Lock()
@@ -198,6 +199,9 @@ func (a *udpAssociation) run() {
 			}
 			a.forwarder.relay.metrics.udp.datagrams[0].Add(1)
 			a.forwarder.relay.metrics.bytes[index][0].Add(uint64(len(packet)))
+			if a.forwarder.relay.bandwidth != nil {
+				a.forwarder.relay.bandwidth.add(a.subscriptionID, bandwidthIngress, len(packet))
+			}
 			resetIdle()
 		case packet := <-responses:
 			n, err := a.forwarder.packetConn.WriteTo(packet, a.source)
@@ -206,6 +210,9 @@ func (a *udpAssociation) run() {
 			}
 			a.forwarder.relay.metrics.udp.datagrams[1].Add(1)
 			a.forwarder.relay.metrics.bytes[index][1].Add(uint64(n))
+			if a.forwarder.relay.bandwidth != nil {
+				a.forwarder.relay.bandwidth.add(a.subscriptionID, bandwidthEgress, n)
+			}
 			resetIdle()
 		case <-readDone:
 			return

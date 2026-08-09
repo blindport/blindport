@@ -47,6 +47,22 @@ func TestLegacyProvisioningCoordinatorSelectsV2AndFreezesSubscription(t *testing
 	}
 }
 
+func TestLegacyProvisioningCoordinatorSelectsExactV3Subscription(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	instance := "11111111-2222-4333-8444-555555555555"
+	domain := "site.example"
+	v2Edge := testV2Edge(now, "edge-a", "edge.example:5443", provisioningV2Claim{Kind: protocol.ClaimRelay, Domain: domain}, testSubscriptionID1, instance, 7)
+	v3 := provisioningV3{Version: 3, Subscriptions: []provisioningV3Subscription{{
+		Domain: &domain, Transport: "tcp", Product: string(protocol.ClaimRelay), RelayHostnameScope: "exact", SubscriptionID: testSubscriptionID1,
+		Edges: []provisioningV3Edge{{ID: v2Edge.ID, Endpoint: v2Edge.Endpoint, Claim: provisioningV3Claim{Kind: protocol.ClaimRelay, Domain: domain, Scope: "exact"}, Entitlement: v2Edge.Entitlement, PaidThrough: v2Edge.PaidThrough, GraceThrough: v2Edge.GraceThrough, Generation: v2Edge.Generation}},
+	}}}
+	coordinator := newLegacyProvisioningCoordinator(legacySelection{}, "", "", "")
+	plans, err := coordinator.plans(provisioningResult{V3: &v3, Source: provisioningOnlineV3})
+	if err != nil || len(plans) != 1 || plans[0].EdgeID != "edge-a" || plans[0].Claim.Scope != protocol.RelayHostnameScopeExact {
+		t.Fatalf("v3 plans = %+v, %v", plans, err)
+	}
+}
+
 type planRecorder struct {
 	mu    sync.Mutex
 	calls [][]workerPlan

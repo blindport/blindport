@@ -26,7 +26,7 @@ import (
 )
 
 type tokenResolver interface {
-	Resolve(context.Context, string) (*relayauth.Resolution, error)
+	Resolve(context.Context, string, *protocol.Claim) (*relayauth.Resolution, error)
 }
 
 const (
@@ -36,9 +36,10 @@ const (
 )
 
 type controlAuthorization struct {
-	source       string
-	peerIdentity *clientIdentity
-	offlineProof *offlineAuthorization
+	source         string
+	peerIdentity   *clientIdentity
+	offlineProof   *offlineAuthorization
+	subscriptionID string
 }
 
 // relay is the runtime state of a relay node.
@@ -63,10 +64,12 @@ type relay struct {
 	maxStreamsPerTunnel int
 	udpAssociationIdle  time.Duration
 	offlineEntitlements *offlineEntitlementConfig
+	bandwidth           *bandwidthReporter
 	// tunnels keyed by claim, e.g. "ip:203.0.113.10" or "domain:alice.example.com"
-	mu         sync.RWMutex
-	tunnels    map[string]*tunnel.Conn
-	allTunnels map[*tunnel.Conn]struct{}
+	mu                  sync.RWMutex
+	tunnels             map[string]*tunnel.Conn
+	tunnelSubscriptions map[*tunnel.Conn]string
+	allTunnels          map[*tunnel.Conn]struct{}
 }
 
 func main() {
@@ -113,6 +116,9 @@ func main() {
 	relayEdgeID := flag.String("relay-edge-id", os.Getenv("RELAY_EDGE_ID"), "stable relay edge ID for offline entitlement verification")
 	heartbeatToken := flag.String("heartbeat-token", os.Getenv("BLINDPORT_RELAY_HEARTBEAT_TOKEN"), "relay heartbeat authentication token")
 	heartbeatInterval := flag.Duration("heartbeat-interval", envDurationDefault("BLINDPORT_RELAY_HEARTBEAT_INTERVAL", 30*time.Second), "relay heartbeat reporting interval")
+	bandwidthMetrics := flag.Bool("bandwidth-metrics", envBoolDefault("BLINDPORT_RELAY_BANDWIDTH_METRICS", false), "enable privacy-preserving daily subscription bandwidth accounting")
+	bandwidthInterval := flag.Duration("bandwidth-interval", envDurationDefault("BLINDPORT_RELAY_BANDWIDTH_INTERVAL", time.Minute), "daily bandwidth reporting interval")
+	bandwidthStateFile := flag.String("bandwidth-state-file", os.Getenv("BLINDPORT_RELAY_BANDWIDTH_STATE_FILE"), "owner-only persistent daily bandwidth state file")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -127,6 +133,10 @@ func main() {
 	heartbeatEnabled, err := validateHeartbeatConfig(*relayEdgeID, *heartbeatToken, *heartbeatInterval)
 	if err != nil {
 		logger.Error("invalid heartbeat configuration", "err", err)
+		os.Exit(2)
+	}
+	if *bandwidthMetrics && (!heartbeatEnabled || *bandwidthStateFile == "") {
+		logger.Error("bandwidth metrics require valid relay edge ID, heartbeat token, and state file")
 		os.Exit(2)
 	}
 	offlineEntitlements, err := parseOfflineEntitlementConfig(*offlineEntitlementsEnabled, *offlineEntitlementPublicKeys, *relayEdgeID, *offlineEntitlementMaxGrace)
@@ -191,7 +201,16 @@ func main() {
 		udpAssociationIdle:  *udpAssociationIdle,
 		offlineEntitlements: offlineEntitlements,
 		tunnels:             map[string]*tunnel.Conn{},
+		tunnelSubscriptions: map[*tunnel.Conn]string{},
 		allTunnels:          map[*tunnel.Conn]struct{}{},
+	}
+	if *bandwidthMetrics {
+		reporter, err := newBandwidthReporter(logger, *bandwidthStateFile, *relayEdgeID, *heartbeatToken, *bandwidthInterval, resolver.ReportDailyBandwidth)
+		if err != nil {
+			logger.Error("initialize bandwidth accounting", "err", err)
+			os.Exit(1)
+		}
+		r.bandwidth = reporter
 	}
 
 	var wireguardDone <-chan struct{}
@@ -225,9 +244,18 @@ func main() {
 			os.Exit(1)
 		}
 		health.wgNeeded.Store(true)
+		var accounting *wireGuardBandwidthAccounting
+		if r.bandwidth != nil {
+			nftAccounting, err := wgnet.NewNFTBandwidthAccounting(*wireguardInterface)
+			if err != nil {
+				logger.Error("initialize WireGuard bandwidth accounting")
+				os.Exit(1)
+			}
+			accounting = newWireGuardBandwidthAccounting(logger, r.bandwidth, nftAccounting)
+		}
 		manager := newWireGuardManager(
 			logger, resolver, wgnet.NewReconciler(dataplane),
-			*wireguardInterval, *wireguardMaxStale, health, metrics,
+			*wireguardInterval, *wireguardMaxStale, health, metrics, accounting,
 		)
 		done := make(chan struct{})
 		wireguardDone = done
@@ -304,6 +332,9 @@ func main() {
 		})
 		go reporter.run(ctx)
 	}
+	if r.bandwidth != nil {
+		go r.bandwidth.run(ctx)
+	}
 
 	<-ctx.Done()
 	health.draining.Store(true)
@@ -315,6 +346,13 @@ func main() {
 	r.closeAllTunnels()
 	if !r.handlers.stopAndWait(r.shutdownTimeout) {
 		logger.Warn("relay handler shutdown timed out")
+	}
+	if r.bandwidth != nil {
+		finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := r.bandwidth.flush(finalCtx); err != nil {
+			logger.Warn("final bandwidth report failed")
+		}
+		finalCancel()
 	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
@@ -402,25 +440,36 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		r.writeErr(conn, "claim not served by this relay")
 		return
 	}
-	res, err := r.resolver.Resolve(ctx, hello.Token)
+	res, err := r.resolver.Resolve(ctx, hello.Token, hello.Claim)
 	r.metrics.observeAuth(err)
 	authorization := controlAuthorization{source: authorizationSourceOnline}
 	if err != nil {
-		if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && r.offlineEntitlements != nil && hello.HasCapability(protocol.CapabilityOfflineEntitlementV1) && hello.Entitlement != "" {
+		if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && r.offlineEntitlements != nil && hasOfflineEntitlementCapability(hello, hello.Claim) && hello.Entitlement != "" {
 			identity, identityErr := r.offlineIdentity(conn)
 			var verifyErr error
+			var verifiedSubscription string
 			if identityErr == nil {
-				_, verifyErr = r.verifyOfflineEntitlement(hello.Entitlement, hello.Claim, identity, time.Now())
+				verified, verifiedErr := r.verifyOfflineEntitlement(hello.Entitlement, hello.Claim, identity, time.Now())
+				verifyErr = verifiedErr
+				if verified != nil {
+					verifiedSubscription = verified.Subscription
+				}
 			}
 			if identityErr == nil && verifyErr == nil {
 				authorization = controlAuthorization{
-					source:       authorizationSourceOffline,
-					peerIdentity: &identity,
-					offlineProof: &offlineAuthorization{artifact: hello.Entitlement, identity: identity},
+					source:         authorizationSourceOffline,
+					peerIdentity:   &identity,
+					offlineProof:   &offlineAuthorization{artifact: hello.Entitlement, identity: identity},
+					subscriptionID: verifiedSubscription,
 				}
 			}
 		}
 		if authorization.source == authorizationSourceOffline {
+			if r.bandwidth != nil && !canonicalSubscriptionID(authorization.subscriptionID) {
+				r.metrics.control[controlAuthDenied].Add(1)
+				r.writeErr(conn, "subscription attribution unavailable")
+				return
+			}
 			r.establishControlTunnel(ctx, conn, hello, authorization, handshakeComplete)
 			return
 		}
@@ -433,6 +482,12 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		r.writeErr(conn, "invalid token")
 		return
 	}
+	if r.bandwidth != nil && !canonicalSubscriptionID(res.SubscriptionID) {
+		r.metrics.control[controlAuthDenied].Add(1)
+		r.writeErr(conn, "subscription attribution unavailable")
+		return
+	}
+	authorization.subscriptionID = res.SubscriptionID
 	if r.tlsConfig != nil {
 		tlsConn, ok := conn.(*tls.Conn)
 		if !ok {
@@ -450,16 +505,22 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		}
 		authorization.peerIdentity = &identity
 	}
-	if r.offlineEntitlements != nil && hello.HasCapability(protocol.CapabilityOfflineEntitlementV1) && hello.Entitlement != "" {
+	if r.offlineEntitlements != nil && hasOfflineEntitlementCapability(hello, hello.Claim) && hello.Entitlement != "" {
 		identity, identityErr := r.offlineIdentity(conn)
 		if identityErr != nil {
 			r.metrics.control[controlIdentityDenied].Add(1)
 			r.writeErr(conn, "peer certificate identity does not support offline entitlement")
 			return
 		}
-		if _, verifyErr := r.verifyOfflineEntitlement(hello.Entitlement, hello.Claim, identity, time.Now()); verifyErr != nil {
+		verified, verifyErr := r.verifyOfflineEntitlement(hello.Entitlement, hello.Claim, identity, time.Now())
+		if verifyErr != nil {
 			r.metrics.control[controlIdentityDenied].Add(1)
 			r.writeErr(conn, "offline entitlement is invalid")
+			return
+		}
+		if r.bandwidth != nil && (verified == nil || verified.Subscription != authorization.subscriptionID) {
+			r.metrics.control[controlIdentityDenied].Add(1)
+			r.writeErr(conn, "subscription attribution does not match entitlement")
 			return
 		}
 		authorization.source = authorizationSourceOnlineWithOfflineProof
@@ -485,7 +546,11 @@ func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello
 		reply.Capabilities = append(reply.Capabilities, protocol.CapabilityStreamFlowControl)
 	}
 	if authorization.offlineProof != nil {
-		reply.Capabilities = append(reply.Capabilities, protocol.CapabilityOfflineEntitlementV1)
+		if hello.Claim.Scope == protocol.RelayHostnameScopeWildcard {
+			reply.Capabilities = append(reply.Capabilities, protocol.CapabilityOfflineEntitlementV2)
+		} else {
+			reply.Capabilities = append(reply.Capabilities, protocol.CapabilityOfflineEntitlementV1)
+		}
 	}
 	if err := protocol.WriteFrame(conn, reply); err != nil {
 		r.metrics.control[controlWriteError].Add(1)
@@ -506,7 +571,7 @@ func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello
 	}
 	handshakeComplete()
 	key := claimKey(hello.Claim)
-	r.registerTunnel(key, hello.Claim.Kind, t)
+	r.registerTunnel(key, hello.Claim.Kind, t, authorization.subscriptionID)
 	defer r.unregisterTunnel(key, hello.Claim.Kind, t)
 	r.metrics.control[controlAccepted].Add(1)
 	if authorization.source == authorizationSourceOnlineWithOfflineProof {
@@ -518,12 +583,19 @@ func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello
 	r.log.Info("client connected", "claim_kind", hello.Claim.Kind, "authorization_source", authorization.source)
 	sessionCtx, cancel := context.WithCancel(ctx)
 	reauthDone := make(chan struct{})
-	go r.watchAuthorization(sessionCtx, hello.Token, hello.Claim, authorization.peerIdentity, authorization.offlineProof, t, reauthDone)
+	go r.watchAuthorization(sessionCtx, hello.Token, hello.Claim, authorization.peerIdentity, authorization.offlineProof, authorization.subscriptionID, t, reauthDone)
 	if err := t.Run(); err != nil {
 		r.log.Info("client disconnected", "claim_kind", hello.Claim.Kind)
 	}
 	cancel()
 	<-reauthDone
+}
+
+func hasOfflineEntitlementCapability(hello *protocol.Frame, claim *protocol.Claim) bool {
+	if claim != nil && claim.Scope == protocol.RelayHostnameScopeWildcard {
+		return hello.HasCapability(protocol.CapabilityOfflineEntitlementV2)
+	}
+	return hello.HasCapability(protocol.CapabilityOfflineEntitlementV1)
 }
 
 func (r *relay) writeErr(conn net.Conn, msg string) {
@@ -539,10 +611,16 @@ func (r *relay) offlineIdentity(conn net.Conn) (clientIdentity, error) {
 	return offlineCertificateIdentity(tlsConn.ConnectionState())
 }
 
-func (r *relay) registerTunnel(key string, kind protocol.ClaimKind, t *tunnel.Conn) {
+func (r *relay) registerTunnel(key string, kind protocol.ClaimKind, t *tunnel.Conn, subscriptionID ...string) {
 	r.mu.Lock()
 	old := r.tunnels[key]
 	r.tunnels[key] = t
+	if len(subscriptionID) != 0 {
+		if r.tunnelSubscriptions == nil {
+			r.tunnelSubscriptions = make(map[*tunnel.Conn]string)
+		}
+		r.tunnelSubscriptions[t] = subscriptionID[0]
+	}
 	r.allTunnels[t] = struct{}{}
 	r.mu.Unlock()
 	index := claimKindIndex(kind)
@@ -560,6 +638,7 @@ func (r *relay) unregisterTunnel(key string, kind protocol.ClaimKind, t *tunnel.
 	}
 	if _, ok := r.allTunnels[t]; ok {
 		delete(r.allTunnels, t)
+		delete(r.tunnelSubscriptions, t)
 		r.metrics.tunnels[claimKindIndex(kind)].active.Add(-1)
 	}
 	r.mu.Unlock()
@@ -569,6 +648,13 @@ func (r *relay) getTunnel(key string) *tunnel.Conn {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.tunnels[key]
+}
+
+func (r *relay) getTunnelSubscription(key string) (*tunnel.Conn, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t := r.tunnels[key]
+	return t, r.tunnelSubscriptions[t]
 }
 
 func (r *relay) closeAllTunnels() {
@@ -609,6 +695,9 @@ func (r *relay) servesClaim(claim *protocol.Claim) bool {
 			}
 		}
 	case protocol.ClaimRelay:
+		if claim.Scope == protocol.RelayHostnameScopeWildcard {
+			return r.sniEnabled
+		}
 		return r.sniEnabled || r.challengeEnabled
 	}
 	return false
@@ -621,6 +710,9 @@ func claimKey(c *protocol.Claim) string {
 	case protocol.ClaimPort:
 		return "port:" + string(c.Transport) + ":" + net.JoinHostPort(c.IP, strconv.Itoa(int(c.Port)))
 	case protocol.ClaimRelay:
+		if c.Scope == protocol.RelayHostnameScopeWildcard {
+			return "domain:wildcard:" + strings.ToLower(c.Domain)
+		}
 		return "domain:" + strings.ToLower(c.Domain)
 	}
 	return ""
@@ -641,11 +733,24 @@ func claimAllowed(res *relayauth.Resolution, c *protocol.Claim) bool {
 			}
 		}
 	case protocol.ClaimRelay:
-		want := strings.ToLower(c.Domain)
-		for _, d := range res.RelayDomains {
-			if strings.ToLower(d) == want {
+		return relayClaimAllowed(res, c)
+	}
+	return false
+}
+
+func relayClaimAllowed(res *relayauth.Resolution, claim *protocol.Claim) bool {
+	want := strings.ToLower(claim.Domain)
+	if claim.Scope == protocol.RelayHostnameScopeExact {
+		for _, domain := range res.RelayDomains {
+			if strings.ToLower(domain) == want {
 				return true
 			}
+		}
+	}
+	for _, authorized := range res.RelayClaims {
+		candidate := protocol.Claim{Kind: protocol.ClaimRelay, Domain: authorized.Domain, Scope: authorized.Scope}
+		if protocol.ValidateClaim(&candidate) == nil && candidate.Scope == claim.Scope && candidate.Domain == want {
+			return true
 		}
 	}
 	return false
@@ -780,7 +885,7 @@ func reauthorizationRequiresClose(res *relayauth.Resolution, err error, claim *p
 	return peerIdentity != nil && !peerIdentity.matchesResolution(res)
 }
 
-func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, offlineProof *offlineAuthorization, t *tunnel.Conn, done chan<- struct{}) {
+func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, offlineProof *offlineAuthorization, subscriptionID string, t *tunnel.Conn, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(r.reauthInterval)
 	defer ticker.Stop()
@@ -792,13 +897,17 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 			_ = t.Close()
 			return
 		case <-ticker.C:
-			res, err := r.resolver.Resolve(ctx, token)
+			res, err := r.resolver.Resolve(ctx, token, claim)
 			r.metrics.observeAuth(err)
 			now := time.Now()
 			offlineProofValid := false
+			offlineSubscriptionID := ""
 			if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && offlineProof != nil {
-				_, verifyErr := r.verifyOfflineEntitlement(offlineProof.artifact, claim, offlineProof.identity, now)
+				verified, verifyErr := r.verifyOfflineEntitlement(offlineProof.artifact, claim, offlineProof.identity, now)
 				offlineProofValid = verifyErr == nil
+				if verified != nil {
+					offlineSubscriptionID = verified.Subscription
+				}
 			}
 			if reauthorizationRequiresClose(res, err, claim, peerIdentity, lastAuthorized, now, r.reauthMaxStale, offlineProofValid, offlineProof != nil) {
 				if err != nil {
@@ -808,6 +917,19 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 				}
 				_ = t.Close()
 				return
+			}
+			if r.bandwidth != nil {
+				resolvedSubscriptionID := ""
+				if err == nil && res != nil {
+					resolvedSubscriptionID = res.SubscriptionID
+				} else if offlineProofValid {
+					resolvedSubscriptionID = offlineSubscriptionID
+				}
+				if !canonicalSubscriptionID(resolvedSubscriptionID) || resolvedSubscriptionID != subscriptionID {
+					r.log.Info("tunnel subscription attribution changed")
+					_ = t.Close()
+					return
+				}
 			}
 			if err != nil {
 				if offlineProofValid {
@@ -1150,16 +1272,43 @@ func (r *relay) handleSNIConn(conn net.Conn) {
 		_ = peeked.Close()
 		return
 	}
-	if r.forwardTo(peeked, "domain:"+name, "443") {
+	if r.forwardToRelay(peeked, name, "443") {
 		r.metrics.sni[sniSuccess].Add(1)
 	} else {
 		r.metrics.sni[sniNoTunnel].Add(1)
 	}
 }
 
+// forwardToRelay resolves exact names before wildcard suffixes. Wildcard
+// claims are strict-descendant matches, so the base hostname never matches.
+func (r *relay) forwardToRelay(conn net.Conn, hostname, port string) bool {
+	key, ok := r.relayTunnelKey(hostname)
+	if !ok {
+		_ = conn.Close()
+		return false
+	}
+	return r.forwardTo(conn, key, port)
+}
+
+func (r *relay) relayTunnelKey(hostname string) (string, bool) {
+	hostname = strings.ToLower(hostname)
+	exact := "domain:" + hostname
+	if r.getTunnel(exact) != nil {
+		return exact, true
+	}
+	labels := strings.Split(hostname, ".")
+	for index := 1; index < len(labels); index++ {
+		key := "domain:wildcard:" + strings.Join(labels[index:], ".")
+		if r.getTunnel(key) != nil {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 func (r *relay) forwardTo(conn net.Conn, key, port string) bool {
 	defer conn.Close()
-	t := r.getTunnel(key)
+	t, subscriptionID := r.getTunnelSubscription(key)
 	if t == nil {
 		r.log.Info("no active tunnel for ingress")
 		return false
@@ -1175,7 +1324,18 @@ func (r *relay) forwardTo(conn net.Conn, key, port string) bool {
 	r.metrics.streams[index].active.Add(1)
 	r.metrics.streams[index].total.Add(1)
 	defer r.metrics.streams[index].active.Add(-1)
-	result := tcpproxy.Proxy(conn, stream)
+	result := tcpproxy.ProxyObserved(conn, stream,
+		func(count int) {
+			if r.bandwidth != nil {
+				r.bandwidth.add(subscriptionID, bandwidthIngress, count)
+			}
+		},
+		func(count int) {
+			if r.bandwidth != nil {
+				r.bandwidth.add(subscriptionID, bandwidthEgress, count)
+			}
+		},
+	)
 	r.metrics.bytes[index][0].Add(uint64(result.LeftToRight))
 	r.metrics.bytes[index][1].Add(uint64(result.RightToLeft))
 	return true

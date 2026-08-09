@@ -27,14 +27,21 @@ type fakeWireGuardApplier struct {
 	applied    []*wgnet.DesiredState
 	failClosed int
 	applyErr   error
+	operations *[]string
 }
 
 func (f *fakeWireGuardApplier) Apply(state *wgnet.DesiredState) error {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "apply")
+	}
 	f.applied = append(f.applied, state)
 	return f.applyErr
 }
 
 func (f *fakeWireGuardApplier) FailClosed() error {
+	if f.operations != nil {
+		*f.operations = append(*f.operations, "fail-closed")
+	}
 	f.failClosed++
 	return nil
 }

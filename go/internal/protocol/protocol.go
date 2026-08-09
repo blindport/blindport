@@ -49,6 +49,8 @@ const (
 	CapabilityStreamFlowControl Capability = "stream_flow_control"
 	// CapabilityOfflineEntitlementV1 permits a Hello frame to carry a v1 offline entitlement.
 	CapabilityOfflineEntitlementV1 Capability = "offline_entitlement_v1"
+	// CapabilityOfflineEntitlementV2 permits a Hello frame to carry a scope-bound v2 offline entitlement.
+	CapabilityOfflineEntitlementV2 Capability = "offline_entitlement_v2"
 )
 
 // ClaimKind identifies which product the client is claiming on this tunnel.
@@ -58,6 +60,16 @@ const (
 	ClaimIP    ClaimKind = "ip"
 	ClaimPort  ClaimKind = "port"
 	ClaimRelay ClaimKind = "relay"
+)
+
+// RelayHostnameScope identifies whether a Relay hostname claim applies to one
+// hostname or its strict descendants. The zero value remains exact so legacy
+// Claim JSON remains unchanged.
+type RelayHostnameScope string
+
+const (
+	RelayHostnameScopeExact    RelayHostnameScope = ""
+	RelayHostnameScopeWildcard RelayHostnameScope = "wildcard"
 )
 
 // Transport identifies the L4 transport bound by a claim.
@@ -70,11 +82,12 @@ const (
 
 // Claim describes which resource the client wants to bind to this tunnel.
 type Claim struct {
-	Kind      ClaimKind `json:"kind"`
-	IP        string    `json:"ip,omitempty"`
-	Domain    string    `json:"domain,omitempty"`
-	Port      uint16    `json:"port,omitempty"`
-	Transport Transport `json:"transport,omitempty"`
+	Kind      ClaimKind          `json:"kind"`
+	IP        string             `json:"ip,omitempty"`
+	Domain    string             `json:"domain,omitempty"`
+	Port      uint16             `json:"port,omitempty"`
+	Transport Transport          `json:"transport,omitempty"`
+	Scope     RelayHostnameScope `json:"scope,omitempty"`
 }
 
 var hostnameLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -88,15 +101,15 @@ func ValidateClaim(c *Claim) error {
 	transportOK := c.Transport == "" || c.Transport == TransportTCP
 	switch c.Kind {
 	case ClaimIP:
-		if !validIP || c.Domain != "" || c.Port != 0 || !transportOK {
+		if !validIP || c.Domain != "" || c.Port != 0 || !transportOK || c.Scope != RelayHostnameScopeExact {
 			return errors.New("ip claim requires only an IP and optional tcp transport")
 		}
 	case ClaimPort:
-		if !validIP || c.Domain != "" || c.Port == 0 || (c.Transport != TransportTCP && c.Transport != TransportUDP) {
+		if !validIP || c.Domain != "" || c.Port == 0 || (c.Transport != TransportTCP && c.Transport != TransportUDP) || c.Scope != RelayHostnameScopeExact {
 			return errors.New("port claim requires IP, nonzero port, and tcp or udp transport")
 		}
 	case ClaimRelay:
-		if !validHostname(c.Domain) || c.IP != "" || c.Port != 0 || !transportOK {
+		if !validHostname(c.Domain) || c.IP != "" || c.Port != 0 || !transportOK || (c.Scope != RelayHostnameScopeExact && c.Scope != RelayHostnameScopeWildcard) {
 			return errors.New("relay claim requires only a valid hostname and optional tcp transport")
 		}
 	default:

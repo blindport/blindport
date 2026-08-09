@@ -93,7 +93,7 @@ func (r *relay) handleHTTPChallengeConn(conn net.Conn) {
 		writeHTTPSRedirect(conn, host, req)
 		return
 	}
-	t := r.getTunnel("domain:" + host)
+	t, subscriptionID := r.getTunnelSubscription("domain:" + host)
 	if t == nil {
 		r.metrics.challenge[challengeNoTunnel].Add(1)
 		writeChallengeError(conn, http.StatusNotFound)
@@ -118,7 +118,7 @@ func (r *relay) handleHTTPChallengeConn(conn net.Conn) {
 	req.RequestURI = ""
 	req.URL.Scheme = ""
 	req.URL.Host = ""
-	if err := req.Write(stream); err != nil {
+	if err := req.Write(bandwidthCountingWriter{Writer: stream, subscriptionID: subscriptionID, direction: bandwidthIngress, reporter: r.bandwidth}); err != nil {
 		r.metrics.challenge[challengeUpstreamError].Add(1)
 		writeChallengeError(conn, http.StatusBadGateway)
 		return
@@ -132,11 +132,26 @@ func (r *relay) handleHTTPChallengeConn(conn net.Conn) {
 	}
 	defer resp.Body.Close()
 	_ = conn.SetWriteDeadline(time.Now().Add(challengeWriteTimeout))
-	if err := resp.Write(conn); err != nil {
+	if err := resp.Write(bandwidthCountingWriter{Writer: conn, subscriptionID: subscriptionID, direction: bandwidthEgress, reporter: r.bandwidth}); err != nil {
 		r.metrics.challenge[challengeUpstreamError].Add(1)
 		return
 	}
 	r.metrics.challenge[challengeSuccess].Add(1)
+}
+
+type bandwidthCountingWriter struct {
+	io.Writer
+	subscriptionID string
+	direction      bandwidthDirection
+	reporter       *bandwidthReporter
+}
+
+func (w bandwidthCountingWriter) Write(payload []byte) (int, error) {
+	n, err := w.Writer.Write(payload)
+	if n > 0 && w.reporter != nil {
+		w.reporter.add(w.subscriptionID, w.direction, n)
+	}
+	return n, err
 }
 
 func readChallengeRequest(reader io.Reader) (*http.Request, error) {

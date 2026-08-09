@@ -163,3 +163,22 @@ func TestValidateWireGuardAgentOptionsAcceptsShippedDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateWireGuardGatewayOptions(t *testing.T) {
+	valid := wireGuardAgentOptions{
+		httpClient: http.DefaultClient, routeTable: 51820, rulePriority: 10000, gateway: true,
+		inboundTCP: "25,80,443", inboundUDP: "53,10000-10002", inboundICMP: true,
+	}
+	if err := validateWireGuardAgentOptions(valid); err != nil {
+		t.Fatalf("gateway options rejected: %v", err)
+	}
+	for _, options := range []wireGuardAgentOptions{
+		{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: 10000, inboundTCP: "443"},
+		{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: linuxMainRulePriority - 1, gateway: true},
+		{httpClient: http.DefaultClient, routeTable: 51820, rulePriority: 10000, gateway: true, inboundUDP: "53,53"},
+	} {
+		if err := validateWireGuardAgentOptions(options); err == nil {
+			t.Fatalf("invalid gateway options accepted: %+v", options)
+		}
+	}
+}

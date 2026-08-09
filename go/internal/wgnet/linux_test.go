@@ -124,3 +124,15 @@ func TestOwnedAgentRuleRecognizesTaggedAndLegacyRules(t *testing.T) {
 		t.Fatal("rule for an address absent from the Blindport interface was treated as owned")
 	}
 }
+
+func TestConfigureGatewayAgentRejectsOtherThanOnePrefixBeforeNetworkChanges(t *testing.T) {
+	for _, prefixes := range [][]string{nil, {"198.51.100.20/32", "198.51.100.21/32"}} {
+		err := ConfigureGatewayAgent(GatewayConfig{AgentConfig: AgentConfig{Prefixes: prefixes}})
+		if err == nil || !strings.Contains(err.Error(), "exactly one") {
+			t.Fatalf("ConfigureGatewayAgent(%v) error = %v", prefixes, err)
+		}
+	}
+	if err := ConfigureGatewayAgent(GatewayConfig{AgentConfig: AgentConfig{Prefixes: []string{"198.51.100.0/24"}}}); err == nil {
+		t.Fatal("gateway accepted a non-/32 before network setup")
+	}
+}

@@ -243,7 +243,11 @@ func TestFetchProvisioningReplacesNonemptyCacheWithAuthoritativeEmptyResponse(t 
 	nonempty := testV2Config(now, testSubscriptionID1, instance, 7, []provisioningV2Edge{testV2Edge(now, "edge-a", "edge.example:5443", provisioningV2Claim{Kind: protocol.ClaimPort, IP: "203.0.113.20", Port: 10000, Transport: protocol.TransportTCP}, testSubscriptionID1, instance, 7)})
 	responses := [][]byte{testJSON(t, nonempty), testJSON(t, provisioningV2{Version: 2, Subscriptions: []provisioningSubscription{}})}
 	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v3/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_, _ = w.Write(responses[requests])
 		requests++
 	}))
@@ -285,6 +289,10 @@ func TestFetchProvisioningCoordinatorFallbackMatrix(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/api/v3/") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				if strings.HasPrefix(r.URL.Path, "/api/v1/") {
 					_, _ = io.WriteString(w, `[]`)
 					return
@@ -350,7 +358,11 @@ func TestFetchProvisioningRetriesWhenCredentialGenerationChanges(t *testing.T) {
 	firstStarted := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v3/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		requests++
 		generation := 8
 		if requests == 1 {
@@ -412,7 +424,11 @@ func TestFetchProvisioningRetriesAfterCredentialChangeDuringCacheStore(t *testin
 	directory := privateStateDir(t)
 	credentials := &credentialManager{stateDir: directory, snapshot: &credentialSnapshot{stored: storedCredential{InstanceID: instance, Generation: 7}}}
 	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v3/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		requests++
 		generation := credentials.generation()
 		config := testV2Config(now, testSubscriptionID1, instance, generation, []provisioningV2Edge{testV2Edge(now, "edge-a", "edge.example:5443", provisioningV2Claim{Kind: protocol.ClaimPort, IP: "203.0.113.20", Port: 10000, Transport: protocol.TransportTCP}, testSubscriptionID1, instance, generation)})
@@ -439,7 +455,11 @@ func TestFetchProvisioningFailsAfterSecondCredentialChangeDuringCacheStore(t *te
 	directory := privateStateDir(t)
 	credentials := &credentialManager{stateDir: directory, snapshot: &credentialSnapshot{stored: storedCredential{InstanceID: instance, Generation: 7}}}
 	var requests, stores int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/v3/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		requests++
 		generation := credentials.generation()
 		config := testV2Config(now, testSubscriptionID1, instance, generation, []provisioningV2Edge{testV2Edge(now, "edge-a", "edge.example:5443", provisioningV2Claim{Kind: protocol.ClaimPort, IP: "203.0.113.20", Port: 10000, Transport: protocol.TransportTCP}, testSubscriptionID1, instance, generation)})
