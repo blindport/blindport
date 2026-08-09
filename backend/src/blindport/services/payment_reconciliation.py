@@ -33,7 +33,7 @@ from .payments import check_and_settle_payment, create_payment
 from .reminder_reconciliation import reconcile_reminders_once
 from .subscriptions import (
     reap_expired_domain_claims,
-    uses_unique_cname_target,
+    requires_domain_renewal_verification,
     verify_subscription_domain,
 )
 
@@ -110,7 +110,7 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                 if (
                     subscription.product == ProductType.RELAY
                     and not subscription.domain_is_managed
-                    and uses_unique_cname_target(subscription)
+                    and requires_domain_renewal_verification(subscription)
                 ):
                     verification = verify_subscription_domain(
                         session,

@@ -17,6 +17,7 @@ from ..core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    RelayHostnameScope,
     Subscription,
     SubscriptionStatus,
     Transport,
@@ -37,6 +38,7 @@ class AgentOrderSpec:
     delivery: DeliveryMode
     transport: Transport
     domain: str | None
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ def _compatible(order: AgentOrder, spec: AgentOrderSpec) -> bool:
         and order.delivery == spec.delivery
         and order.transport == spec.transport
         and order.domain == spec.domain
+        and order.relay_hostname_scope == spec.relay_hostname_scope
     )
 
 
@@ -109,6 +112,7 @@ def _get_or_create_order(
             user=user,
             product=spec.product,
             domain=spec.domain,
+            relay_hostname_scope=spec.relay_hostname_scope,
             transport=spec.transport,
             delivery=spec.delivery,
             billing_term=spec.billing_term,
@@ -126,6 +130,7 @@ def _get_or_create_order(
             delivery=spec.delivery,
             transport=spec.transport,
             domain=spec.domain,
+            relay_hostname_scope=spec.relay_hostname_scope,
         )
         session.add(order)
         session.commit()

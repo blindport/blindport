@@ -536,6 +536,8 @@ class Settings(BaseSettings):
     RELAY_SALES_PAUSED: bool = False
     RELAY_MONTHLY_SATS: int = 3000
     RELAY_YEARLY_SATS: int = 30000
+    RELAY_WILDCARD_MONTHLY_SATS: int = 7500
+    RELAY_WILDCARD_YEARLY_SATS: int = 75000
     RELAY_MANAGED_DOMAIN_CAP: int = Field(default=1000, ge=0)
     RELAY_CUSTOMER_DOMAINS_ENABLED: bool = True
 
@@ -660,6 +662,11 @@ class Settings(BaseSettings):
     )
     RELAY_DNS_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0, le=30)
     RELAY_HEARTBEAT_STALE_SECONDS: int = Field(default=90, ge=30, le=3600)
+    BANDWIDTH_METRICS_ENABLED: bool = False
+    BANDWIDTH_RETENTION_DAYS: int = Field(default=400, ge=1, le=3660)
+    BANDWIDTH_INGEST_MAX_AGE_DAYS: int = Field(default=3, ge=0, le=30)
+    BANDWIDTH_CLEANUP_INTERVAL_SECONDS: int = Field(default=3600, ge=60, le=86400)
+    BANDWIDTH_CLEANUP_BATCH_SIZE: int = Field(default=1000, ge=1, le=10000)
     DNS_SUPERVISION_ENABLED: bool = False
     DNS_SUPERVISION_INTERVAL_SECONDS: int = Field(default=60, ge=30, le=3600)
     DNS_SUPERVISION_STALE_SECONDS: int = Field(default=180, ge=30, le=3600)
@@ -1086,7 +1093,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "DNS_SUPERVISION_RESOLVERS requires two to four resolvers when DNS supervision is enabled"
                 )
-        for product in ("IP", "PORT", "RELAY"):
+        for product in ("IP", "PORT", "RELAY", "RELAY_WILDCARD"):
             monthly = getattr(self, f"{product}_MONTHLY_SATS")
             yearly = getattr(self, f"{product}_YEARLY_SATS")
             if yearly != monthly * 10:

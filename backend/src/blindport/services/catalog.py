@@ -6,10 +6,11 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..core.models import DeliveryMode, ProductType, Subscription, Transport
+from ..core.models import DeliveryMode, ProductType, RelayHostnameScope, Subscription, Transport
 from ..core.schemas import (
     CatalogCapacityResponse,
     CatalogProductResponse,
+    CatalogRelayScopeResponse,
     CatalogResponse,
 )
 
@@ -159,6 +160,22 @@ def get_catalog(session: Session) -> CatalogResponse:
         ),
         relay_pool_available and (managed_sale_available or customer_available),
     )
+    relay.relay_scopes = {
+        RelayHostnameScope.EXACT: CatalogRelayScopeResponse(
+            monthly_price_sats=settings.RELAY_MONTHLY_SATS,
+            yearly_price_sats=settings.RELAY_YEARLY_SATS,
+            available=relay.available,
+            tls_passthrough_only=False,
+        ),
+        RelayHostnameScope.WILDCARD: CatalogRelayScopeResponse(
+            monthly_price_sats=settings.RELAY_WILDCARD_MONTHLY_SATS,
+            yearly_price_sats=settings.RELAY_WILDCARD_YEARLY_SATS,
+            available=settings.RELAY_ENABLED
+            and not settings.RELAY_SALES_PAUSED
+            and customer_available,
+            tls_passthrough_only=True,
+        ),
+    }
     return CatalogResponse(
         products=[ip, port, relay],
         managed_suffixes=settings.relay_managed_suffixes_list,
@@ -173,6 +190,7 @@ def require_product_available(
     delivery: DeliveryMode,
     transport: Transport,
     domain_is_managed: bool,
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT,
 ) -> None:
     entry = next(item for item in get_catalog(session).products if item.product == product)
     if not entry.enabled:
@@ -199,3 +217,8 @@ def require_product_available(
         raise ProductUnavailableError(
             "customer-domain Blindport Relay subscriptions are unavailable"
         )
+    elif relay_hostname_scope == RelayHostnameScope.WILDCARD:
+        relay_scopes = entry.relay_scopes or {}
+        wildcard = relay_scopes.get(RelayHostnameScope.WILDCARD)
+        if wildcard is None or not wildcard.available:
+            raise ProductUnavailableError("wildcard Blindport Relay subscriptions are unavailable")

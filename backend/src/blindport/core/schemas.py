@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 from cryptography import x509
@@ -20,6 +20,7 @@ from .models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    RelayHostnameScope,
     SubscriptionStatus,
     Transport,
 )
@@ -74,6 +75,14 @@ class CatalogProductResponse(BaseModel):
     available: bool
     sold_out: bool
     capacity: CatalogCapacityResponse
+    relay_scopes: dict[RelayHostnameScope, CatalogRelayScopeResponse] | None = None
+
+
+class CatalogRelayScopeResponse(BaseModel):
+    monthly_price_sats: int
+    yearly_price_sats: int
+    available: bool
+    tls_passthrough_only: bool
 
 
 class CatalogResponse(BaseModel):
@@ -143,6 +152,7 @@ class CreateSubscriptionRequest(BaseModel):
     delivery: DeliveryMode = DeliveryMode.FRAMED
     location: str | None = None  # advisory only in v0
     domain: str | None = None  # required for RELAY
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
     transport: Transport = Transport.TCP
 
     @model_validator(mode="after")
@@ -151,6 +161,13 @@ class CreateSubscriptionRequest(BaseModel):
             raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
         if self.delivery != DeliveryMode.FRAMED and self.product != ProductType.IP:
             raise ValueError("WireGuard delivery is supported only for Blindport IP subscriptions")
+        if (
+            self.relay_hostname_scope != RelayHostnameScope.EXACT
+            and self.product != ProductType.RELAY
+        ):
+            raise ValueError(
+                "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+            )
         return self
 
 
@@ -161,6 +178,7 @@ class AnonymousOrderRequest(BaseModel):
     billing_term: BillingTerm = BillingTerm.MONTHLY
     delivery: DeliveryMode = DeliveryMode.FRAMED
     domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
     transport: Transport = Transport.TCP
 
     @model_validator(mode="after")
@@ -169,6 +187,13 @@ class AnonymousOrderRequest(BaseModel):
             raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
         if self.delivery != DeliveryMode.FRAMED and self.product != ProductType.IP:
             raise ValueError("WireGuard delivery is supported only for Blindport IP subscriptions")
+        if (
+            self.relay_hostname_scope != RelayHostnameScope.EXACT
+            and self.product != ProductType.RELAY
+        ):
+            raise ValueError(
+                "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+            )
         return self
 
 
@@ -183,6 +208,8 @@ class SubscriptionResponse(BaseModel):
     port_ips: list[str] = Field(default_factory=list)
     transport: Transport
     domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
+    tls_passthrough_only: bool = False
     relay_pool_domain: str | None = None
     domain_is_managed: bool = False
     domain_verified_at: datetime | None = None
@@ -217,6 +244,10 @@ class AgentOrderRequest(BaseModel):
 
     product: ProductType = Field(strict=False)
     domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = Field(
+        default=RelayHostnameScope.EXACT,
+        strict=False,
+    )
     transport: Transport = Field(default=Transport.TCP, strict=False)
     delivery: DeliveryMode = Field(default=DeliveryMode.FRAMED, strict=False)
     billing_term: BillingTerm = Field(default=BillingTerm.MONTHLY, strict=False)
@@ -240,6 +271,13 @@ class AgentOrderRequest(BaseModel):
             raise ValueError("domain is required for Blindport Relay subscriptions")
         if self.product != ProductType.RELAY and self.domain is not None:
             raise ValueError("domain is supported only for Blindport Relay subscriptions")
+        if (
+            self.relay_hostname_scope != RelayHostnameScope.EXACT
+            and self.product != ProductType.RELAY
+        ):
+            raise ValueError(
+                "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+            )
         return self
 
 
@@ -476,6 +514,51 @@ class OfflineEntitlementConfigResponse(BaseModel):
     subscriptions: list[OfflineEntitlementProvisioningResponse]
 
 
+class OfflineEntitlementV3ClaimResponse(BaseModel):
+    """Complete scope-aware edge-local claim returned by v3 provisioning."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: ProductType = Field(strict=False)
+    ip: str
+    port: int
+    transport: str
+    domain: str
+    scope: RelayHostnameScope = Field(strict=False)
+
+
+class OfflineEntitlementV3EdgeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    endpoint: str
+    claim: OfflineEntitlementV3ClaimResponse
+    entitlement: str
+    paid_through: int
+    grace_through: int
+    generation: int
+
+
+class OfflineEntitlementV3ProvisioningResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    assigned_ip: str | None = None
+    assigned_port: int | None = None
+    transport: Transport = Field(strict=False)
+    domain: str | None = None
+    product: ProductType = Field(strict=False)
+    subscription_id: UUID
+    relay_hostname_scope: RelayHostnameScope = Field(strict=False)
+    edges: list[OfflineEntitlementV3EdgeResponse]
+
+
+class OfflineEntitlementV3ConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: int = 3
+    subscriptions: list[OfflineEntitlementV3ProvisioningResponse]
+
+
 class ClientCertificateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -567,6 +650,23 @@ class WireGuardConfigResponse(BaseModel):
     endpoint: str
     mtu: int
     persistent_keepalive_seconds: int
+
+
+class SubscriptionBandwidthDayResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    day: date
+    ingress_bytes: str
+    egress_bytes: str
+
+
+class SubscriptionBandwidthResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subscription_id: UUID
+    from_day: date
+    to_day: date
+    rows: list[SubscriptionBandwidthDayResponse]
 
 
 # Resolve forward refs

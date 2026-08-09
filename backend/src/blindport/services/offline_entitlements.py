@@ -20,7 +20,14 @@ from cryptography.x509.oid import NameOID
 from ..config import StableRelayEdge, load_offline_entitlement_private_key
 from ..core.ca import parse_client_certificate_common_name
 from ..core.hostnames import canonicalize_hostname
-from ..core.models import ClientCredential, ProductType, Subscription, Transport, User
+from ..core.models import (
+    ClientCredential,
+    ProductType,
+    RelayHostnameScope,
+    Subscription,
+    Transport,
+    User,
+)
 from .relay_routing import RelayEdge
 
 _ARTIFACT_PREFIX = "v1"
@@ -49,6 +56,7 @@ class EntitlementClaim:
     transport: str = ""
     domain: str = ""
     paid_through: int = 0
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
 
 
 def _b64url(value: bytes) -> str:
@@ -67,26 +75,48 @@ def _normalized_utc(value: datetime) -> datetime:
     return value.astimezone(UTC)
 
 
-def _canonical_claim_fields(claim: EntitlementClaim) -> tuple[str, str, int, str, str]:
+def _canonical_claim_fields(
+    claim: EntitlementClaim,
+) -> tuple[str, str, int, str, str, RelayHostnameScope]:
+    try:
+        scope = RelayHostnameScope(claim.relay_hostname_scope)
+    except ValueError as error:
+        raise OfflineEntitlementError("Relay hostname scope is invalid") from error
     if claim.kind == ProductType.PORT:
-        if not 1 <= claim.port <= 65535 or claim.transport not in {"tcp", "udp"}:
+        if (
+            scope != RelayHostnameScope.EXACT
+            or not 1 <= claim.port <= 65535
+            or claim.transport not in {"tcp", "udp"}
+        ):
             raise OfflineEntitlementError("Port claim is invalid")
         try:
-            return claim.kind.value, str(ip_address(claim.ip)), claim.port, claim.transport, ""
+            return (
+                claim.kind.value,
+                str(ip_address(claim.ip)),
+                claim.port,
+                claim.transport,
+                "",
+                scope,
+            )
         except ValueError as error:
             raise OfflineEntitlementError("Port claim is invalid") from error
     if claim.kind == ProductType.IP:
-        if claim.port != 0 or claim.transport or claim.domain:
+        if scope != RelayHostnameScope.EXACT or claim.port != 0 or claim.transport or claim.domain:
             raise OfflineEntitlementError("Blindport IP claim is invalid")
         try:
-            return claim.kind.value, str(ip_address(claim.ip)), 0, "", ""
+            return claim.kind.value, str(ip_address(claim.ip)), 0, "", "", scope
         except ValueError as error:
             raise OfflineEntitlementError("Blindport IP claim is invalid") from error
     if claim.kind == ProductType.RELAY:
-        if claim.ip or claim.port != 0 or claim.transport:
+        if (
+            scope not in {RelayHostnameScope.EXACT, RelayHostnameScope.WILDCARD}
+            or claim.ip
+            or claim.port != 0
+            or claim.transport
+        ):
             raise OfflineEntitlementError("Blindport Relay claim is invalid")
         try:
-            return claim.kind.value, "", 0, "", canonicalize_hostname(claim.domain)
+            return claim.kind.value, "", 0, "", canonicalize_hostname(claim.domain), scope
         except ValueError as error:
             raise OfflineEntitlementError("Blindport Relay claim is invalid") from error
     raise OfflineEntitlementError("claim kind is invalid")
@@ -96,7 +126,7 @@ def _scope_digest(claim: EntitlementClaim, credential_generation: int) -> bytes:
     if len(claim.client_pk) != 32:
         raise OfflineEntitlementError("client public key must be 32 raw bytes")
     entitlement_generation(claim.paid_through, credential_generation)
-    kind, claim_ip, port, transport, domain = _canonical_claim_fields(claim)
+    kind, claim_ip, port, transport, domain, scope = _canonical_claim_fields(claim)
     fields = (
         (b"account", claim.account.bytes),
         (b"subscription", claim.subscription.bytes),
@@ -117,6 +147,13 @@ def _scope_digest(claim: EntitlementClaim, credential_generation: int) -> bytes:
         encoded.extend(name)
         encoded.extend(len(value).to_bytes(4, "big"))
         encoded.extend(value)
+    # Preserve exact v1 JTI values. Wildcard claims add their scope so an
+    # exact hostname entitlement can never share a deterministic identifier.
+    if scope == RelayHostnameScope.WILDCARD:
+        encoded.extend(len(b"scope").to_bytes(2, "big"))
+        encoded.extend(b"scope")
+        encoded.extend(len(scope.value).to_bytes(4, "big"))
+        encoded.extend(scope.value.encode("ascii"))
     return hashlib.sha256(encoded).digest()
 
 
@@ -280,6 +317,7 @@ def claim_for_subscription(
             kind=subscription.product,
             domain=canonicalize_hostname(subscription.domain),
             paid_through=paid_through,
+            relay_hostname_scope=subscription.relay_hostname_scope,
         )
     raise OfflineEntitlementError("subscription product is not framed")
 
@@ -316,13 +354,13 @@ class OfflineEntitlementSigner:
         token_id = secrets.token_bytes(16) if jti is None else jti
         if len(token_id) != 16:
             raise OfflineEntitlementError("jti must contain 16 raw bytes")
-        kind, claim_ip, port, transport, claim_domain = _canonical_claim_fields(claim)
+        kind, claim_ip, port, transport, claim_domain, scope = _canonical_claim_fields(claim)
         grace_through = paid_through + self._grace_seconds
         if grace_through > _MAX_UNIX_SECONDS:
             raise OfflineEntitlementError("grace_through is outside the entitlement range")
         payload = {
             "typ": "blindport-offline-entitlement",
-            "v": 1,
+            "v": 2 if scope == RelayHostnameScope.WILDCARD else 1,
             "kid": self._key_id,
             "account": str(claim.account),
             "subscription": str(claim.subscription),
@@ -341,6 +379,8 @@ class OfflineEntitlementSigner:
             "generation": payload_generation,
             "jti": _b64url(token_id),
         }
+        if scope == RelayHostnameScope.WILDCARD:
+            payload["scope"] = scope.value
         raw_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         signature = self._key.sign(raw_payload)
         artifact = f"{_ARTIFACT_PREFIX}.{_b64url(raw_payload)}.{_b64url(signature)}"

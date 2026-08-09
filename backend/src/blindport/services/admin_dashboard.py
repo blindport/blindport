@@ -16,6 +16,7 @@ from ..core.models import (
     PaymentStatus,
     ProductType,
     RelayHeartbeat,
+    RelayHostnameScope,
     Subscription,
     SubscriptionStatus,
     User,
@@ -244,6 +245,8 @@ def _assigned_resource(subscription: Subscription) -> str:
         if subscription.assigned_ip is None or subscription.assigned_port is None:
             return "Unassigned"
         return f"{_enum_key(subscription.transport).upper()} {subscription.assigned_ip}:{subscription.assigned_port}"
+    if subscription.domain and subscription.relay_hostname_scope == RelayHostnameScope.WILDCARD:
+        return f"*.{subscription.domain}"
     return subscription.domain or subscription.relay_pool_domain or "Unassigned"
 
 

@@ -138,6 +138,14 @@ def test_routed_ip_isolated_from_legacy_and_enrolled_by_identity(app_client, mon
         {"public_key": request["public_key"], "allowed_prefixes": ["198.51.100.20/32"]}
     ]
     assert len(body["revision"]) == 64
+    v3_snapshot = client.get(
+        "/internal/v3/wireguard/peers",
+        headers={"X-Relay-Secret": "test-secret"},
+    )
+    assert v3_snapshot.status_code == 200
+    assert v3_snapshot.json()["prefix_bindings"] == [
+        {"prefix": "198.51.100.20/32", "subscription_id": subscription["id"]}
+    ]
 
     from blindport.db import engine
 
@@ -153,6 +161,79 @@ def test_routed_ip_isolated_from_legacy_and_enrolled_by_identity(app_client, mon
     ).json()
     assert revoked["managed_prefixes"] == ["198.51.100.20/32"]
     assert revoked["peers"] == []
+
+
+def test_v3_desired_state_binds_each_prefix_while_grouping_one_peer(
+    app_client, monkeypatch
+) -> None:
+    client, _ = app_client
+    del client
+    _configure_wireguard(monkeypatch)
+    from blindport.core.models import (
+        ClientCredential,
+        DeliveryMode,
+        ProductType,
+        Subscription,
+        SubscriptionStatus,
+        User,
+        WireGuardPeer,
+    )
+    from blindport.db import engine
+    from blindport.services.wireguard import desired_state_v3
+
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        user = User(hashed_token="same-peer-bandwidth-bindings")
+        session.add(user)
+        session.flush()
+        assert user.id is not None
+        session.add(
+            ClientCredential(
+                user_id=user.id,
+                instance_id="00000000-0000-4000-8000-000000000001",
+                public_key_fingerprint="a" * 64,
+                generation=1,
+                client_cert_pem="unused",
+                serial="1",
+                not_before=now,
+                not_after=now,
+                renew_after=now,
+            )
+        )
+        session.add(
+            WireGuardPeer(
+                user_id=user.id,
+                instance_id="00000000-0000-4000-8000-000000000001",
+                public_key=RELAY_PUBLIC_KEY,
+                generation=1,
+            )
+        )
+        subscriptions = [
+            Subscription(
+                user_id=user.id,
+                product=ProductType.IP,
+                delivery=DeliveryMode.WIREGUARD,
+                status=SubscriptionStatus.ACTIVE,
+                assigned_ip=address,
+                monthly_price_sats=1,
+                current_period_start=now - timedelta(days=1),
+                current_period_end=now + timedelta(days=365),
+            )
+            for address in ("198.51.100.20", "198.51.100.21")
+        ]
+        subscription_ids = {subscription.public_id for subscription in subscriptions}
+        session.add_all(subscriptions)
+        session.commit()
+        snapshot = desired_state_v3(session)
+
+    assert len(snapshot.peers) == 1
+    assert snapshot.peers[0].public_key == RELAY_PUBLIC_KEY
+    assert snapshot.peers[0].allowed_prefixes == ["198.51.100.20/32", "198.51.100.21/32"]
+    assert [binding.prefix for binding in snapshot.prefix_bindings] == [
+        "198.51.100.20/32",
+        "198.51.100.21/32",
+    ]
+    assert {binding.subscription_id for binding in snapshot.prefix_bindings} == subscription_ids
 
 
 def test_wireguard_key_replacement_requires_valid_identity_signature(

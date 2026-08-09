@@ -51,6 +51,8 @@ def _production_settings(**overrides) -> Settings:
         "PORT_YEARLY_SATS": 15000,
         "RELAY_MONTHLY_SATS": 3000,
         "RELAY_YEARLY_SATS": 30000,
+        "RELAY_WILDCARD_MONTHLY_SATS": 7500,
+        "RELAY_WILDCARD_YEARLY_SATS": 75000,
         "RELAY_CONTROL_URL": "relay.blindport.com:5443",
         "RELAY_CONTROL_URLS": "relay.blindport.com:5443",
         "RELAY_PUBLIC_IPS": "8.8.8.8",
@@ -66,6 +68,15 @@ def _production_settings(**overrides) -> Settings:
 
 def test_startup_database_migration_defaults_on() -> None:
     assert Settings(_env_file=None).DATABASE_MIGRATE_ON_STARTUP is True
+
+
+def test_relay_wildcard_price_defaults_are_yearly_discounted() -> None:
+    settings = Settings(_env_file=None)
+
+    assert (settings.RELAY_WILDCARD_MONTHLY_SATS, settings.RELAY_WILDCARD_YEARLY_SATS) == (
+        7500,
+        75000,
+    )
 
 
 def test_client_certificate_defaults_are_bounded_and_legacy_enabled() -> None:
@@ -316,7 +327,7 @@ def test_nwc_lease_must_cover_helper_timeout() -> None:
         )
 
 
-@pytest.mark.parametrize("product", ["IP", "PORT", "RELAY"])
+@pytest.mark.parametrize("product", ["IP", "PORT", "RELAY", "RELAY_WILDCARD"])
 def test_yearly_price_must_equal_ten_monthly_payments(product: str) -> None:
     with pytest.raises(ValidationError, match=f"{product}_YEARLY_SATS must equal 10 times"):
         Settings(_env_file=None, **{f"{product}_YEARLY_SATS": 12345})
@@ -447,6 +458,8 @@ def test_reminder_lease_covers_smtp_timeout() -> None:
         ({"PORT_YEARLY_SATS": -1}, "PORT_YEARLY_SATS"),
         ({"RELAY_MONTHLY_SATS": 0}, "RELAY_MONTHLY_SATS"),
         ({"RELAY_YEARLY_SATS": 0}, "RELAY_YEARLY_SATS"),
+        ({"RELAY_WILDCARD_MONTHLY_SATS": 0}, "RELAY_WILDCARD_MONTHLY_SATS"),
+        ({"RELAY_WILDCARD_YEARLY_SATS": 0}, "RELAY_WILDCARD_YEARLY_SATS"),
         ({"TOKEN_BYTES": 15}, "TOKEN_BYTES"),
         ({"PAYMENT_ENABLED_METHODS": "cashu"}, "direct Lightning"),
         ({"PAYMENT_ENABLED_METHODS": "lightning,cashu"}, "unsupported methods"),
@@ -1114,6 +1127,33 @@ def test_rate_limit_retention_covers_all_windows() -> None:
             RATE_LIMIT_BUCKET_RETENTION_SECONDS=60,
             RATE_LIMIT_ADMIN_LOGIN_WINDOW_SECONDS=61,
         )
+
+
+def test_bandwidth_metric_settings_have_conservative_validated_defaults() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.BANDWIDTH_METRICS_ENABLED is False
+    assert settings.BANDWIDTH_RETENTION_DAYS == 400
+    assert settings.BANDWIDTH_INGEST_MAX_AGE_DAYS == 3
+    assert settings.BANDWIDTH_CLEANUP_INTERVAL_SECONDS == 3600
+    assert settings.BANDWIDTH_CLEANUP_BATCH_SIZE == 1000
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("BANDWIDTH_RETENTION_DAYS", 0),
+        ("BANDWIDTH_RETENTION_DAYS", 3661),
+        ("BANDWIDTH_INGEST_MAX_AGE_DAYS", -1),
+        ("BANDWIDTH_INGEST_MAX_AGE_DAYS", 31),
+        ("BANDWIDTH_CLEANUP_INTERVAL_SECONDS", 59),
+        ("BANDWIDTH_CLEANUP_INTERVAL_SECONDS", 86401),
+        ("BANDWIDTH_CLEANUP_BATCH_SIZE", 0),
+        ("BANDWIDTH_CLEANUP_BATCH_SIZE", 10001),
+    ],
+)
+def test_bandwidth_metric_settings_are_bounded(field: str, value: int) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
 
 
 @pytest.mark.parametrize("seconds", [0, 31])

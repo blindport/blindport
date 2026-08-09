@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -29,6 +29,11 @@ class ProductType(StrEnum):
     IP = "ip"
     PORT = "port"
     RELAY = "relay"
+
+
+class RelayHostnameScope(StrEnum):
+    EXACT = "exact"
+    WILDCARD = "wildcard"
 
 
 def _enum_values(enum_type: type[StrEnum]) -> list[str]:
@@ -195,6 +200,7 @@ class Subscription(SQLModel, table=True):
             sqlite_where=text("product = 'ip'"),
             postgresql_where=text("product = 'ip'"),
         ),
+        Index("ix_subscription_relay_hostname_scope_domain", "relay_hostname_scope", "domain"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -210,6 +216,15 @@ class Subscription(SQLModel, table=True):
     assigned_port: int | None = None  # for PORT
     transport: Transport = Transport.TCP
     domain: str | None = Field(default=None, unique=True)  # for RELAY
+    relay_hostname_scope: RelayHostnameScope = Field(
+        default=RelayHostnameScope.EXACT,
+        sa_type=Enum(
+            RelayHostnameScope,
+            values_callable=_enum_values,
+            name="relayhostnamescope",
+        ),
+        sa_column_kwargs={"server_default": text("'exact'")},
+    )
     relay_pool_domain: str | None = None  # for RELAY
     domain_is_managed: bool = False
     domain_verification_token: str | None = None
@@ -318,6 +333,15 @@ class AgentOrder(SQLModel, table=True):
     delivery: DeliveryMode = Field(sa_type=Enum(DeliveryMode, name="deliverymode"))
     transport: Transport = Field(sa_type=Enum(Transport, name="transport"))
     domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = Field(
+        default=RelayHostnameScope.EXACT,
+        sa_type=Enum(
+            RelayHostnameScope,
+            values_callable=_enum_values,
+            name="relayhostnamescope",
+        ),
+        sa_column_kwargs={"server_default": text("'exact'")},
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
 
@@ -544,6 +568,42 @@ class RelayHeartbeat(SQLModel, table=True):
     accepted_connections_total: int = Field(sa_type=BigInteger)
     forwarded_bytes_total: int = Field(sa_type=BigInteger)
     received_at: datetime = Field(sa_type=DateTime(timezone=True), index=True)
+
+
+class SubscriptionDailyBandwidth(SQLModel, table=True):
+    """Privacy-preserving aggregate public bandwidth for one subscription UTC day."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "ingress_bytes >= 0 AND egress_bytes >= 0",
+            name="ck_subscriptiondailybandwidth_bytes_nonnegative",
+        ),
+    )
+
+    subscription_id: int = Field(foreign_key="subscription.id", primary_key=True)
+    day: date = Field(primary_key=True)
+    ingress_bytes: int = Field(sa_type=BigInteger)
+    egress_bytes: int = Field(sa_type=BigInteger)
+
+
+class RelayBandwidthCursor(SQLModel, table=True):
+    """Per-relay cumulative counter cursor used only to deduplicate daily aggregates."""
+
+    __table_args__ = (
+        CheckConstraint("sequence >= 0", name="ck_relaybandwidthcursor_sequence_nonnegative"),
+        CheckConstraint(
+            "ingress_bytes >= 0 AND egress_bytes >= 0",
+            name="ck_relaybandwidthcursor_bytes_nonnegative",
+        ),
+    )
+
+    edge_id: str = Field(primary_key=True, max_length=63)
+    boot_id: UUID = Field(primary_key=True)
+    subscription_id: int = Field(foreign_key="subscription.id", primary_key=True)
+    day: date = Field(primary_key=True)
+    sequence: int = Field(sa_type=BigInteger)
+    ingress_bytes: int = Field(sa_type=BigInteger)
+    egress_bytes: int = Field(sa_type=BigInteger)
 
 
 class DnsObservation(SQLModel, table=True):

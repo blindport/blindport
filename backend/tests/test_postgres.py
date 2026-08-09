@@ -33,15 +33,18 @@ from blindport.core.models import (
     ProductType,
     RateLimitBucket,
     RateLimitMaintenance,
+    RelayBandwidthCursor,
     ReminderDelivery,
     ReminderKind,
     Subscription,
+    SubscriptionDailyBandwidth,
     SubscriptionStatus,
     Transport,
     User,
 )
 from blindport.migrations import database_revisions, downgrade_database, upgrade_database
 from blindport.services.agent_orders import AgentOrderSpec, put_agent_order
+from blindport.services.bandwidth import BandwidthReport, ingest_daily_bandwidth
 from blindport.services.catalog import ProductUnavailableError
 from blindport.services.client_enrollment import enroll_client_certificate
 from blindport.services.nwc_credentials import store_nwc_credential
@@ -70,6 +73,87 @@ from blindport.services.subscriptions import (
 
 POSTGRES_URL = os.getenv("TEST_POSTGRES_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not POSTGRES_URL, reason="PostgreSQL test URL is not configured")
+
+
+def test_postgres_concurrent_first_bandwidth_cursors_preserve_all_deltas() -> None:
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    marker = f"postgres-bandwidth-{uuid4()}"
+    today = datetime.now(UTC).date()
+    with Session(engine) as session:
+        user = User(hashed_token=marker)
+        session.add(user)
+        session.flush()
+        assert user.id is not None
+        subscription = Subscription(
+            user_id=user.id,
+            product=ProductType.IP,
+            status=SubscriptionStatus.ACTIVE,
+            assigned_ip=f"198.51.100.{uuid4().int % 200 + 20}",
+            monthly_price_sats=1,
+            current_period_start=datetime.now(UTC) - timedelta(days=1),
+            current_period_end=datetime.now(UTC) + timedelta(days=1),
+        )
+        session.add(subscription)
+        session.commit()
+        subscription_id = subscription.id
+        public_id = subscription.public_id
+    assert subscription_id is not None
+    barrier = threading.Barrier(2)
+
+    def ingest(edge_id: str, ingress: int, egress: int) -> None:
+        with Session(engine) as session, session.begin():
+            barrier.wait(timeout=10)
+            ingest_daily_bandwidth(
+                session,
+                edge_id=edge_id,
+                boot_id=uuid4(),
+                sequence=1,
+                reports=[
+                    BandwidthReport(
+                        subscription_id=public_id,
+                        day=today,
+                        ingress_bytes=ingress,
+                        egress_bytes=egress,
+                    )
+                ],
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            list(
+                executor.map(lambda values: ingest(*values), (("edge-a", 10, 3), ("edge-b", 20, 7)))
+            )
+        with Session(engine) as session:
+            aggregate = session.get(SubscriptionDailyBandwidth, (subscription_id, today))
+            assert aggregate is not None
+            assert (aggregate.ingress_bytes, aggregate.egress_bytes) == (30, 10)
+            assert (
+                len(
+                    session.exec(
+                        select(RelayBandwidthCursor).where(
+                            RelayBandwidthCursor.subscription_id == subscription_id
+                        )
+                    ).all()
+                )
+                == 2
+            )
+    finally:
+        with Session(engine) as session:
+            session.execute(
+                delete(RelayBandwidthCursor).where(
+                    RelayBandwidthCursor.subscription_id == subscription_id
+                )
+            )
+            session.execute(
+                delete(SubscriptionDailyBandwidth).where(
+                    SubscriptionDailyBandwidth.subscription_id == subscription_id
+                )
+            )
+            session.execute(delete(Subscription).where(Subscription.id == subscription_id))
+            session.execute(delete(User).where(User.hashed_token == marker))
+            session.commit()
 
 
 def test_postgres_concurrent_last_seen_refresh_has_one_winner() -> None:
@@ -302,7 +386,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0019")
+    assert database_revisions(engine) == ("0008", "0021")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -355,7 +439,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0019", "0019")
+    assert database_revisions(engine) == ("0021", "0021")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -591,26 +675,39 @@ def test_postgres_0017_backfills_deployed_ip_assignment_enums() -> None:
     downgrade_database(engine, "0016")
     now = datetime.now(UTC)
     marker = f"postgres-0017-backfill-{uuid4()}"
-    with Session(engine) as session:
-        user = User(hashed_token=marker)
-        session.add(user)
-        session.flush()
-        subscription = Subscription(
-            user_id=user.id,  # type: ignore[arg-type]
-            product=ProductType.IP,
-            delivery=DeliveryMode.WIREGUARD,
-            status=SubscriptionStatus.ACTIVE,
-            assigned_ip="198.51.100.201",
-            billing_term=BillingTerm.MONTHLY,
-            monthly_price_sats=7500,
-            yearly_price_sats=75000,
-            current_period_start=now,
-            current_period_end=now + timedelta(days=30),
-        )
-        session.add(subscription)
-        session.commit()
-        subscription_id = subscription.id
-        user_id = user.id
+    legacy_user = Table("user", MetaData(), autoload_with=engine)
+    legacy_subscription = Table("subscription", MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            legacy_user.insert()
+            .values(
+                hashed_token=marker,
+                is_admin=False,
+                is_suspended=False,
+                created_at=now,
+            )
+            .returning(legacy_user.c.id)
+        ).scalar_one()
+        subscription_id = connection.execute(
+            legacy_subscription.insert()
+            .values(
+                user_id=user_id,
+                product="ip",
+                delivery="WIREGUARD",
+                status="ACTIVE",
+                assigned_ip="198.51.100.201",
+                transport="TCP",
+                domain_is_managed=False,
+                monthly_price_sats=7500,
+                yearly_price_sats=75000,
+                current_period_start=now,
+                current_period_end=now + timedelta(days=30),
+                auto_renew=False,
+                created_at=now,
+                updated_at=now,
+            )
+            .returning(legacy_subscription.c.id)
+        ).scalar_one()
 
     upgrade_database(engine)
     with Session(engine) as session:
@@ -1073,7 +1170,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0019", "0019")
+        assert database_revisions(engine) == ("0021", "0021")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

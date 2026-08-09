@@ -13,10 +13,11 @@ from loguru import logger
 
 from . import __version__
 from .adapters.factory import get_lightning_adapter, get_nwc_adapter
-from .api import internal, pages, v1, v2
+from .api import internal, pages, v1, v2, v3
 from .config import settings
 from .core.models import PaymentMethod
 from .db import prepare_database
+from .services.bandwidth import run_bandwidth_cleanup
 from .services.btc_usd_price import run_btc_usd_price_refresh
 from .services.dns_supervision import run_dns_supervisor
 from .services.payment_reconciliation import reconciler_health, run_payment_reconciler
@@ -58,6 +59,13 @@ async def lifespan(app: FastAPI):
     if settings.DNS_SUPERVISION_ENABLED:
         dns_task = asyncio.create_task(run_dns_supervisor(dns_stop_event), name="dns-supervisor")
     app.state.dns_supervisor_task = dns_task
+    bandwidth_stop_event = asyncio.Event()
+    bandwidth_task: asyncio.Task[None] | None = None
+    if settings.BANDWIDTH_METRICS_ENABLED:
+        bandwidth_task = asyncio.create_task(
+            run_bandwidth_cleanup(bandwidth_stop_event), name="bandwidth-cleanup"
+        )
+    app.state.bandwidth_cleanup_task = bandwidth_task
     logger.info("Blindport backend ready")
     try:
         yield
@@ -65,6 +73,9 @@ async def lifespan(app: FastAPI):
         if dns_task is not None:
             dns_stop_event.set()
             await dns_task
+        if bandwidth_task is not None:
+            bandwidth_stop_event.set()
+            await bandwidth_task
         if price_task is not None:
             price_stop_event.set()
             await price_task
@@ -124,8 +135,11 @@ def create_app() -> FastAPI:
 
     app.include_router(v1.router)
     app.include_router(v2.router)
+    app.include_router(v3.router)
+    app.include_router(internal.legacy_router)
     app.include_router(internal.router)
     app.include_router(internal.v2_router)
+    app.include_router(internal.v3_router)
     app.include_router(pages.router)
     return app
 

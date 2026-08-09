@@ -47,7 +47,7 @@
             <article class="subscription-card" data-sub-id="{{ s.public_id }}" data-sub-status="{{ s.status.value }}" data-delivery="{{ s.delivery.value }}" data-monthly-price="{{ s.monthly_price_sats }}" data-yearly-price="{{ s.yearly_price_sats }}">
               <header>
                 <div>
-                  <p class="endpoint-kind">{% if s.product.value == "ip" %}Dedicated IP{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% else %}Hostname relay{% endif %}</p>
+                  <p class="endpoint-kind">{% if s.product.value == "ip" %}Dedicated IP{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
                   <h3>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
                 </div>
                 <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
@@ -88,8 +88,15 @@
                 {% endif %}
                 {% if s.product.value == "relay" and s.status.value == "pending" and not s.domain_is_managed and not s.domain_verified_at %}
                   <div class="dns-instructions">
-                    <h4>Point this exact hostname to Blindport</h4>
-                    {% if s.domain_verification_token %}
+                    <h4>{% if s.relay_hostname_scope.value == "wildcard" %}Configure wildcard DNS routing{% else %}Point this exact hostname to Blindport{% endif %}</h4>
+                    {% if s.relay_hostname_scope.value == "wildcard" %}
+                      <span>Type</span><code>TXT</code>
+                      <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
+                      <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
+                      <span>Type</span><code>CNAME</code>
+                      <span>Name</span><code>*.{{ s.domain }}</code>
+                      <span>Target</span><code>{{ s.relay_pool_domain }}</code>
+                    {% elif s.domain_verification_token %}
                       <span>Type</span><code>TXT</code>
                       <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
                       <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
@@ -98,7 +105,7 @@
                       <span>Name</span><code>{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
                     {% endif %}
-                    <p class="field-help">Use the full hostname shown above. DNS is checked before an invoice is created.</p>
+                    <p class="field-help">{% if s.relay_hostname_scope.value == "wildcard" %}Wildcard Relay requires TLS passthrough. DNS ownership and routing are checked before an invoice is created.{% else %}Use the full hostname shown above. DNS is checked before an invoice is created.{% endif %}</p>
                     <div class="button-row">
                       <button type="button" class="verifyDomainBtn button-secondary" data-sub-id="{{ s.public_id }}">Check DNS</button>
                       {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Pay with Lightning</button>{% endif %}

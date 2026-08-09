@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 
@@ -19,6 +21,7 @@ from ..core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    RelayHostnameScope,
     Subscription,
     SubscriptionStatus,
     Transport,
@@ -92,6 +95,33 @@ def domain_challenge_name(domain: str) -> str:
 
 def domain_challenge_value(token: str) -> str:
     return f"blindport-verification={token}"
+
+
+def wildcard_route_name(domain: str) -> str:
+    """Return the DNS wildcard record name for a canonical Relay base domain."""
+    name = f"*.{domain}"
+    if len(name) > 253:
+        raise ValueError("domain is too long for DNS wildcard routing")
+    return name
+
+
+def wildcard_probe_name(domain: str, token: str) -> str:
+    """Return the stable strict-descendant CNAME probe for a wildcard claim."""
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    name = f"bpv-{token_hash}.{domain}"
+    if len(name) > 253:
+        raise ValueError("domain is too long for DNS wildcard routing")
+    return name
+
+
+def _validate_wildcard_base_domain(domain: str) -> None:
+    if len(domain.split(".")) < 2:
+        raise ValueError("wildcard Relay base domain must contain at least two labels")
+    if any(
+        domain == suffix or suffix.endswith(f".{domain}")
+        for suffix in settings.relay_managed_suffixes_list
+    ):
+        raise ValueError("wildcard Relay base domain cannot equal or contain a managed suffix")
 
 
 def _is_managed_domain(domain: str) -> bool:
@@ -371,7 +401,20 @@ def verify_subscription_domain(
         raise ValueError("domain claim has no active verification challenge")
 
     verifier = verifier_factory()
-    if sub.domain_verification_token:
+    if sub.relay_hostname_scope == RelayHostnameScope.WILDCARD:
+        if not sub.domain_verification_token or not sub.relay_pool_domain:
+            raise ValueError("wildcard domain claim has no active verification challenge")
+        ownership = verifier.verify_txt(
+            domain_challenge_name(sub.domain),
+            domain_challenge_value(sub.domain_verification_token),
+        )
+        if not ownership.verified:
+            return ownership
+        verification = verifier.verify_cname(
+            wildcard_probe_name(sub.domain, sub.domain_verification_token),
+            sub.relay_pool_domain,
+        )
+    elif sub.domain_verification_token:
         name = domain_challenge_name(sub.domain)
         expected = domain_challenge_value(sub.domain_verification_token)
         verification = verifier.verify_txt(name, expected)
@@ -403,7 +446,11 @@ def verify_subscription_domain(
         )
         .values(
             domain_verified_at=now,
-            domain_verification_token=None,
+            domain_verification_token=(
+                sub.domain_verification_token
+                if sub.relay_hostname_scope == RelayHostnameScope.WILDCARD
+                else None
+            ),
             updated_at=now,
         )
         .execution_options(synchronize_session=False)
@@ -423,6 +470,48 @@ def uses_unique_cname_target(sub: Subscription) -> bool:
         return False
     label = target.split(".", 1)[0]
     return len(label) == 32 and all(character in "0123456789abcdef" for character in label)
+
+
+def requires_domain_renewal_verification(sub: Subscription) -> bool:
+    """Return whether the customer claim must be checked before a renewal payment."""
+    return sub.relay_hostname_scope == RelayHostnameScope.WILDCARD or uses_unique_cname_target(sub)
+
+
+def _relay_domain_conflict(
+    session: Session,
+    domain: str,
+    scope: RelayHostnameScope,
+) -> bool:
+    """Check live Relay claims while the caller holds the custom-domain lock."""
+    wildcard_domains = session.exec(
+        select(Subscription.domain).where(
+            Subscription.product == ProductType.RELAY,
+            Subscription.relay_hostname_scope == RelayHostnameScope.WILDCARD,
+            Subscription.domain.is_not(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    live_wildcard_domains = [
+        wildcard_domain for wildcard_domain in wildcard_domains if wildcard_domain
+    ]
+    if scope == RelayHostnameScope.WILDCARD:
+        if any(
+            wildcard_domain == domain
+            or wildcard_domain.endswith(f".{domain}")
+            or domain.endswith(f".{wildcard_domain}")
+            for wildcard_domain in live_wildcard_domains
+        ):
+            return True
+        return (
+            session.exec(
+                select(Subscription.id).where(
+                    Subscription.product == ProductType.RELAY,
+                    Subscription.relay_hostname_scope == RelayHostnameScope.EXACT,
+                    Subscription.domain.like(f"%.{domain}"),  # type: ignore[union-attr]
+                )
+            ).first()
+            is not None
+        )
+    return any(domain.endswith(f".{wildcard_domain}") for wildcard_domain in live_wildcard_domains)
 
 
 def expire_elapsed_subscriptions(
@@ -486,6 +575,7 @@ def create_subscription(
     transport: Transport = Transport.TCP,
     delivery: DeliveryMode = DeliveryMode.FRAMED,
     billing_term: BillingTerm = BillingTerm.MONTHLY,
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT,
     *,
     commit: bool = True,
     reap_domains: bool = True,
@@ -501,6 +591,10 @@ def create_subscription(
         raise ValueError("WireGuard Blindport IP delivery is not configured")
     if product == ProductType.RELAY and not domain:
         raise ValueError("domain is required for Blindport Relay subscriptions")
+    if relay_hostname_scope != RelayHostnameScope.EXACT and product != ProductType.RELAY:
+        raise ValueError(
+            "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+        )
     domain_is_managed = False
     domain_verification_token = None
     domain_verified_at = None
@@ -508,11 +602,19 @@ def create_subscription(
     relay_pool_domain = None
     if product == ProductType.RELAY:
         domain = canonicalize_hostname(domain or "")
+        if relay_hostname_scope == RelayHostnameScope.WILDCARD:
+            _validate_wildcard_base_domain(domain)
         domain_is_managed = _is_managed_domain(domain)
+        if relay_hostname_scope == RelayHostnameScope.WILDCARD and domain_is_managed:
+            raise ValueError("wildcard Relay hostnames must use a customer-owned base domain")
+        if relay_hostname_scope == RelayHostnameScope.WILDCARD:
+            domain_challenge_name(domain)
+            wildcard_route_name(domain)
         if reap_domains:
             reap_expired_domain_claims(session)
     else:
         domain = None
+        relay_hostname_scope = RelayHostnameScope.EXACT
 
     if user.id is None:
         raise ValueError("user has no id")
@@ -555,29 +657,43 @@ def create_subscription(
         delivery=delivery,
         transport=transport,
         domain_is_managed=domain_is_managed,
+        relay_hostname_scope=relay_hostname_scope,
     )
 
     if product == ProductType.RELAY:
+        if not domain_is_managed and session.get_bind().dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(1886547826)"))
         existing = session.exec(select(Subscription).where(Subscription.domain == domain)).first()
         if existing is not None:
             raise ValueError("domain already has a subscription")
+        if _relay_domain_conflict(session, domain or "", relay_hostname_scope):
+            raise ValueError("domain conflicts with an existing Relay hostname scope")
         now = _utcnow()
         domain_claim_expires_at = now + _domain_claim_ttl(domain_is_managed)
         if domain_is_managed:
             domain_verified_at = now
+        elif relay_hostname_scope == RelayHostnameScope.WILDCARD:
+            domain_verification_token = secrets.token_hex(16)
+            relay_pool_domain = ResourceAllocator(session).allocate_relay_pool_domain()
         else:
-            if session.get_bind().dialect.name == "postgresql":
-                session.execute(text("SELECT pg_advisory_xact_lock(1886547826)"))
             relay_pool_domain = ResourceAllocator(session).allocate_relay_cname_target()
     monthly = {
         ProductType.IP: settings.IP_MONTHLY_SATS,
         ProductType.PORT: settings.PORT_MONTHLY_SATS,
-        ProductType.RELAY: settings.RELAY_MONTHLY_SATS,
+        ProductType.RELAY: (
+            settings.RELAY_WILDCARD_MONTHLY_SATS
+            if relay_hostname_scope == RelayHostnameScope.WILDCARD
+            else settings.RELAY_MONTHLY_SATS
+        ),
     }[product]
     yearly = {
         ProductType.IP: settings.IP_YEARLY_SATS,
         ProductType.PORT: settings.PORT_YEARLY_SATS,
-        ProductType.RELAY: settings.RELAY_YEARLY_SATS,
+        ProductType.RELAY: (
+            settings.RELAY_WILDCARD_YEARLY_SATS
+            if relay_hostname_scope == RelayHostnameScope.WILDCARD
+            else settings.RELAY_YEARLY_SATS
+        ),
     }[product]
     sub = Subscription(
         user_id=user.id,  # type: ignore[arg-type]
@@ -585,6 +701,7 @@ def create_subscription(
         delivery=delivery,
         status=SubscriptionStatus.PENDING,
         domain=domain,
+        relay_hostname_scope=relay_hostname_scope,
         relay_pool_domain=relay_pool_domain,
         domain_is_managed=domain_is_managed,
         domain_verification_token=domain_verification_token,

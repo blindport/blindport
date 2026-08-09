@@ -30,6 +30,7 @@ from ..core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    RelayHostnameScope,
     Subscription,
     SubscriptionStatus,
     User,
@@ -169,6 +170,19 @@ def _sub_to_response(sub: Subscription) -> SubscriptionResponse:
     record_name = None
     record_target = None
     if (
+        sub.relay_hostname_scope == RelayHostnameScope.WILDCARD
+        and sub.status == SubscriptionStatus.PENDING
+        and not sub.domain_is_managed
+        and sub.domain
+        and sub.domain_verification_token
+        and sub.relay_pool_domain
+    ):
+        challenge_name = subs_svc.domain_challenge_name(sub.domain)
+        challenge_value = subs_svc.domain_challenge_value(sub.domain_verification_token)
+        record_type = "CNAME"
+        record_name = subs_svc.wildcard_route_name(sub.domain)
+        record_target = sub.relay_pool_domain
+    elif (
         sub.status == SubscriptionStatus.PENDING
         and not sub.domain_is_managed
         and sub.domain
@@ -207,6 +221,8 @@ def _sub_to_response(sub: Subscription) -> SubscriptionResponse:
         transport=sub.transport,
         domain=sub.domain,
         relay_pool_domain=sub.relay_pool_domain,
+        relay_hostname_scope=sub.relay_hostname_scope,
+        tls_passthrough_only=sub.relay_hostname_scope == RelayHostnameScope.WILDCARD,
         domain_is_managed=sub.domain_is_managed,
         domain_verified_at=sub.domain_verified_at,
         domain_verification_expires_at=sub.domain_claim_expires_at,
@@ -735,6 +751,7 @@ def put_client_order(
                 delivery=body.delivery,
                 transport=body.transport,
                 domain=body.domain,
+                relay_hostname_scope=body.relay_hostname_scope,
             ),
         )
     except agent_orders_svc.AgentOrderConflictError as error:
@@ -769,6 +786,7 @@ def create_subscription(
             user=user,
             product=body.product,
             domain=body.domain,
+            relay_hostname_scope=body.relay_hostname_scope,
             transport=body.transport,
             delivery=body.delivery,
             billing_term=body.billing_term,
@@ -985,7 +1003,7 @@ def create_payment(
         and not sub.domain_is_managed
         and sub.status != SubscriptionStatus.CANCELLED
         and sub.domain is not None
-        and (sub.domain_verified_at is None or subs_svc.uses_unique_cname_target(sub))
+        and (sub.domain_verified_at is None or subs_svc.requires_domain_renewal_verification(sub))
     )
     if requires_domain_lookup:
         _enforce_public_rate_limit(
@@ -1389,6 +1407,8 @@ def client_config(
         if s.status != SubscriptionStatus.ACTIVE:
             continue
         if s.product == ProductType.IP and s.delivery == DeliveryMode.WIREGUARD:
+            continue
+        if s.product == ProductType.RELAY and s.relay_hostname_scope == RelayHostnameScope.WILDCARD:
             continue
         relay_assignments = []
         if s.product == ProductType.RELAY:

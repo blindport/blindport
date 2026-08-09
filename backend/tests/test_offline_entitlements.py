@@ -14,12 +14,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from cryptography import x509
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import NameOID
 
 from blindport.config import RelayEdge, StableRelayEdge, load_offline_entitlement_private_key
-from blindport.core.models import ProductType
+from blindport.core.models import ProductType, RelayHostnameScope
 from blindport.services.offline_entitlements import (
     _MAX_UNIX_SECONDS,
     EntitlementClaim,
@@ -170,6 +171,55 @@ def test_deterministic_scope_values_change_for_every_scope_input() -> None:
             deterministic_entitlement_jti(changed_claim, credential_generation),
             entitlement_generation(changed_claim.paid_through, credential_generation),
         ) != baseline
+
+
+def test_wildcard_relay_entitlement_has_distinct_scope_digest_and_v2_payload() -> None:
+    key = Ed25519PrivateKey.generate()
+    signer = OfflineEntitlementSigner(key, "offline-a", 604800)
+    exact = replace(
+        _fixture_claim(),
+        kind=ProductType.RELAY,
+        ip="",
+        port=0,
+        transport="",
+        domain="public.example",
+    )
+    wildcard = replace(exact, relay_hostname_scope=RelayHostnameScope.WILDCARD)
+
+    exact_artifact, exact_payload = signer.issue(
+        exact, credential_generation=7, now=FIXED_NOW, jti=bytes(range(16))
+    )
+    wildcard_artifact, wildcard_payload = signer.issue(
+        wildcard, credential_generation=7, now=FIXED_NOW, jti=bytes(range(16))
+    )
+
+    assert deterministic_entitlement_jti(exact, 7) != deterministic_entitlement_jti(wildcard, 7)
+    assert exact_payload["v"] == 1 and "scope" not in exact_payload
+    assert wildcard_payload["v"] == 2 and wildcard_payload["scope"] == "wildcard"
+    assert exact_artifact != wildcard_artifact
+    tampered = {**wildcard_payload, "scope": "exact"}
+    with pytest.raises(InvalidSignature):
+        key.public_key().verify(
+            _decode_part(wildcard_artifact.split(".")[2]),
+            json.dumps(tampered, separators=(",", ":"), ensure_ascii=True).encode("ascii"),
+        )
+
+
+def test_signer_rejects_wildcard_scope_for_non_relay_claims() -> None:
+    signer = OfflineEntitlementSigner(Ed25519PrivateKey.generate(), "key-a", 1)
+    with pytest.raises(OfflineEntitlementError, match="IP claim"):
+        signer.issue(
+            replace(
+                _fixture_claim(),
+                kind=ProductType.IP,
+                port=0,
+                transport="",
+                relay_hostname_scope="wildcard",
+            ),
+            credential_generation=1,
+            now=FIXED_NOW,
+            jti=bytes(16),
+        )
 
 
 def test_entitlement_issued_at_uses_latest_state_time_and_stays_within_term() -> None:

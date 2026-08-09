@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -16,7 +16,9 @@ from ..core.models import (
     DeliveryMode,
     IPLease,
     ProductType,
+    RelayHostnameScope,
     Subscription,
+    SubscriptionDailyBandwidth,
     SubscriptionStatus,
     User,
 )
@@ -35,6 +37,8 @@ from ..core.schemas import (
     SMTPApprovalRequest,
     SMTPLeaseResponse,
     SMTPRevocationRequest,
+    SubscriptionBandwidthDayResponse,
+    SubscriptionBandwidthResponse,
     WireGuardConfigResponse,
     WireGuardKeyRequest,
 )
@@ -182,6 +186,69 @@ def me(
     )
 
 
+@router.get(
+    "/subscriptions/{public_id}/bandwidth",
+    response_model=SubscriptionBandwidthResponse,
+)
+def subscription_bandwidth(
+    public_id: UUID,
+    response: Response,
+    from_day: date | None = Query(default=None, alias="from"),
+    to_day: date | None = Query(default=None, alias="to"),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> SubscriptionBandwidthResponse:
+    """Return one owner's aggregate daily bandwidth without relay-level identifiers."""
+    response.headers["Cache-Control"] = "no-store"
+    if not settings.BANDWIDTH_METRICS_ENABLED:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    today = datetime.now(UTC).date()
+    end = to_day or today
+    start = from_day or (end - timedelta(days=29))
+    if start > end or (end - start).days > 365:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid bandwidth date range")
+    subscription = session.exec(
+        select(Subscription).where(
+            Subscription.public_id == public_id,
+            Subscription.user_id == user.id,
+        )
+    ).one_or_none()
+    if subscription is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "subscription not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    if subscription.id is None:  # pragma: no cover, persisted rows always have an ID.
+        raise RuntimeError("subscription has no internal ID")
+    rows = session.exec(
+        select(SubscriptionDailyBandwidth)
+        .where(
+            SubscriptionDailyBandwidth.subscription_id == subscription.id,
+            SubscriptionDailyBandwidth.day >= start,
+            SubscriptionDailyBandwidth.day <= end,
+        )
+        .order_by(SubscriptionDailyBandwidth.day)
+    ).all()
+    return SubscriptionBandwidthResponse(
+        subscription_id=subscription.public_id,
+        from_day=start,
+        to_day=end,
+        rows=[
+            SubscriptionBandwidthDayResponse(
+                day=row.day,
+                ingress_bytes=str(row.ingress_bytes),
+                egress_bytes=str(row.egress_bytes),
+            )
+            for row in rows
+        ],
+    )
+
+
 def _set_account_suspension(
     account_id: UUID,
     suspended: bool,
@@ -305,6 +372,7 @@ def anonymous_order(
             user=user,
             product=body.product,
             domain=body.domain,
+            relay_hostname_scope=body.relay_hostname_scope,
             transport=body.transport,
             delivery=body.delivery,
             billing_term=body.billing_term,
@@ -448,6 +516,11 @@ def offline_client_config(
     rows: list[OfflineEntitlementProvisioningResponse] = []
     for subscription in subscriptions:
         if subscription.status != SubscriptionStatus.ACTIVE:
+            continue
+        if (
+            subscription.product == ProductType.RELAY
+            and subscription.relay_hostname_scope == RelayHostnameScope.WILDCARD
+        ):
             continue
         if (
             subscription.product == ProductType.IP

@@ -7,6 +7,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from uuid import UUID
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -65,6 +66,17 @@ class WireGuardDesiredState:
 @dataclass(frozen=True)
 class WireGuardDesiredStateV2(WireGuardDesiredState):
     smtp_allowed_prefixes: list[str]
+
+
+@dataclass(frozen=True)
+class WireGuardPrefixBinding:
+    prefix: str
+    subscription_id: UUID
+
+
+@dataclass(frozen=True)
+class WireGuardDesiredStateV3(WireGuardDesiredStateV2):
+    prefix_bindings: list[WireGuardPrefixBinding]
 
 
 def _active_routed_subscriptions(
@@ -324,4 +336,40 @@ def desired_state_v2(session: Session) -> WireGuardDesiredStateV2:
         managed_prefixes=base.managed_prefixes,
         peers=base.peers,
         smtp_allowed_prefixes=smtp_prefixes,
+    )
+
+
+def desired_state_v3(session: Session) -> WireGuardDesiredStateV3:
+    """Build the v3 snapshot with per-routed-prefix subscription attribution."""
+    base = desired_state_v2(session)
+    bindings = sorted(
+        (
+            WireGuardPrefixBinding(
+                prefix=f"{subscription.assigned_ip}/32",
+                subscription_id=subscription.public_id,
+            )
+            for subscription in _active_routed_subscriptions(session)
+        ),
+        key=lambda binding: binding.prefix,
+    )
+    canonical = json.dumps(
+        {
+            "managed_prefixes": base.managed_prefixes,
+            "peers": [vars(peer) for peer in base.peers],
+            "smtp_allowed_prefixes": base.smtp_allowed_prefixes,
+            "prefix_bindings": [
+                {"prefix": binding.prefix, "subscription_id": str(binding.subscription_id)}
+                for binding in bindings
+            ],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return WireGuardDesiredStateV3(
+        revision=hashlib.sha256(canonical).hexdigest(),
+        generated_at=base.generated_at,
+        managed_prefixes=base.managed_prefixes,
+        peers=base.peers,
+        smtp_allowed_prefixes=base.smtp_allowed_prefixes,
+        prefix_bindings=bindings,
     )
