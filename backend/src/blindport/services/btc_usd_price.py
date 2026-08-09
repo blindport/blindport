@@ -75,7 +75,7 @@ class BtcUsdPriceCache:
             payload = json.loads(body, parse_float=Decimal)
             raw_price = payload["USD"]
             raw_time = payload["time"]
-            if isinstance(raw_price, bool) or not isinstance(raw_price, (int, Decimal, str)):
+            if isinstance(raw_price, bool) or not isinstance(raw_price, int | Decimal | str):
                 raise ValueError("Bitcoin price is invalid")
             if isinstance(raw_time, bool) or not isinstance(raw_time, int) or raw_time <= 0:
                 raise ValueError("Bitcoin price timestamp is invalid")
