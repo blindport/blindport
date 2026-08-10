@@ -426,7 +426,6 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
         "online denial",
     ):
         assert term in agent
-
     for term in (
         "separate agent process from Docker discovery",
         "active annual WireGuard Blindport IP subscription",
@@ -438,6 +437,19 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
         "Do not give this process the Docker\nsocket",
     ):
         assert term in agent
+
+
+def test_migration_services_disable_external_delivery_and_signing() -> None:
+    for path in (
+        "deploy/production/compose.yaml",
+        "deploy/split/control/compose.yaml",
+    ):
+        compose = _repository_file(path)
+        assert 'REMINDER_EMAIL_ENABLED: "false"' in compose
+        assert 'SMTP_USERNAME: ""' in compose
+        assert 'SMTP_PASSWORD_FILE: ""' in compose
+        assert 'OFFLINE_ENTITLEMENTS_ENABLED: "false"' in compose
+        assert 'OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: ""' in compose
 
 
 def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:

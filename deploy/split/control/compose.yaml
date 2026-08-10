@@ -229,6 +229,8 @@ services:
       REMINDER_EMAIL_ENABLED: "false"
       SMTP_USERNAME: ""
       SMTP_PASSWORD_FILE: ""
+      OFFLINE_ENTITLEMENTS_ENABLED: "false"
+      OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE: ""
     secrets: *backend-secrets
     volumes:
       - backend-ca:/var/lib/blindport/ca
