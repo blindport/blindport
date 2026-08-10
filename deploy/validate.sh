@@ -100,6 +100,8 @@ services = json.load(sys.stdin)["services"]
 migrate = services["migrate"]
 environment = migrate["environment"]
 assert environment["CREDENTIAL_ENCRYPTION_KEY_FILE"] == services["backend"]["environment"]["CREDENTIAL_ENCRYPTION_KEY_FILE"]
+assert environment["SMTP_USERNAME"] == ""
+assert environment["SMTP_PASSWORD_FILE"] == ""
 secret_names = {
     item if isinstance(item, str) else item.get("source")
     for item in migrate.get("secrets", [])

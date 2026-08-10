@@ -231,6 +231,7 @@ services:
     environment:
       <<: *backend-environment
       REMINDER_EMAIL_ENABLED: "false"
+      SMTP_USERNAME: ""
       SMTP_PASSWORD_FILE: ""
     secrets: *backend-secrets
     volumes:
