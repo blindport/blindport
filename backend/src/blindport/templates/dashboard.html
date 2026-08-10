@@ -248,6 +248,11 @@
               <p class="field-help">For Blindport Relay, your agent terminates TLS and retains automatic certificate private keys while Blindport routes the connection.</p>
               <label class="terms-consent"><input id="acmeTermsAccepted" type="checkbox"> <span>I agree to the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> for automatic HTTPS.</span></label>
               {% endif %}
+              <div class="field-group">
+                <label for="linuxHomePath">Absolute Linux home directory</label>
+                <input id="linuxHomePath" type="text" placeholder="/home/alice" maxlength="255" autocomplete="off" spellcheck="false" aria-describedby="linuxHomePathHelp">
+                <p id="linuxHomePathHelp" class="field-help">Used for the account token and private agent state paths.</p>
+              </div>
               <details class="advanced-config" open>
                 <summary class="disclosure-summary"><span>Review and install configuration</span><span class="disclosure-icon" aria-hidden="true"></span></summary>
                 <div class="config-heading"><strong><code>~/.config/blindport/config.json</code></strong><button type="button" class="copyCommandBtn button-secondary configDependent" data-copy-target="generatedClientConfig" disabled>Copy JSON</button></div>
@@ -314,37 +319,19 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
       </details>
       {% endif %}
       {% if nwc_enabled %}<details class="sidebar-section"><summary>Wallet connection</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% else %}Not connected{% endif %}</p>{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
-      {% if reminder_email_enabled or announcement_email_enabled %}
+      {% if notification_email_enabled %}
       <details class="sidebar-section">
         <summary>Service notifications</summary>
-        {% if reminder_email_enabled %}
-        <section aria-labelledby="account-updates-title">
-          <h3 id="account-updates-title">Account updates</h3>
-          <p id="reminderStatus" role="status" aria-live="polite">{% if user.has_reminder_email %}Enabled{% else %}Disabled{% endif %}</p>
-          <form id="reminderForm">
-            <label for="reminderEmail">Email address</label>
-            <input id="reminderEmail" type="email" autocomplete="email" maxlength="254" required>
-            <div class="button-row">
-              <button id="saveReminderBtn" type="submit">Enable</button>
-              {% if user.has_reminder_email %}<button id="deleteReminderBtn" type="button" class="button-secondary">Disable</button>{% endif %}
-            </div>
-          </form>
-        </section>
-        {% endif %}
-        {% if announcement_email_enabled %}
-        <section aria-labelledby="service-announcements-title">
-          <h3 id="service-announcements-title">Service announcements</h3>
-          <p id="announcementStatus" role="status" aria-live="polite">{% if user.has_service_email %}Enabled{% else %}Disabled{% endif %}</p>
-          <form id="announcementEmailForm">
-            <label for="announcementEmail">Email address</label>
-            <input id="announcementEmail" type="email" autocomplete="email" maxlength="254" required>
-            <div class="button-row">
-              <button id="saveAnnouncementEmailBtn" type="submit">Enable</button>
-              {% if user.has_service_email %}<button id="deleteAnnouncementEmailBtn" type="button" class="button-secondary">Disable</button>{% endif %}
-            </div>
-          </form>
-        </section>
-        {% endif %}
+        <p class="field-help">Account lifecycle updates and service announcements use one email preference.</p>
+        <p id="notificationEmailStatus" role="status" aria-live="polite">{% if user.has_notification_email %}Enabled{% else %}Disabled{% endif %}</p>
+        <form id="notificationEmailForm">
+          <label for="notificationEmail">Email address</label>
+          <input id="notificationEmail" type="email" autocomplete="email" maxlength="254" required>
+          <div class="button-row">
+            <button id="saveNotificationEmailBtn" type="submit">Enable</button>
+            {% if user.has_notification_email %}<button id="deleteNotificationEmailBtn" type="button" class="button-secondary">Disable</button>{% endif %}
+          </div>
+        </form>
       </details>
       {% endif %}
     </aside>

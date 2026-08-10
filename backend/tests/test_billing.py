@@ -38,7 +38,7 @@ def test_catalog_and_ip_api_defaults_are_wireguard_yearly(app_client, monkeypatc
         item["product"]: (item["monthly_price_sats"], item["yearly_price_sats"])
         for item in catalog["products"]
     }
-    assert prices == {"ip": (7500, 75000), "port": (1500, 15000), "relay": (3000, 30000)}
+    assert prices == {"ip": (None, 75000), "port": (1500, 15000), "relay": (3000, 30000)}
 
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -49,7 +49,7 @@ def test_catalog_and_ip_api_defaults_are_wireguard_yearly(app_client, monkeypatc
     assert subscription["delivery"] == "wireguard"
     assert subscription["billing_term"] == "yearly"
     assert subscription["period_days"] == 365
-    assert subscription["monthly_price_sats"] == 7500
+    assert subscription["monthly_price_sats"] == 0
     assert subscription["yearly_price_sats"] == 75000
 
     payment = client.post(

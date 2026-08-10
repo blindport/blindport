@@ -566,7 +566,7 @@ def expire_elapsed_subscriptions(
                 settings.REMINDER_EMAIL_ENABLED
                 and user is not None
                 and not user.is_suspended
-                and user.has_reminder_email
+                and user.has_notification_email
                 and period_end is not None
             ):
                 queue_notification(
@@ -697,7 +697,7 @@ def create_subscription(
         else:
             relay_pool_domain = ResourceAllocator(session).allocate_relay_cname_target()
     monthly = {
-        ProductType.IP: settings.IP_MONTHLY_SATS,
+        ProductType.IP: 0,
         ProductType.PORT: settings.PORT_MONTHLY_SATS,
         ProductType.RELAY: (
             settings.RELAY_WILDCARD_MONTHLY_SATS

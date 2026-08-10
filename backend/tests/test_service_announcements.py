@@ -15,7 +15,7 @@ def _admin_auth() -> dict[str, str]:
     return {"Authorization": "Bearer TESTADMIN0000"}
 
 
-def test_service_email_api_encrypts_and_cancels_queued_deliveries(app_client, monkeypatch) -> None:
+def test_notification_email_cancels_queued_service_deliveries(app_client, monkeypatch) -> None:
     from blindport import config
     from blindport.core.models import NotificationDelivery, NotificationDeliveryState, User
     from blindport.db import engine
@@ -27,7 +27,7 @@ def test_service_email_api_encrypts_and_cancels_queued_deliveries(app_client, mo
     token = client.post("/api/v1/signup").json()["token"]
 
     saved = client.post(
-        "/api/v1/me/service-email",
+        "/api/v1/me/notification-email",
         json={"email": "Person@EXAMPLE.COM"},
         headers=_auth(token),
     )
@@ -37,12 +37,12 @@ def test_service_email_api_encrypts_and_cancels_queued_deliveries(app_client, mo
     assert "example.com" not in saved.text.lower()
 
     with Session(engine) as session:
-        user = session.exec(select(User).where(User.has_service_email)).one()
-        assert "Person@example.com" not in (user.service_email_ciphertext or "")
+        user = session.exec(select(User).where(User.has_notification_email)).one()
+        assert "Person@example.com" not in (user.notification_email_ciphertext or "")
         announcement = create_announcement(session, "Maintenance", "Service work tonight.", "test")
         queued = queue_announcement(session, announcement.id or 0)
         user_id = user.id
-        user_generation = user.service_email_generation
+        user_generation = user.notification_email_generation
         assert queued.recipient_count == 1
         assert session.exec(select(NotificationDelivery)).all() == []
 
@@ -52,27 +52,27 @@ def test_service_email_api_encrypts_and_cancels_queued_deliveries(app_client, mo
         delivery = session.exec(select(NotificationDelivery)).one()
         assert delivery.recipient_generation == user_generation
 
-    deleted = client.delete("/api/v1/me/service-email", headers=_auth(token))
+    deleted = client.delete("/api/v1/me/notification-email", headers=_auth(token))
     assert deleted.status_code == 200
     assert deleted.json() == {"configured": False}
     with Session(engine) as session:
         user = session.exec(select(User).where(User.id == user_id)).one()
         delivery = session.exec(select(NotificationDelivery)).one()
-        assert user.service_email_ciphertext is None
+        assert user.notification_email_ciphertext is None
         assert delivery.state == NotificationDeliveryState.CANCELLED
         assert delivery.lease_token is None
 
 
-def test_service_email_api_is_feature_gated_and_bounded(app_client, monkeypatch) -> None:
+def test_notification_email_api_is_feature_gated_and_bounded(app_client, monkeypatch) -> None:
     from blindport import config
 
     client, _ = app_client
     token = client.post("/api/v1/signup").json()["token"]
-    assert client.get("/api/v1/me/service-email", headers=_auth(token)).status_code == 404
+    assert client.get("/api/v1/me/notification-email", headers=_auth(token)).status_code == 404
 
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     invalid = client.post(
-        "/api/v1/me/service-email",
+        "/api/v1/me/notification-email",
         content=b'{"email":"person@example.com"}' + b" " * 1024,
         headers={**_auth(token), "Content-Type": "application/json"},
     )
@@ -87,7 +87,7 @@ def test_admin_announcement_api_uses_bearer_and_never_exports_addresses(
     from blindport import config
     from blindport.core.models import User
     from blindport.db import engine
-    from blindport.services.announcements import store_service_announcement_email
+    from blindport.services.notification_email import store_notification_email
 
     client, _ = app_client
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
@@ -100,7 +100,7 @@ def test_admin_announcement_api_uses_bearer_and_never_exports_addresses(
             (suspended, "suspended@example.com"),
             (administrator, "administrator@example.com"),
         ):
-            store_service_announcement_email(user, address)
+            store_notification_email(user, address)
             session.add(user)
         session.commit()
 
@@ -143,14 +143,14 @@ def test_browser_admin_announcements_require_session_and_separate_draft_queue_ca
     )
     from blindport.db import engine
     from blindport.services import notification_reconciliation
-    from blindport.services.announcements import store_service_announcement_email
+    from blindport.services.notification_email import store_notification_email
 
     client, _ = app_client
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     address = "browser-admin-recipient@example.com"
     with Session(engine) as session:
         recipient = User(hashed_token="browser-admin-recipient")
-        store_service_announcement_email(recipient, address)
+        store_notification_email(recipient, address)
         session.add(recipient)
         session.commit()
 
@@ -231,7 +231,6 @@ def test_legacy_announcement_delivery_send_and_validation() -> None:
         announcement_message_id,
         create_announcement,
         send_announcement,
-        store_service_announcement_email,
     )
 
     engine = create_engine("sqlite:///:memory:")
@@ -246,14 +245,16 @@ def test_legacy_announcement_delivery_send_and_validation() -> None:
 
     with Session(engine) as session:
         user = User(hashed_token="announcement-user")
-        store_service_announcement_email(user, "person@example.com", cipher=cipher)
+        from blindport.services.notification_email import store_notification_email
+
+        store_notification_email(user, "person@example.com", cipher=cipher)
         session.add(user)
         session.commit()
         campaign = create_announcement(session, "Notice", "Plain text only.\n", "test")
         delivery = AnnouncementDelivery(
             announcement_id=campaign.id or 0,
             user_id=user.id or 0,
-            recipient_generation=user.service_email_generation,
+            recipient_generation=user.notification_email_generation,
         )
         session.add(delivery)
         session.commit()
@@ -276,7 +277,6 @@ def test_announcement_reconciliation_is_bounded_and_recovers_sending(monkeypatch
     from blindport.services.announcements import (
         create_announcement,
         queue_announcement,
-        store_service_announcement_email,
     )
 
     engine = create_engine(f"sqlite:///{tmp_path / 'announcements.db'}")
@@ -285,7 +285,9 @@ def test_announcement_reconciliation_is_bounded_and_recovers_sending(monkeypatch
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     with Session(engine) as session:
         user = User(hashed_token="announcement-worker")
-        store_service_announcement_email(user, "person@example.com")
+        from blindport.services.notification_email import store_notification_email
+
+        store_notification_email(user, "person@example.com")
         session.add(user)
         session.commit()
         announcement = create_announcement(session, "Notice", "Maintenance", "test")
@@ -293,7 +295,7 @@ def test_announcement_reconciliation_is_bounded_and_recovers_sending(monkeypatch
         delivery = AnnouncementDelivery(
             announcement_id=announcement.id or 0,
             user_id=user.id or 0,
-            recipient_generation=user.service_email_generation,
+            recipient_generation=user.notification_email_generation,
         )
         session.add(delivery)
         session.commit()

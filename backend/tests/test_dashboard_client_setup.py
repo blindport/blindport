@@ -118,18 +118,26 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     )
     assert "-token-file" not in run_command
     assert config == {
-        "version": 2,
-        "mappings": [
+        "version": 3,
+        "accounts": [
             {
-                "subscription_id": public_id,
-                "upstream": "127.0.0.1:8080",
-                "tls_mode": "automatic",
-                "acme_terms_accepted": False,
+                "name": "default",
+                "token_file": "/home/replace-me/.config/blindport/accounts/default.token",
+                "state_dir": "/home/replace-me/.local/state/blindport/accounts/default",
+                "mappings": [
+                    {
+                        "subscription_id": public_id,
+                        "upstream": "127.0.0.1:8080",
+                        "tls_mode": "automatic",
+                        "acme_terms_accepted": False,
+                    }
+                ],
             }
         ],
     }
-    assert all("id" not in mapping for mapping in config["mappings"])
-    assert str(internal_id) != config["mappings"][0]["subscription_id"]
+    mappings = config["accounts"][0]["mappings"]
+    assert all("id" not in mapping for mapping in mappings)
+    assert str(internal_id) != mappings[0]["subscription_id"]
     assert "wireGuardSetupCommand" not in dashboard
 
     command_lines = command.splitlines()
@@ -208,7 +216,9 @@ def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_clie
     _set_status(ip_id, SubscriptionStatus.ACTIVE)
 
     config = json.loads(_element_text(_dashboard(client, token), "generatedClientConfig"))
-    mappings = {mapping["subscription_id"]: mapping for mapping in config["mappings"]}
+    mappings = {
+        mapping["subscription_id"]: mapping for mapping in config["accounts"][0]["mappings"]
+    }
     assert mappings == {
         port_id: {
             "subscription_id": port_id,

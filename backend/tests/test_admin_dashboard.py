@@ -601,3 +601,72 @@ def test_subscription_rows_combine_customer_account_and_payment_state() -> None:
     assert account_only_row.status_key == "account_only"
     assert account_only_row.activity_key == "never"
     assert str(admin.public_id) not in {row.account_public_id for row in rows}
+
+
+def test_subscription_rows_aggregate_connection_state_and_exact_timestamps(monkeypatch) -> None:
+    from blindport.core.models import ProductType, RelaySubscriptionConnection, Subscription, User
+    from blindport.services import admin_dashboard
+
+    now = datetime(2026, 1, 8, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        admin_dashboard.settings,
+        "RELAY_EDGES",
+        '[{"id":"edge-a","endpoint":"edge-a.test:5443"},{"id":"edge-b","endpoint":"edge-b.test:5443"}]',
+    )
+    user = User(id=1, hashed_token="connection-user", last_seen_at=now - timedelta(minutes=3))
+    connected = Subscription(id=11, user_id=1, product=ProductType.RELAY, monthly_price_sats=1)
+    stale = Subscription(id=12, user_id=1, product=ProductType.IP, monthly_price_sats=1)
+    disconnected = Subscription(id=13, user_id=1, product=ProductType.PORT, monthly_price_sats=1)
+    never = Subscription(id=14, user_id=1, product=ProductType.IP, monthly_price_sats=1)
+    rows = admin_dashboard.build_subscription_rows(
+        [user],
+        [connected, stale, disconnected, never],
+        [],
+        [
+            RelaySubscriptionConnection(
+                edge_id="edge-a",
+                subscription_id=11,
+                active=True,
+                observed_at=now - timedelta(seconds=10),
+                last_connected_at=now - timedelta(minutes=2),
+            ),
+            RelaySubscriptionConnection(
+                edge_id="edge-b",
+                subscription_id=11,
+                active=True,
+                observed_at=now - timedelta(seconds=120),
+                last_connected_at=now - timedelta(minutes=1),
+            ),
+            RelaySubscriptionConnection(
+                edge_id="edge-a",
+                subscription_id=12,
+                active=True,
+                observed_at=now - timedelta(seconds=91),
+                last_connected_at=now - timedelta(minutes=4),
+            ),
+            RelaySubscriptionConnection(
+                edge_id="edge-a",
+                subscription_id=13,
+                active=False,
+                observed_at=now - timedelta(seconds=2),
+                last_connected_at=now - timedelta(minutes=5),
+            ),
+            RelaySubscriptionConnection(
+                edge_id="retired-edge",
+                subscription_id=14,
+                active=True,
+                observed_at=now - timedelta(seconds=1),
+                last_connected_at=now - timedelta(seconds=1),
+            ),
+        ],
+        now=now,
+    )
+
+    by_subscription = {row.subscription_public_id: row for row in rows}
+    connected_row = by_subscription[str(connected.public_id)]
+    assert connected_row.connection_state == "connected"
+    assert connected_row.last_agent_connected_at == now - timedelta(minutes=1)
+    assert connected_row.account_last_seen_at == now - timedelta(minutes=3)
+    assert by_subscription[str(stale.public_id)].connection_state == "stale"
+    assert by_subscription[str(disconnected.public_id)].connection_state == "disconnected"
+    assert by_subscription[str(never.public_id)].connection_state == "never"

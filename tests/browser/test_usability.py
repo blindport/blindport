@@ -646,14 +646,68 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
         context.close()
 
 
-def test_dashboard_service_notifications_use_independent_endpoints(
+def test_passkey_cancellation_reenables_registration_and_login(
     browser: Browser,
     browser_server: BrowserServer,
     playwright_runtime: Playwright,
 ) -> None:
     account = _signup(playwright_runtime, browser_server.base_url)
-    reminder_address = "playwright-account-update@example.com"
-    address = "playwright-announcement@example.com"
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_init_script(
+        """
+        Object.defineProperty(navigator.credentials, "create", {
+          configurable: true,
+          value: async () => null,
+        });
+        Object.defineProperty(navigator.credentials, "get", {
+          configurable: true,
+          value: async () => null,
+        });
+        """
+    )
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        section = page.locator("#passkeySection")
+        section.wait_for(state="visible")
+        section.locator("summary").click()
+        page.locator("#passkeyName").fill("Cancelled registration")
+        add_button = page.locator("#addPasskeyBtn")
+        add_button.click()
+        page.get_by_text("Passkey could not be added.", exact=True).wait_for(
+            state="visible"
+        )
+        assert add_button.is_enabled()
+
+        page.locator("#logoutBtn").click()
+        login_button = page.locator("#passkeyLoginBtn")
+        login_button.wait_for(state="visible")
+        login_button.click()
+        page.get_by_text(
+            "Passkey sign-in failed. Use a saved account or bearer token.", exact=True
+        ).wait_for(state="visible")
+        assert login_button.is_enabled()
+    finally:
+        context.close()
+
+
+def test_dashboard_service_notifications_use_one_preference(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    address = "playwright-notifications@example.com"
     context = browser.new_context(viewport={"width": 390, "height": 844})
     context.add_cookies(
         [
@@ -671,52 +725,36 @@ def test_dashboard_service_notifications_use_independent_endpoints(
     try:
         page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
         page.locator("summary", has_text="Service notifications").click()
-        assert page.get_by_role("heading", name="Account updates").is_visible()
-        assert page.get_by_role("heading", name="Service announcements").is_visible()
         _assert_layout(page)
 
-        assert page.locator("#reminderStatus").inner_text() == "Disabled"
-        page.locator("#reminderEmail").fill(reminder_address)
+        assert page.locator("#notificationEmailStatus").inner_text() == "Disabled"
+        page.locator("#notificationEmail").fill(address)
         with page.expect_response(
             lambda response: (
-                response.url.endswith("/api/v1/me/reminder-email")
-                and response.request.method == "POST"
-            )
-        ) as reminder_response:
-            page.locator("#reminderForm").get_by_role("button", name="Enable").click()
-        assert reminder_response.value.status == 200
-        page.locator("#deleteReminderBtn").wait_for(state="attached")
-
-        page.locator("summary", has_text="Service notifications").click()
-        assert page.locator("#announcementStatus").inner_text() == "Disabled"
-        assert page.locator("#deleteAnnouncementEmailBtn").count() == 0
-        page.locator("#announcementEmail").fill(address)
-        with page.expect_response(
-            lambda response: (
-                response.url.endswith("/api/v1/me/service-email")
+                response.url.endswith("/api/v1/me/notification-email")
                 and response.request.method == "POST"
             )
         ) as saved_response:
-            page.locator("#announcementEmailForm").get_by_role(
+            page.locator("#notificationEmailForm").get_by_role(
                 "button", name="Enable"
             ).click()
         assert saved_response.value.status == 200
-        page.locator("#deleteAnnouncementEmailBtn").wait_for(state="attached")
+        page.locator("#deleteNotificationEmailBtn").wait_for(state="attached")
+
         page.locator("summary", has_text="Service notifications").click()
-        page.locator("#deleteAnnouncementEmailBtn").wait_for(state="visible")
+        page.locator("#deleteNotificationEmailBtn").wait_for(state="visible")
         assert address not in page.content()
-        assert reminder_address not in page.content()
 
         with page.expect_response(
             lambda response: (
-                response.url.endswith("/api/v1/me/service-email")
+                response.url.endswith("/api/v1/me/notification-email")
                 and response.request.method == "DELETE"
             )
         ) as deleted_response:
-            page.locator("#deleteAnnouncementEmailBtn").click()
+            page.locator("#deleteNotificationEmailBtn").click()
         assert deleted_response.value.status == 200
-        page.locator("#announcementStatus").get_by_text(
-            "Service announcements disabled. Reloading the dashboard."
+        page.locator("#notificationEmailStatus").get_by_text(
+            "Service notifications disabled. Reloading the dashboard."
         ).wait_for(state="visible")
         assert errors == []
     finally:
@@ -733,7 +771,7 @@ def test_admin_browser_service_announcement_draft_queue_and_cancel_hide_recipien
     request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
     try:
         saved = request.post(
-            "/api/v1/me/service-email",
+            "/api/v1/me/notification-email",
             headers={"Authorization": f"Bearer {account['token']}"},
             data={"email": address},
         )
@@ -1057,12 +1095,19 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
             upstream.fill("127.0.0.1:8080")
             assert upstream.get_attribute("aria-invalid") == "false"
             assert page.locator("#framedRunCommand + button").is_disabled()
+            home_path = "/home/Jos\u00e9 Garcia"
+            page.locator("#linuxHomePath").fill(home_path)
+            assert page.locator("#framedRunCommand + button").is_disabled()
             terms = page.locator("#acmeTermsAccepted")
             assert not terms.is_checked()
             terms.check()
             command = page.locator("#framedConfigInstallCommand").text_content()
             assert subscription["id"] in command
-            assert '"version": 2' in command
+            assert '"version": 3' in command
+            assert (
+                f'"token_file": "{home_path}/.config/blindport/accounts/default.token"'
+                in command
+            )
             assert '"upstream": "127.0.0.1:8080"' in command
             assert '"tls_mode": "automatic"' in command
             assert '"acme_terms_accepted": true' in command
@@ -1190,6 +1235,83 @@ def test_inline_nwc_connects_pays_recovers_and_never_renders_secret(
         assert page.locator(".autoRenewToggle").count() == 0
         _assert_layout(page)
         assert errors == []
+    finally:
+        context.close()
+
+
+def test_inline_nwc_insufficient_budget_keeps_a_recovery_control(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        response = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"product": "port", "transport": "tcp"},
+        )
+        assert response.ok, response.text()
+        subscription = response.json()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    payment_requests = 0
+
+    def route_payment(route) -> None:
+        nonlocal payment_requests
+        if route.request.method == "POST":
+            payment_requests += 1
+        route.continue_()
+
+    required_sats = subscription["monthly_price_sats"]
+    page.route(
+        "**/api/v1/me/nwc/budget",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            json={
+                "state": "available",
+                "used_budget_msats": 1_000,
+                "total_budget_msats": required_sats * 1_000,
+                "renews_at": None,
+                "renewal_period": "monthly",
+            },
+        ),
+    )
+    page.route("**/api/v1/payments", route_payment)
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        form = card.locator(".inline-nwc-form")
+        form.locator(".inlineNwcUri").fill("nostr+walletconnect://insufficient-budget")
+        with page.expect_response(
+            lambda response: response.url.endswith("/api/v1/me/nwc")
+            and response.request.method == "POST"
+        ) as nwc_response:
+            form.get_by_role("button", name="Connect and pay").click()
+        assert nwc_response.value.ok
+        reload_button = form.get_by_role("button", name="Reload dashboard")
+        reload_button.wait_for(state="visible")
+        assert reload_button.is_enabled()
+        assert payment_requests == 0
+        assert (
+            "Increase the wallet budget and try again"
+            in card.locator(".cardStatus").text_content()
+        )
     finally:
         context.close()
 

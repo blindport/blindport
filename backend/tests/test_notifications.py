@@ -23,9 +23,6 @@ from blindport.core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
-    ReminderDelivery,
-    ReminderDeliveryState,
-    ReminderKind,
     Subscription,
     SubscriptionStatus,
     User,
@@ -34,7 +31,10 @@ from blindport.services.announcements import (
     cancel_announcement,
     create_announcement,
     queue_announcement,
-    store_service_announcement_email,
+)
+from blindport.services.notification_email import (
+    clear_notification_email,
+    store_notification_email,
 )
 from blindport.services.notifications import (
     notification_message_id,
@@ -42,7 +42,6 @@ from blindport.services.notifications import (
     render_notification,
     send_notification,
 )
-from blindport.services.reminders import clear_reminder_email, store_reminder_email
 
 
 class _Smtp:
@@ -65,7 +64,7 @@ def _setup(tmp_path, *, period_delta: timedelta = timedelta(days=6)) -> tuple[ob
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         user = User(hashed_token="notification-user")
-        store_reminder_email(user, "person@example.com")
+        store_notification_email(user, "person@example.com")
         session.add(user)
         session.flush()
         subscription = Subscription(
@@ -117,7 +116,7 @@ def test_queue_is_idempotent_and_uses_account_generation(tmp_path) -> None:
         second = _queue_expiration(session, user, subscription, "expiration:one")
         session.commit()
         assert first is second
-        assert first.recipient_generation == user.reminder_email_generation
+        assert first.recipient_generation == user.notification_email_generation
         assert len(session.exec(select(NotificationDelivery)).all()) == 1
         with pytest.raises(ValueError, match="idempotency"):
             queue_notification(
@@ -136,7 +135,7 @@ def test_idempotency_rejects_changed_references_and_event_time(tmp_path) -> None
         user = session.get(User, user_id)
         subscription = session.get(Subscription, subscription_id)
         assert user is not None and subscription is not None
-        store_service_announcement_email(user, "service@example.com")
+        store_notification_email(user, "service@example.com")
         alternate = Subscription(
             user_id=user.id or 0,
             product=ProductType.PORT,
@@ -331,6 +330,29 @@ def test_stale_lease_cannot_finalize_smtp_result(tmp_path) -> None:
         assert delivery.lease_token == "new"
 
 
+def test_smtp_reloads_and_locks_notification_generation_before_send(tmp_path) -> None:
+    engine, user_id, subscription_id = _setup(tmp_path)
+    smtp = _Smtp()
+    with Session(engine, expire_on_commit=False) as worker:
+        user = worker.get(User, user_id)
+        subscription = worker.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        delivery = _queue_expiration(worker, user, subscription, "smtp:preference-race")
+        worker.commit()
+
+        with Session(engine) as preference:
+            current_user = preference.get(User, user_id)
+            assert current_user is not None
+            clear_notification_email(current_user)
+            preference.add(current_user)
+            preference.commit()
+
+        send_notification(worker, delivery, user, smtp, subscription=subscription)
+        assert smtp.calls == 0
+        assert delivery.state == NotificationDeliveryState.FAILED
+        assert delivery.error_code == "recipient_unavailable"
+
+
 def test_reconciliation_discovers_once_cancels_generation_change_and_recovers_sending(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -355,7 +377,7 @@ def test_reconciliation_discovers_once_cancels_generation_change_and_recovers_se
         session.commit()
         changed_delivery_id = delivery.id
         assert changed_delivery_id is not None
-        clear_reminder_email(user)
+        clear_notification_email(user)
         session.add(user)
         session.commit()
     worker.reconcile_notifications_once(batch_size=1)
@@ -367,7 +389,7 @@ def test_reconciliation_discovers_once_cancels_generation_change_and_recovers_se
 
         user = session.get(User, user_id)
         assert user is not None
-        store_reminder_email(user, "person@example.com")
+        store_notification_email(user, "person@example.com")
         session.add(user)
         subscription = session.get(Subscription, subscription_id)
         assert subscription is not None
@@ -413,7 +435,7 @@ def test_expiration_discovery_respects_batch_bound(
         assert len(session.exec(select(NotificationDelivery)).all()) == 1
 
 
-def test_non_cancelled_legacy_reminder_suppresses_unified_discovery(
+def test_legacy_reminder_does_not_suppress_unified_discovery(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     from blindport import config
@@ -422,25 +444,8 @@ def test_non_cancelled_legacy_reminder_suppresses_unified_discovery(
     engine, user_id, subscription_id = _setup(tmp_path)
     monkeypatch.setattr(worker.db, "engine", engine)
     monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
-    with Session(engine) as session:
-        subscription = session.get(Subscription, subscription_id)
-        assert subscription is not None and subscription.current_period_end is not None
-        session.add(
-            ReminderDelivery(
-                subscription_id=subscription_id,
-                current_period_end=subscription.current_period_end,
-                recipient_generation=1,
-                kind=ReminderKind.SEVEN_DAY,
-            )
-        )
-        session.commit()
-    assert worker._queue_due_expirations(datetime.now(UTC), 10) == 0
-    with Session(engine) as session:
-        legacy = session.exec(select(ReminderDelivery)).one()
-        legacy.state = ReminderDeliveryState.CANCELLED
-        session.add(legacy)
-        session.commit()
     assert worker._queue_due_expirations(datetime.now(UTC), 10) == 1
+    assert worker._queue_due_expirations(datetime.now(UTC), 10) == 0
 
 
 def test_campaign_expansion_snapshot_opt_out_completion_and_cancellation(
@@ -457,7 +462,7 @@ def test_campaign_expansion_snapshot_opt_out_completion_and_cancellation(
     with Session(engine) as session:
         users = [User(hashed_token=f"campaign-{index}") for index in range(2)]
         for user in users:
-            store_service_announcement_email(user, f"campaign-{user.hashed_token}@example.com")
+            store_notification_email(user, f"campaign-{user.hashed_token}@example.com")
             session.add(user)
         session.commit()
         preexisting_ineligible = User(hashed_token="campaign-preexisting-ineligible")
@@ -473,21 +478,21 @@ def test_campaign_expansion_snapshot_opt_out_completion_and_cancellation(
             .order_by(AnnouncementRecipientSnapshot.user_id)
         ).all()
         assert [(row.user_id, row.recipient_generation) for row in snapshot] == [
-            (user.id, user.service_email_generation) for user in users
+            (user.id, user.notification_email_generation) for user in users
         ]
-        store_service_announcement_email(preexisting_ineligible, "opted-in@example.com")
+        store_notification_email(preexisting_ineligible, "opted-in@example.com")
         late = User(hashed_token="campaign-late")
-        store_service_announcement_email(late, "late@example.com")
+        store_notification_email(late, "late@example.com")
         session.add(late)
         session.commit()
-        snapshotted_generation = users[1].service_email_generation
-        store_service_announcement_email(users[1], "changed@example.com")
+        snapshotted_generation = users[1].notification_email_generation
+        store_notification_email(users[1], "changed@example.com")
         session.add(users[1])
         session.commit()
         legacy = AnnouncementDelivery(
             announcement_id=campaign.id or 0,
             user_id=users[0].id or 0,
-            recipient_generation=users[0].service_email_generation,
+            recipient_generation=users[0].notification_email_generation,
         )
         session.add(legacy)
         session.commit()
@@ -554,7 +559,7 @@ def test_campaign_cancellation_cancels_legacy_and_unified_deliveries(
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     with Session(engine) as session:
         user = User(hashed_token="campaign-cancellation")
-        store_service_announcement_email(user, "campaign-cancellation@example.com")
+        store_notification_email(user, "campaign-cancellation@example.com")
         session.add(user)
         session.commit()
         campaign = queue_announcement(
@@ -563,7 +568,7 @@ def test_campaign_cancellation_cancels_legacy_and_unified_deliveries(
         legacy = AnnouncementDelivery(
             announcement_id=campaign.id or 0,
             user_id=user.id or 0,
-            recipient_generation=user.service_email_generation,
+            recipient_generation=user.notification_email_generation,
         )
         session.add(legacy)
         session.commit()
@@ -596,7 +601,7 @@ def test_campaign_completes_only_after_unified_delivery_is_terminal(
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     with Session(engine) as session:
         user = User(hashed_token="completion-user")
-        store_service_announcement_email(user, "completion@example.com")
+        store_notification_email(user, "completion@example.com")
         session.add(user)
         session.commit()
         campaign = queue_announcement(
@@ -623,7 +628,7 @@ def test_settlement_and_expiry_queue_one_lifecycle_notification(app_client, monk
     monkeypatch.setattr(payments.settings, "REMINDER_EMAIL_ENABLED", True)
     token = client.post("/api/v1/signup").json()["token"]
     client.post(
-        "/api/v1/me/reminder-email",
+        "/api/v1/me/notification-email",
         json={"email": "person@example.com"},
         headers={"Authorization": f"Bearer {token}"},
     )

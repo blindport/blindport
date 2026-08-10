@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import smtplib
+import ssl
 
 import pytest
 
@@ -13,6 +14,8 @@ class _Smtp:
     instances: list[_Smtp] = []
     send_error: Exception | None = None
     login_error: Exception | None = None
+    ehlo_error: Exception | None = None
+    starttls_error: Exception | None = None
 
     def __init__(self, host: str, port: int, **kwargs) -> None:
         self.host = host
@@ -23,9 +26,13 @@ class _Smtp:
 
     def ehlo(self) -> None:
         self.events.append("ehlo")
+        if self.ehlo_error:
+            raise self.ehlo_error
 
     def starttls(self, **kwargs) -> None:
         self.events.append(("starttls", kwargs))
+        if self.starttls_error:
+            raise self.starttls_error
 
     def login(self, username: str, password: str) -> None:
         self.events.append(("login", username, password))
@@ -52,6 +59,8 @@ def _smtp(monkeypatch):
     _Smtp.instances.clear()
     _Smtp.send_error = None
     _Smtp.login_error = None
+    _Smtp.ehlo_error = None
+    _Smtp.starttls_error = None
     monkeypatch.setattr(smtplib, "SMTP", _Smtp)
     monkeypatch.setattr(smtplib, "SMTP_SSL", _Smtp)
 
@@ -79,8 +88,11 @@ def test_starttls_adapter_sends_expected_message_after_authentication() -> None:
     smtp = _Smtp.instances[0]
     assert smtp.host == "mail.example.com"
     assert smtp.kwargs["timeout"] == 12
-    assert smtp.events[:4:2] == ["ehlo", "ehlo"]
-    assert smtp.events[3][0] == "login"
+    assert smtp.events[0] == "ehlo"
+    assert smtp.events[1][0] == "starttls"
+    assert isinstance(smtp.events[1][1]["context"], ssl.SSLContext)
+    assert smtp.events[2] == "ehlo"
+    assert smtp.events[3] == ("login", "sender", "secret")
     message = smtp.events[-1][1]
     assert message["From"] == "notices@example.com"
     assert message["To"] == "person@example.net"
@@ -90,7 +102,51 @@ def test_starttls_adapter_sends_expected_message_after_authentication() -> None:
 def test_tls_adapter_supports_trusted_relay_without_credentials() -> None:
     adapter = SmtpAdapter("mail.example.com", 465, SmtpSecurity.TLS, "notices@example.com")
     adapter.send_message("person@example.net", "Notice", "Body", "<id@example.com>")
-    assert all(event[0] != "login" for event in _Smtp.instances[0].events)
+    smtp = _Smtp.instances[0]
+    assert smtp.kwargs["timeout"] == 10.0
+    assert isinstance(smtp.kwargs["context"], ssl.SSLContext)
+    assert "ehlo" not in smtp.events
+    assert not any(
+        isinstance(event, tuple) and event[0] in {"starttls", "login"} for event in smtp.events
+    )
+
+
+@pytest.mark.parametrize(
+    "stage,error,code,retryable",
+    [
+        (
+            "ehlo_error",
+            smtplib.SMTPResponseException(421, b"private"),
+            "smtp_setup_transient",
+            True,
+        ),
+        (
+            "starttls_error",
+            smtplib.SMTPNotSupportedError("private capability"),
+            "smtp_capability_missing",
+            False,
+        ),
+        (
+            "login_error",
+            smtplib.SMTPAuthenticationError(535, b"private"),
+            "smtp_auth_rejected",
+            False,
+        ),
+    ],
+)
+def test_setup_stages_close_and_classify_without_private_text(
+    stage: str, error: Exception, code: str, retryable: bool
+) -> None:
+    setattr(_Smtp, stage, error)
+
+    with pytest.raises(SmtpDeliveryError) as exc_info:
+        _adapter().send_message("private@example.net", "Notice", "Body", "<id@example.com>")
+
+    assert exc_info.value.code == code
+    assert exc_info.value.retryable is retryable
+    assert exc_info.value.ambiguous is False
+    assert _Smtp.instances[0].events[-1] == "close"
+    assert "private" not in str(exc_info.value)
 
 
 def test_setup_failure_closes_connection_and_sanitizes_error() -> None:

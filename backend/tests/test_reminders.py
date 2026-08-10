@@ -9,7 +9,11 @@ from sqlalchemy import create_engine
 from sqlmodel import Session, SQLModel, select
 
 from blindport.adapters.smtp import SmtpDeliveryError
-from blindport.core.credentials import CredentialCipher, CredentialError, EncryptedCredential
+from blindport.core.credentials import (
+    CredentialCipher,
+    CredentialError,
+    EncryptedCredential,
+)
 from blindport.core.models import (
     ProductType,
     ReminderDelivery,
@@ -18,18 +22,20 @@ from blindport.core.models import (
     Subscription,
     User,
 )
+from blindport.services.notification_email import (
+    NotificationEmailError,
+    clear_notification_email,
+    decrypt_notification_email,
+    normalize_notification_email,
+    store_notification_email,
+)
 from blindport.services.reminders import (
-    ReminderEmailError,
     cancel_pending_reminders,
-    clear_reminder_email,
-    decrypt_reminder_email,
     fence_reminder_lease,
-    normalize_reminder_email,
     queue_reminder,
     reminder_message_id,
     render_expiration_reminder,
     send_reminder,
-    store_reminder_email,
 )
 
 
@@ -48,27 +54,29 @@ from blindport.services.reminders import (
     ],
 )
 def test_email_validation_rejects_unsafe_values_without_reflection(value: str) -> None:
-    with pytest.raises(ReminderEmailError, match="address is invalid") as exc_info:
-        normalize_reminder_email(value)
+    with pytest.raises(NotificationEmailError, match="address is invalid") as exc_info:
+        normalize_notification_email(value)
     assert value not in str(exc_info.value)
 
 
 def test_email_preference_is_normalized_encrypted_and_clearable() -> None:
     user = User(hashed_token="hash")
     cipher = CredentialCipher("44" * 32)
-    normalized = store_reminder_email(user, "Person@EXAMPLE.COM", cipher=cipher)
+    normalized = store_notification_email(user, "Person@EXAMPLE.COM", cipher=cipher)
     assert normalized == "Person@example.com"
-    assert normalized not in (user.reminder_email_ciphertext or "")
-    assert decrypt_reminder_email(user, cipher=cipher) == normalized
+    assert normalized not in (user.notification_email_ciphertext or "")
+    assert decrypt_notification_email(user, cipher=cipher) == normalized
     with pytest.raises(CredentialError, match="authentication failed"):
         cipher.decrypt(
             user.public_id,
-            EncryptedCredential(user.reminder_email_ciphertext, user.reminder_email_key_version),
+            EncryptedCredential(
+                user.notification_email_ciphertext, user.notification_email_key_version
+            ),
         )
-    generation = user.reminder_email_generation
-    clear_reminder_email(user)
-    assert user.has_reminder_email is False
-    assert user.reminder_email_generation == generation + 1
+    generation = user.notification_email_generation
+    clear_notification_email(user)
+    assert user.has_notification_email is False
+    assert user.notification_email_generation == generation + 1
 
 
 def test_rendering_is_deterministic_and_contains_no_account_secret() -> None:
@@ -87,7 +95,7 @@ def _delivery_fixture(
     SQLModel.metadata.create_all(engine)
     session = Session(engine)
     user = User(hashed_token="reminder-user")
-    store_reminder_email(user, "person@example.com", cipher=cipher)
+    store_notification_email(user, "person@example.com", cipher=cipher)
     session.add(user)
     session.flush()
     subscription = Subscription(

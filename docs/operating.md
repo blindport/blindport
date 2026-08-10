@@ -32,7 +32,6 @@ RELAY_SECRET=<distinct-random-value-of-at-least-32-characters>
 ADMIN_TOKEN=<random-Crockford-token-of-at-least-32-characters>
 CA_DIR=/var/lib/blindport/ca
 LEGACY_CLIENT_CERT_ISSUANCE_ENABLED=false
-IP_MONTHLY_SATS=7500
 IP_YEARLY_SATS=75000
 PORT_MONTHLY_SATS=1500
 PORT_YEARLY_SATS=15000
@@ -155,6 +154,19 @@ the onion origin; token login continues to work there. A downgrade to `0022` del
 passkeys and browser sessions, so rollback should normally restore the matching
 pre-migration database backup instead.
 
+Revision `0024` replaces separate reminder and announcement recipient preferences with
+one explicitly consented encrypted notification recipient. It does not infer consent from
+the retired columns and cancels queued legacy and unified deliveries during cutover. Stop
+old API and notification workers before the migration and do not run them against the new
+schema. The downgrade recreates empty legacy preference columns but cannot reconstruct the
+old encrypted recipients; restore the matching backup for a pre-`0024` application rollback.
+
+Revision `0025` adds the latest per-edge subscription connection observation. Deploy the
+new backend before new Relays. Legacy Relays omit the optional snapshot and leave connection
+observations unchanged. New Relays report at most 1,000 sorted active public subscription IDs;
+an explicit truncation marker prevents omitted IDs from being treated as disconnected. Roll
+back Relays before the backend because older backends reject the new strict heartbeat fields.
+
 Offline entitlement provisioning is disabled by default. The v2 endpoint returns an
 edge-specific signed artifact and an identical explicit claim object, so agents can build
 plans without decoding the artifact. Enable it only after all relays and agents support the
@@ -186,11 +198,13 @@ Treat that volume as private key material and include it in protected edge-state
 Set one stable `RELAY_EDGE_ID` per Relay and keep the default 30-second
 `BLINDPORT_RELAY_HEARTBEAT_INTERVAL`. Generate one unique 32-byte token per edge. Mount only
 that edge's token through `BLINDPORT_RELAY_HEARTBEAT_TOKEN_FILE`, and mount the canonical
-edge-to-token JSON map only on the backend through `RELAY_HEARTBEAT_KEYS_FILE`. The Relay
-posts a fixed-cardinality readiness and aggregate counter snapshot through the
-secret-authenticated control API. The backend retains only the latest row per configured
-edge. Heartbeat failures never alter Relay readiness; admin fleet state becomes stale after
-`RELAY_HEARTBEAT_STALE_SECONDS`.
+edge-to-token JSON map only on the backend through `RELAY_HEARTBEAT_KEYS_FILE`. The Relay posts
+fixed-cardinality readiness and aggregate counters plus a bounded active subscription-presence
+snapshot through the secret-authenticated control API. The presence snapshot contains public
+subscription IDs but no source addresses, upstream addresses, domains, or traffic content. The
+backend retains only the latest health row and per-subscription observation for each configured
+edge. Heartbeat failures never alter Relay readiness; admin fleet and connection state becomes
+stale after `RELAY_HEARTBEAT_STALE_SECONDS`.
 This fallback is limited to framed tunnels. It does not alter routed WireGuard,
 which continues using its enrolled desired-state reconciliation path and never
 uses an entitlement cache or proof. Framed agents refresh provisioning every 30

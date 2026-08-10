@@ -19,7 +19,8 @@
 
   <section aria-labelledby="beta-title">
     <h2 id="beta-title">Best-effort beta</h2>
-    <p>The hosted beta is provided on a best-effort basis without an uptime, availability, or high-availability guarantee. High availability is planned after beta, but planned work is not a promise about the current service.</p>
+    <p>The hosted beta is provided on a best-effort basis without an uptime, availability, or high-availability guarantee. Relay and Port use two provider edges to improve resilience for new connections, but DNS does not perform health steering and established sessions do not migrate. A routed dedicated IP is assigned by one provider and becomes unavailable during that provider's outage. The hosted website and control plane currently run at one provider. High availability is planned after beta, but planned work is not a promise about the current service.</p>
+    <p>When the control plane is unreachable, a previously issued signed Relay or Port authorization may remain usable until its bounded grace timestamp. This grace is a reachability safeguard, does not extend the paid service term, and does not override a successful online denial.</p>
   </section>
 
   <section aria-labelledby="fair-use-title">

@@ -35,6 +35,7 @@ from ..core.models import (
     Payment,
     PaymentMethod,
     ProductType,
+    RelaySubscriptionConnection,
     ReminderDelivery,
     Subscription,
     SubscriptionStatus,
@@ -183,7 +184,7 @@ def _ctx(request: Request, **extra) -> dict:
             else "Geometric B mark."
         ),
         "twitter_card": "summary_large_image" if official_branding else "summary",
-        "ip_price": settings.IP_MONTHLY_SATS,
+        "ip_price": None,
         "ip_yearly_price": settings.IP_YEARLY_SATS,
         "port_price": settings.PORT_MONTHLY_SATS,
         "port_yearly_price": settings.PORT_YEARLY_SATS,
@@ -202,6 +203,9 @@ def _ctx(request: Request, **extra) -> dict:
         "nwc_enabled": settings.is_payment_method_enabled(PaymentMethod.NWC),
         "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
         "stablecoin_enabled": settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP),
+        "notification_email_enabled": (
+            settings.REMINDER_EMAIL_ENABLED or settings.ANNOUNCEMENT_EMAIL_ENABLED
+        ),
         "reminder_email_enabled": settings.REMINDER_EMAIL_ENABLED,
         "announcement_email_enabled": settings.ANNOUNCEMENT_EMAIL_ENABLED,
         "smtp_egress_fee_sats": settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
@@ -411,7 +415,20 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
                 if subscription.status == SubscriptionStatus.ACTIVE
             ],
             client_config_json=(
-                json.dumps({"version": 2, "mappings": client_mappings}, indent=2)
+                json.dumps(
+                    {
+                        "version": 3,
+                        "accounts": [
+                            {
+                                "name": "default",
+                                "token_file": "/home/replace-me/.config/blindport/accounts/default.token",
+                                "state_dir": "/home/replace-me/.local/state/blindport/accounts/default",
+                                "mappings": client_mappings,
+                            }
+                        ],
+                    },
+                    indent=2,
+                )
                 if client_mappings
                 else ""
             ),
@@ -529,6 +546,15 @@ def admin_panel(
         if subscription_ids
         else []
     )
+    subscription_connections = (
+        session.exec(
+            select(RelaySubscriptionConnection).where(
+                RelaySubscriptionConnection.subscription_id.in_(subscription_ids)  # type: ignore[union-attr]
+            )
+        ).all()
+        if subscription_ids
+        else []
+    )
 
     payment_total = int(
         session.exec(
@@ -623,7 +649,9 @@ def admin_panel(
         "admin.html",
         _ctx(
             request,
-            subscription_rows=build_subscription_rows(users, subs, subscription_payments),
+            subscription_rows=build_subscription_rows(
+                users, subs, subscription_payments, subscription_connections
+            ),
             payment_rows=payment_rows,
             reminder_rows=reminder_rows,
             announcements=announcements,

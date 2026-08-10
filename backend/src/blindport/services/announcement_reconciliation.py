@@ -190,6 +190,6 @@ def _is_delivery_eligible(delivery: AnnouncementDelivery, user: User) -> bool:
     return bool(
         not user.is_admin
         and not user.is_suspended
-        and user.has_service_email
-        and delivery.recipient_generation == user.service_email_generation
+        and user.has_notification_email
+        and delivery.recipient_generation == user.notification_email_generation
     )

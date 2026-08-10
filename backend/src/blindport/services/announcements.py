@@ -10,12 +10,7 @@ from sqlmodel import Session, select
 
 from .. import config
 from ..adapters.smtp import SmtpAdapter, SmtpDeliveryError
-from ..core.credentials import (
-    CredentialCipher,
-    CredentialError,
-    CredentialPurpose,
-    EncryptedCredential,
-)
+from ..core.credentials import CredentialCipher, CredentialError
 from ..core.models import (
     Announcement,
     AnnouncementDelivery,
@@ -27,7 +22,7 @@ from ..core.models import (
     NotificationDeliveryState,
     User,
 )
-from .reminders import ReminderEmailError, normalize_reminder_email
+from .notification_email import lock_and_decrypt_notification_email
 
 MAX_ANNOUNCEMENT_ATTEMPTS = 20
 _TERMINAL_DELIVERY_STATES = (
@@ -40,14 +35,6 @@ _TERMINAL_DELIVERY_STATES = (
 
 class AnnouncementError(ValueError):
     """An announcement is invalid without reflecting its contents."""
-
-
-class AnnouncementEmailError(ValueError):
-    """A service announcement address is invalid or unavailable without reflecting it."""
-
-
-def _cipher() -> CredentialCipher:
-    return CredentialCipher(config.settings.CREDENTIAL_ENCRYPTION_KEY)
 
 
 def validate_announcement_content(subject: str, body: str) -> tuple[str, str]:
@@ -70,69 +57,6 @@ def validate_announcement_content(subject: str, body: str) -> tuple[str, str]:
     ):
         raise AnnouncementError("announcement body is invalid")
     return subject, normalized_body
-
-
-def store_service_announcement_email(
-    user: User,
-    email: str,
-    *,
-    cipher: CredentialCipher | None = None,
-) -> str:
-    try:
-        normalized = normalize_reminder_email(email)
-    except ReminderEmailError as error:
-        raise AnnouncementEmailError("service announcement email address is invalid") from error
-    encrypted = (cipher or _cipher()).encrypt(
-        user.public_id,
-        normalized,
-        purpose=CredentialPurpose.SERVICE_EMAIL,
-    )
-    user.service_email_ciphertext = encrypted.ciphertext
-    user.service_email_key_version = encrypted.key_version
-    user.service_email_generation += 1
-    user.has_service_email = True
-    return normalized
-
-
-def decrypt_service_announcement_email(
-    user: User,
-    expected_generation: int | None = None,
-    *,
-    cipher: CredentialCipher | None = None,
-) -> str:
-    if expected_generation is not None and user.service_email_generation != expected_generation:
-        raise CredentialError("service announcement email generation changed")
-    if (
-        not user.has_service_email
-        or not user.service_email_ciphertext
-        or not user.service_email_key_version
-    ):
-        raise CredentialError("service announcement email is unavailable")
-    plaintext = (cipher or _cipher()).decrypt(
-        user.public_id,
-        EncryptedCredential(
-            user.service_email_ciphertext,
-            user.service_email_key_version,
-        ),
-        purpose=CredentialPurpose.SERVICE_EMAIL,
-    )
-    try:
-        return normalize_reminder_email(plaintext)
-    except ReminderEmailError as error:
-        raise CredentialError("service announcement email plaintext is invalid") from error
-
-
-def clear_service_announcement_email(user: User) -> None:
-    if (
-        not user.has_service_email
-        and user.service_email_ciphertext is None
-        and user.service_email_key_version is None
-    ):
-        return
-    user.has_service_email = False
-    user.service_email_ciphertext = None
-    user.service_email_key_version = None
-    user.service_email_generation += 1
 
 
 def create_announcement(
@@ -159,8 +83,8 @@ def eligible_recipient_count(session: Session) -> int:
             select(func.count())
             .select_from(User)
             .where(
-                User.has_service_email,
-                User.service_email_generation >= 1,
+                User.has_notification_email,
+                User.notification_email_generation >= 1,
                 User.is_admin.is_(False),  # type: ignore[union-attr]
                 User.is_suspended.is_(False),  # type: ignore[union-attr]
             )
@@ -187,10 +111,10 @@ def queue_announcement(
     queued_at = _aware(now or datetime.now(UTC))
     assert announcement.id is not None
     eligible_recipients = select(
-        literal(announcement.id), User.id, User.service_email_generation
+        literal(announcement.id), User.id, User.notification_email_generation
     ).where(
-        User.has_service_email,
-        User.service_email_generation >= 1,
+        User.has_notification_email,
+        User.notification_email_generation >= 1,
         User.is_admin.is_(False),  # type: ignore[union-attr]
         User.is_suspended.is_(False),  # type: ignore[union-attr]
     )
@@ -330,8 +254,8 @@ def send_announcement(
     session.add(delivery)
     session.commit()
     try:
-        recipient = decrypt_service_announcement_email(
-            user, delivery.recipient_generation, cipher=cipher
+        recipient = lock_and_decrypt_notification_email(
+            session, user.id, delivery.recipient_generation, cipher=cipher
         )
         adapter.send_message(
             recipient,

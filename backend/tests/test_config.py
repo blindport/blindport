@@ -45,7 +45,6 @@ def _production_settings(**overrides) -> Settings:
         "DEBUG": False,
         "CA_DIR": "/var/lib/blindport/ca",
         "LEGACY_CLIENT_CERT_ISSUANCE_ENABLED": False,
-        "IP_MONTHLY_SATS": 7500,
         "IP_YEARLY_SATS": 75000,
         "PORT_MONTHLY_SATS": 1500,
         "PORT_YEARLY_SATS": 15000,
@@ -68,6 +67,10 @@ def _production_settings(**overrides) -> Settings:
 
 def test_startup_database_migration_defaults_on() -> None:
     assert Settings(_env_file=None).DATABASE_MIGRATE_ON_STARTUP is True
+
+
+def test_obsolete_ip_monthly_price_is_ignored() -> None:
+    assert Settings(_env_file=None, IP_MONTHLY_SATS=1).IP_YEARLY_SATS == 75000
 
 
 def test_relay_wildcard_price_defaults_are_yearly_discounted() -> None:
@@ -351,7 +354,7 @@ def test_nwc_lease_must_cover_helper_timeout() -> None:
         )
 
 
-@pytest.mark.parametrize("product", ["IP", "PORT", "RELAY", "RELAY_WILDCARD"])
+@pytest.mark.parametrize("product", ["PORT", "RELAY", "RELAY_WILDCARD"])
 def test_yearly_price_must_equal_ten_monthly_payments(product: str) -> None:
     with pytest.raises(ValidationError, match=f"{product}_YEARLY_SATS must equal 10 times"):
         Settings(_env_file=None, **{f"{product}_YEARLY_SATS": 12345})
@@ -476,7 +479,6 @@ def test_reminder_lease_covers_smtp_timeout() -> None:
         ({"DEBUG": True}, "DEBUG"),
         ({"CA_DIR": "data/ca"}, "CA_DIR"),
         ({"LEGACY_CLIENT_CERT_ISSUANCE_ENABLED": True}, "LEGACY_CLIENT_CERT_ISSUANCE_ENABLED"),
-        ({"IP_MONTHLY_SATS": 0}, "IP_MONTHLY_SATS"),
         ({"IP_YEARLY_SATS": 0}, "IP_YEARLY_SATS"),
         ({"PORT_MONTHLY_SATS": -1}, "PORT_MONTHLY_SATS"),
         ({"PORT_YEARLY_SATS": -1}, "PORT_YEARLY_SATS"),

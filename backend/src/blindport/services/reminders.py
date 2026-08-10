@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from email.headerregistry import Address
 
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
@@ -14,12 +12,7 @@ from sqlmodel import Session, select
 
 from .. import config
 from ..adapters.smtp import SmtpAdapter, SmtpDeliveryError
-from ..core.credentials import (
-    CredentialCipher,
-    CredentialError,
-    CredentialPurpose,
-    EncryptedCredential,
-)
+from ..core.credentials import CredentialCipher, CredentialError
 from ..core.models import (
     ReminderDelivery,
     ReminderDeliveryState,
@@ -27,110 +20,15 @@ from ..core.models import (
     Subscription,
     User,
 )
+from .notification_email import lock_and_decrypt_notification_email
 
 MAX_REMINDER_ATTEMPTS = 20
-_LOCAL_PART = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*")
-_DOMAIN_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
-
-
-class ReminderEmailError(ValueError):
-    """A reminder address is invalid or unavailable without reflecting it."""
 
 
 @dataclass(frozen=True)
 class RenderedReminder:
     subject: str
     body: str
-
-
-def _cipher() -> CredentialCipher:
-    return CredentialCipher(config.settings.CREDENTIAL_ENCRYPTION_KEY)
-
-
-def normalize_reminder_email(value: str) -> str:
-    """Return a conservative addr-spec with a canonical lowercase DNS domain."""
-    if not isinstance(value, str) or not value or value.strip() != value:
-        raise ReminderEmailError("reminder email address is invalid")
-    if len(value) > 254 or not value.isascii() or any(character.isspace() for character in value):
-        raise ReminderEmailError("reminder email address is invalid")
-    if value.count("@") != 1:
-        raise ReminderEmailError("reminder email address is invalid")
-    local_part, domain = value.rsplit("@", 1)
-    labels = domain.split(".")
-    if (
-        not 1 <= len(local_part) <= 64
-        or not _LOCAL_PART.fullmatch(local_part)
-        or len(labels) < 2
-        or any(not _DOMAIN_LABEL.fullmatch(label) for label in labels)
-        or not labels[-1].isalpha()
-        or len(labels[-1]) < 2
-    ):
-        raise ReminderEmailError("reminder email address is invalid")
-    normalized = f"{local_part}@{domain.lower()}"
-    try:
-        parsed = Address(addr_spec=normalized)
-    except (TypeError, ValueError):
-        raise ReminderEmailError("reminder email address is invalid") from None
-    if parsed.display_name or parsed.addr_spec != normalized:
-        raise ReminderEmailError("reminder email address is invalid")
-    return normalized
-
-
-def store_reminder_email(
-    user: User,
-    email: str,
-    *,
-    cipher: CredentialCipher | None = None,
-) -> str:
-    normalized = normalize_reminder_email(email)
-    encrypted = (cipher or _cipher()).encrypt(
-        user.public_id,
-        normalized,
-        purpose=CredentialPurpose.REMINDER_EMAIL,
-    )
-    user.reminder_email_ciphertext = encrypted.ciphertext
-    user.reminder_email_key_version = encrypted.key_version
-    user.reminder_email_generation += 1
-    user.has_reminder_email = True
-    return normalized
-
-
-def decrypt_reminder_email(
-    user: User,
-    expected_generation: int | None = None,
-    *,
-    cipher: CredentialCipher | None = None,
-) -> str:
-    if expected_generation is not None and user.reminder_email_generation != expected_generation:
-        raise CredentialError("reminder email generation changed")
-    if (
-        not user.has_reminder_email
-        or not user.reminder_email_ciphertext
-        or not user.reminder_email_key_version
-    ):
-        raise CredentialError("reminder email is unavailable")
-    plaintext = (cipher or _cipher()).decrypt(
-        user.public_id,
-        EncryptedCredential(user.reminder_email_ciphertext, user.reminder_email_key_version),
-        purpose=CredentialPurpose.REMINDER_EMAIL,
-    )
-    try:
-        return normalize_reminder_email(plaintext)
-    except ReminderEmailError as error:
-        raise CredentialError("reminder email plaintext is invalid") from error
-
-
-def clear_reminder_email(user: User) -> None:
-    if (
-        not user.has_reminder_email
-        and user.reminder_email_ciphertext is None
-        and user.reminder_email_key_version is None
-    ):
-        return
-    user.has_reminder_email = False
-    user.reminder_email_ciphertext = None
-    user.reminder_email_key_version = None
-    user.reminder_email_generation += 1
 
 
 def render_expiration_reminder(
@@ -164,7 +62,7 @@ def queue_reminder(
     if subscription.id is None or subscription.current_period_end is None:
         raise ValueError("subscription must be persisted with a current period end")
     user = session.get(User, subscription.user_id)
-    if user is None or not user.has_reminder_email or user.reminder_email_generation < 1:
+    if user is None or not user.has_notification_email or user.notification_email_generation < 1:
         raise ValueError("subscription account has no reminder recipient")
     statement = select(ReminderDelivery).where(
         ReminderDelivery.subscription_id == subscription.id,
@@ -174,11 +72,11 @@ def queue_reminder(
     existing = session.exec(statement).first()
     if existing is not None:
         if existing.state == ReminderDeliveryState.QUEUED:
-            existing.recipient_generation = user.reminder_email_generation
+            existing.recipient_generation = user.notification_email_generation
             session.add(existing)
         elif existing.state == ReminderDeliveryState.CANCELLED:
             existing.state = ReminderDeliveryState.QUEUED
-            existing.recipient_generation = user.reminder_email_generation
+            existing.recipient_generation = user.notification_email_generation
             existing.attempt_count = 0
             existing.error_code = None
             existing.last_attempt_at = None
@@ -191,7 +89,7 @@ def queue_reminder(
     delivery = ReminderDelivery(
         subscription_id=subscription.id,
         current_period_end=subscription.current_period_end,
-        recipient_generation=user.reminder_email_generation,
+        recipient_generation=user.notification_email_generation,
         kind=kind,
     )
     try:
@@ -233,8 +131,9 @@ def send_reminder(
     session.commit()
 
     try:
-        recipient = decrypt_reminder_email(
-            user,
+        recipient = lock_and_decrypt_notification_email(
+            session,
+            user.id,
             delivery.recipient_generation,
             cipher=cipher,
         )

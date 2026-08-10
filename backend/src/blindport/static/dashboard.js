@@ -534,7 +534,7 @@ async function pollPayment(payment, status) {
 }
 
 async function startNwcFlow(subId, term, trigger, budgetNotice = "") {
-  const originalText = trigger.textContent;
+  const originalText = trigger.dataset.originalText || trigger.textContent;
   const cardStatus = trigger.closest(".subscription-card")?.querySelector(".cardStatus");
   const status = cardStatus || document.getElementById("nwcStatus") || trigger;
   trigger.disabled = true;
@@ -637,6 +637,7 @@ document.querySelectorAll(".inline-nwc-form").forEach((form) => {
     const autoRenew = form.querySelector(".inlineNwcAutoRenew");
     const card = form.closest(".subscription-card");
     const status = card.querySelector(".cardStatus");
+    button.dataset.originalText = button.textContent;
     button.disabled = true;
     button.textContent = "Connecting wallet...";
     status.textContent = "Validating wallet connection.";
@@ -660,11 +661,18 @@ document.querySelectorAll(".inline-nwc-form").forEach((form) => {
       const preflight = await checkNwcBudget(status, selectedPaymentAmount(card, term));
       if (!preflight.canPay) {
         status.textContent = preflight.notice;
-        button.textContent = "Wallet connected";
+        button.disabled = false;
+        button.type = "button";
+        button.textContent = "Reload dashboard";
+        button.addEventListener("click", () => window.location.reload(), { once: true });
         window.setTimeout(() => window.location.reload(), 2500);
         return;
       }
       await startNwcFlow(form.dataset.subId, term, button, preflight.notice);
+      button.disabled = false;
+      button.type = "button";
+      button.textContent = "Reload dashboard";
+      button.addEventListener("click", () => window.location.reload(), { once: true });
     } catch (error) {
       input.value = "";
       status.textContent = `Wallet connection error: ${error.message}`;
@@ -794,88 +802,45 @@ if (revokeNwcButton) {
   });
 }
 
-const reminderForm = document.getElementById("reminderForm");
-if (reminderForm) {
-  reminderForm.addEventListener("submit", async (event) => {
+const notificationEmailForm = document.getElementById("notificationEmailForm");
+if (notificationEmailForm) {
+  notificationEmailForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const button = document.getElementById("saveReminderBtn");
-    const status = document.getElementById("reminderStatus");
+    const button = document.getElementById("saveNotificationEmailBtn");
+    const status = document.getElementById("notificationEmailStatus");
     button.disabled = true;
-    status.textContent = "Saving reminder preference...";
+    status.textContent = "Saving notification preference...";
     try {
-      await jsonFetch("/api/v1/me/reminder-email", {
+      await jsonFetch("/api/v1/me/notification-email", {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ email: document.getElementById("reminderEmail").value }),
+        body: JSON.stringify({ email: document.getElementById("notificationEmail").value }),
       });
-      document.getElementById("reminderEmail").value = "";
-      status.textContent = "Reminders enabled. Reloading the dashboard.";
+      document.getElementById("notificationEmail").value = "";
+      status.textContent = "Service notifications enabled. Reloading the dashboard.";
       window.setTimeout(() => window.location.reload(), 500);
     } catch (error) {
-      status.textContent = `Reminder preference error: ${error.message}`;
+      status.textContent = `Notification preference error: ${error.message}`;
       button.disabled = false;
     }
   });
 }
 
-const deleteReminderButton = document.getElementById("deleteReminderBtn");
-if (deleteReminderButton) {
-  deleteReminderButton.addEventListener("click", async () => {
-    deleteReminderButton.disabled = true;
-    const status = document.getElementById("reminderStatus");
+const deleteNotificationEmailButton = document.getElementById("deleteNotificationEmailBtn");
+if (deleteNotificationEmailButton) {
+  deleteNotificationEmailButton.addEventListener("click", async () => {
+    deleteNotificationEmailButton.disabled = true;
+    const status = document.getElementById("notificationEmailStatus");
     try {
-      await jsonFetch("/api/v1/me/reminder-email", {
+      await jsonFetch("/api/v1/me/notification-email", {
         method: "DELETE",
         headers: authHeaders(),
       });
-      status.textContent = "Reminders disabled. Reloading the dashboard.";
+      status.textContent = "Service notifications disabled. Reloading the dashboard.";
       window.setTimeout(() => window.location.reload(), 500);
     } catch (error) {
-      status.textContent = `Reminder preference error: ${error.message}`;
-      deleteReminderButton.disabled = false;
-    }
-  });
-}
-
-const announcementEmailForm = document.getElementById("announcementEmailForm");
-if (announcementEmailForm) {
-  announcementEmailForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const button = document.getElementById("saveAnnouncementEmailBtn");
-    const status = document.getElementById("announcementStatus");
-    button.disabled = true;
-    status.textContent = "Saving service announcement preference...";
-    try {
-      await jsonFetch("/api/v1/me/service-email", {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ email: document.getElementById("announcementEmail").value }),
-      });
-      document.getElementById("announcementEmail").value = "";
-      status.textContent = "Service announcements enabled. Reloading the dashboard.";
-      window.setTimeout(() => window.location.reload(), 500);
-    } catch (error) {
-      status.textContent = `Service announcement preference error: ${error.message}`;
-      button.disabled = false;
-    }
-  });
-}
-
-const deleteAnnouncementEmailButton = document.getElementById("deleteAnnouncementEmailBtn");
-if (deleteAnnouncementEmailButton) {
-  deleteAnnouncementEmailButton.addEventListener("click", async () => {
-    deleteAnnouncementEmailButton.disabled = true;
-    const status = document.getElementById("announcementStatus");
-    try {
-      await jsonFetch("/api/v1/me/service-email", {
-        method: "DELETE",
-        headers: authHeaders(),
-      });
-      status.textContent = "Service announcements disabled. Reloading the dashboard.";
-      window.setTimeout(() => window.location.reload(), 500);
-    } catch (error) {
-      status.textContent = `Service announcement preference error: ${error.message}`;
-      deleteAnnouncementEmailButton.disabled = false;
+      status.textContent = `Notification preference error: ${error.message}`;
+      deleteNotificationEmailButton.disabled = false;
     }
   });
 }
@@ -939,6 +904,12 @@ function validUpstream(value) {
   return host.length > 0 && portNumber >= 1 && portNumber <= 65535;
 }
 
+function validLinuxHomePath(value) {
+  if (!/^\/[^\u0000-\u001F\u007F]+$/u.test(value) || value.length > 255) return false;
+  if (value === "/" || value.endsWith("/") || value !== value.trim() || value.includes("//")) return false;
+  return !value.split("/").some((part) => part === "." || part === "..");
+}
+
 function updateClientConfig() {
   const controls = [...document.querySelectorAll(".mapping-control")];
   if (!controls.length) return;
@@ -962,7 +933,20 @@ function updateClientConfig() {
     }
     return mapping;
   });
-  const configText = JSON.stringify({ version: 2, mappings }, null, 2);
+  const homeInput = document.getElementById("linuxHomePath");
+  const homePath = homeInput?.value.trim() || "";
+  const homeValid = validLinuxHomePath(homePath);
+  homeInput?.setAttribute("aria-invalid", String(!homeValid));
+  const renderedHome = homeValid ? homePath : "/home/replace-me";
+  const configText = JSON.stringify({
+    version: 3,
+    accounts: [{
+      name: "default",
+      token_file: `${renderedHome}/.config/blindport/accounts/default.token`,
+      state_dir: `${renderedHome}/.local/state/blindport/accounts/default`,
+      mappings,
+    }],
+  }, null, 2);
   document.getElementById("generatedClientConfig").textContent = configText;
   document.getElementById("framedConfigInstallCommand").textContent =
     `install -d -m 700 "$HOME/.config/blindport" &&\n` +
@@ -973,12 +957,14 @@ function updateClientConfig() {
     `([ ! -f "$HOME/.config/blindport/config.json" ] || ` +
     `install -m 600 "$HOME/.config/blindport/config.json" "$HOME/.config/blindport/config.json.backup") &&\n` +
     `mv -f -- "$temporary" "$HOME/.config/blindport/config.json"`;
-  const ready = targetsValid && termsAccepted;
+  const ready = targetsValid && termsAccepted && homeValid;
   document.querySelectorAll(".configDependent").forEach((button) => {
     button.disabled = !ready;
   });
   const status = document.getElementById("configSetupStatus");
-  if (!targetsValid) {
+  if (!homeValid) {
+    status.textContent = "Enter the absolute home directory for the Linux user that will run blindportd.";
+  } else if (!targetsValid) {
     status.textContent = "Correct each local target before installing this configuration.";
   } else if (!termsAccepted) {
     status.textContent = "Review and accept the Let's Encrypt agreement to enable automatic HTTPS.";
@@ -991,6 +977,7 @@ document.querySelectorAll(".mappingUpstream").forEach((input) => {
   input.addEventListener("input", updateClientConfig);
 });
 document.getElementById("acmeTermsAccepted")?.addEventListener("change", updateClientConfig);
+document.getElementById("linuxHomePath")?.addEventListener("input", updateClientConfig);
 
 document.querySelectorAll(".copyCommandBtn").forEach((button) => {
   button.addEventListener("click", async () => {

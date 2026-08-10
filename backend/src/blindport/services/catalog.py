@@ -23,7 +23,7 @@ def _available_product(
     product: ProductType,
     enabled: bool,
     sales_paused: bool,
-    monthly_price: int,
+    monthly_price: int | None,
     yearly_price: int,
     capacity: CatalogCapacityResponse,
     has_capacity: bool,
@@ -72,7 +72,7 @@ def get_catalog(session: Session) -> CatalogResponse:
         ProductType.IP,
         settings.IP_ENABLED,
         settings.IP_SALES_PAUSED,
-        settings.IP_MONTHLY_SATS,
+        None,
         settings.IP_YEARLY_SATS,
         CatalogCapacityResponse(
             total=len(wireguard_inventory),

@@ -33,7 +33,7 @@ def test_fresh_sqlite_chain_creates_generic_outbox(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
     upgrade_database(engine)
     inspector = inspect(engine)
-    assert database_revisions(engine) == ("0023", "0023")
+    assert database_revisions(engine) == ("0025", "0025")
     assert {
         column["name"] for column in inspector.get_columns("reminderdelivery")
     } == _GENERIC_COLUMNS
@@ -50,7 +50,7 @@ def test_deployed_0012_sqlite_rows_are_preserved_scrubbed_and_not_replayed(tmp_p
 
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0023", "0023")
+    assert database_revisions(engine) == ("0025", "0025")
     columns = {column["name"] for column in inspect(engine).get_columns("reminderdelivery")}
     assert columns == _GENERIC_COLUMNS
     with engine.connect() as connection:
@@ -66,7 +66,8 @@ def test_deployed_0012_sqlite_rows_are_preserved_scrubbed_and_not_replayed(tmp_p
         )
         user = connection.execute(
             text(
-                "SELECT reminder_email_ciphertext, reminder_email_key_version "
+                "SELECT has_notification_email, notification_email_ciphertext, "
+                "notification_email_key_version, notification_email_generation "
                 'FROM "user" WHERE id = 1'
             )
         ).one()
@@ -79,7 +80,7 @@ def test_deployed_0012_sqlite_rows_are_preserved_scrubbed_and_not_replayed(tmp_p
     assert rows[1]["state"] == "cancelled"
     assert rows[1]["error_code"] == "legacy_delivery_cancelled"
     assert all(row["terminal_at"] is not None for row in rows)
-    assert user == ("v1.encrypted-recipient", "key-version")
+    assert user == (False, None, None, 0)
     assert legacy_admin == (True, True)
 
 

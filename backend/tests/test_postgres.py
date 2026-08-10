@@ -383,8 +383,8 @@ def test_postgres_reminder_lease_allows_one_concurrent_worker(monkeypatch) -> No
     with Session(engine) as session:
         user = User(
             hashed_token=f"reminder-lease-{marker}",
-            has_reminder_email=True,
-            reminder_email_generation=1,
+            has_notification_email=True,
+            notification_email_generation=1,
         )
         session.add(user)
         session.flush()
@@ -439,8 +439,8 @@ def test_postgres_notification_lease_allows_one_concurrent_worker(monkeypatch) -
     with Session(engine) as session:
         user = User(
             hashed_token=f"notification-lease-{marker}",
-            has_reminder_email=True,
-            reminder_email_generation=1,
+            has_notification_email=True,
+            notification_email_generation=1,
         )
         session.add(user)
         session.flush()
@@ -501,8 +501,8 @@ def test_postgres_campaign_snapshot_expansion_is_serialized(monkeypatch) -> None
         users = [
             User(
                 hashed_token=f"notification-campaign-{marker}-{index}",
-                has_service_email=True,
-                service_email_generation=index + 1,
+                has_notification_email=True,
+                notification_email_generation=index + 1,
             )
             for index in range(2)
         ]
@@ -544,7 +544,7 @@ def test_postgres_campaign_snapshot_expansion_is_serialized(monkeypatch) -> None
             assert {snapshot.user_id for snapshot in snapshots} == set(user_ids)
             assert {delivery.user_id for delivery in deliveries} == set(user_ids)
             assert {delivery.user_id: delivery.recipient_generation for delivery in deliveries} == {
-                user.id: user.service_email_generation for user in users
+                user.id: user.notification_email_generation for user in users
             }
     finally:
         with engine.begin() as connection:
@@ -580,7 +580,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0023")
+    assert database_revisions(engine) == ("0008", "0025")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -633,7 +633,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0023", "0023")
+    assert database_revisions(engine) == ("0025", "0025")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -1364,7 +1364,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0023", "0023")
+        assert database_revisions(engine) == ("0025", "0025")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

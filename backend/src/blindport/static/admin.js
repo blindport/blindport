@@ -6,6 +6,7 @@
   const status = document.querySelector("#adminStatusFilter");
   const product = document.querySelector("#adminProductFilter");
   const activity = document.querySelector("#adminActivityFilter");
+  const connection = document.querySelector("#adminConnectionFilter");
   const clearButton = document.querySelector("#clearAdminFilters");
   const visibleCount = document.querySelector("#adminVisibleCount");
   const noResults = document.querySelector("#adminNoResults");
@@ -21,7 +22,7 @@
   setChartValue("[data-bar-size]", "--bar-size", "barSize");
   setChartValue("[data-bar-height]", "--bar-height", "barHeight");
 
-  if (!search || !status || !product || !activity || !clearButton || !visibleCount || !noResults) {
+  if (!search || !status || !product || !activity || !connection || !clearButton || !visibleCount || !noResults) {
     return;
   }
 
@@ -39,7 +40,8 @@
         (!query || row.textContent.toLowerCase().includes(query)) &&
         matchesStatus(row, status.value) &&
         (!product.value || row.dataset.product === product.value) &&
-        (!activity.value || row.dataset.activity === activity.value);
+        (!activity.value || row.dataset.activity === activity.value) &&
+        (!connection.value || row.dataset.connection === connection.value);
       row.hidden = !visible;
       if (visible) count += 1;
     });
@@ -47,7 +49,7 @@
     noResults.hidden = count !== 0;
   }
 
-  [search, status, product, activity].forEach((control) => {
+  [search, status, product, activity, connection].forEach((control) => {
     control.addEventListener(control === search ? "input" : "change", applyFilters);
   });
   clearButton.addEventListener("click", () => {
@@ -55,6 +57,7 @@
     status.value = "";
     product.value = "";
     activity.value = "";
+    connection.value = "";
     applyFilters();
     search.focus();
   });

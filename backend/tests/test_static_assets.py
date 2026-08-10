@@ -56,6 +56,10 @@ def _asset(name: str) -> str:
     return (package / name).read_text(encoding="utf-8")
 
 
+def _repository_file(name: str) -> str:
+    return (Path(__file__).resolve().parents[2] / name).read_text(encoding="utf-8")
+
+
 def _inspect(document: str) -> DocumentInspector:
     inspector = DocumentInspector()
     inspector.feed(document)
@@ -161,9 +165,9 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "if (ipSelected && yearly) yearly.checked = true;" in landing
     assert "monthly.disabled" not in landing
     assert "monthlyTerm.disabled" not in dashboard
-    assert 'jsonFetch("/api/v1/me/reminder-email"' in dashboard
-    assert 'jsonFetch("/api/v1/me/service-email"' in dashboard
-    assert "/api/v1/me/service-announcement-email" not in dashboard
+    assert 'jsonFetch("/api/v1/me/notification-email"' in dashboard
+    assert "/api/v1/me/reminder-email" not in dashboard
+    assert "/api/v1/me/service-email" not in dashboard
 
 
 def test_templates_have_accessible_external_only_structure() -> None:
@@ -246,16 +250,16 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="framedRunCommand"' in dashboard
     assert 'id="framedConfigInstallCommand"' in dashboard
     assert 'id="generatedClientConfig"' in dashboard
-    assert 'id="announcementEmailForm"' in dashboard
-    assert "user.has_service_email" in dashboard
-    assert "has_service_announcement_email" not in dashboard
+    assert 'id="notificationEmailForm"' in dashboard
+    assert "user.has_notification_email" in dashboard
     assert "Most web services need a public hostname" in dashboard
     assert "One routed dedicated /32 over WireGuard, annual-only" in dashboard
     assert 'id="newOrderTerm"' in dashboard
     assert 'id="dashboardIpAnnualOnlyHint"' in dashboard
     assert "Service notifications" in dashboard
-    assert 'id="account-updates-title">Account updates</h3>' in dashboard
-    assert 'id="service-announcements-title">Service announcements</h3>' in dashboard
+    assert (
+        "Account lifecycle updates and service announcements use one email preference." in dashboard
+    )
     assert "Relay HTTPS stays on your host" not in dashboard
     assert (
         "your agent terminates TLS and retains automatic certificate private keys while "
@@ -346,7 +350,11 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         '"upstream": "127.0.0.1:8080"',
         "blindportd -install-user-service",
         "blindportd -socks5=127.0.0.1:9050{{ backend_flag_shell }} -config=",
-        'BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"',
+        '"version": 3',
+        '"name": "public"',
+        '"token_file": "/home/blindport/.config/blindport/tokens/public"',
+        '"state_dir": "/home/blindport/.local/state/blindport-public"',
+        'tech.blindport.mapping.web.account: "public"',
         "blindport-state:/var/lib/blindport",
         "GitHub Actions builds versioned static Linux binaries",
         "only detects transfer corruption",
@@ -356,11 +364,12 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "Relay requires <code>.domain</code>",
         "<code>tcp</code> and <code>udp</code>",
         "Omit <code>.transport</code> for TCP and <code>.billing_term</code> for monthly billing",
-        "Docker labels cannot order Blindport IP",
+        "Routed Blindport IP cannot be declared with Docker labels",
         "<code>payment_pending</code> means that payment is awaiting settlement or reconciliation",
         "<code>awaiting_payment</code>",
         "<code>awaiting_domain</code>",
         "exact DNS-only CNAME",
+        "every Docker mapping must select one configured local account",
     ):
         assert term in guide
     run_section = guide.split('<section id="run">', 1)[1].split("</section>", 1)[0]
@@ -375,6 +384,60 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     assert "https://github.com/blindport/blindport/issues" in base
     assert "- blindport-state:/var/lib/blindport" in guide
     assert "volumes:\n  blindport-state:" in guide
+
+
+def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> None:
+    guide = _asset("templates/guide.html")
+    agent = _repository_file("docs/agent.md")
+    docker_readme = _repository_file("examples/docker/README.md")
+    docker_compose = _repository_file("examples/docker/compose.yaml")
+    docker_config = _repository_file("examples/docker/config/accounts.json")
+    docker_env = _repository_file("examples/docker/.env.example")
+
+    forbidden_rollout_term = "can" + "ary"
+    for document in (guide, agent, docker_readme, docker_compose, docker_config, docker_env):
+        assert forbidden_rollout_term not in document.lower()
+
+    assert '"version": 3' in docker_config
+    assert '"token_file": "/run/secrets/blindport-public"' in docker_config
+    assert '"state_dir": "/var/lib/blindport/accounts/public"' in docker_config
+    assert 'command: ["--docker", "--config=/etc/blindport/accounts.json"]' in docker_compose
+    assert 'tech.blindport.mapping.site.account: "public"' in docker_compose
+    assert "BLINDPORT_TOKEN:" not in docker_compose
+    assert "BLINDPORT_TOKEN=" not in docker_env
+    assert "owner-only token file" in docker_readme
+    assert "non-overlapping state directory" in docker_readme
+
+    for term in (
+        "stable, account-scoped order key",
+        "payment_pending",
+        "awaiting_payment",
+        "awaiting_domain",
+        "exact DNS-only CNAME",
+        "does not cancel,\nrefund, or otherwise end the subscription",
+        "two provider edges for resilience of new connections",
+        "established\nconnections do not migrate",
+        "not health steering",
+        "no availability guarantee",
+        "provider-specific",
+        "website and control plane are\nnot an HA service",
+        "previously issued paid framed\nauthorization",
+        "not an\nextension of the paid term",
+        "online denial",
+    ):
+        assert term in agent
+
+    for term in (
+        "separate agent process from Docker discovery",
+        "active annual WireGuard Blindport IP subscription",
+        "network_mode: host",
+        "cap_add: [NET_ADMIN]",
+        "only\nadditional container capability required",
+        "root-owned regular file with mode `0600`",
+        "remains root-owned",
+        "Do not give this process the Docker\nsocket",
+    ):
+        assert term in agent
 
 
 def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
@@ -582,7 +645,7 @@ def test_dashboard_stablecoin_control_follows_feature_kill_switch(app_client, mo
     assert "Pay with stablecoin" in enabled.text
 
 
-def test_dashboard_service_announcement_control_follows_feature_gate_and_hides_address(
+def test_dashboard_notification_control_follows_feature_gate_and_hides_address(
     app_client, monkeypatch
 ) -> None:
     from blindport import config
@@ -593,25 +656,25 @@ def test_dashboard_service_announcement_control_follows_feature_gate_and_hides_a
     client.cookies.set("blindport_token", signup["token"])
 
     disabled = client.get("/dashboard")
-    assert "announcementEmailForm" not in disabled.text
+    assert "notificationEmailForm" not in disabled.text
 
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     enabled = client.get("/dashboard")
-    assert "announcementEmailForm" in enabled.text
-    assert 'id="announcementStatus" role="status" aria-live="polite">Disabled' in enabled.text
-    assert "deleteAnnouncementEmailBtn" not in enabled.text
+    assert "notificationEmailForm" in enabled.text
+    assert 'id="notificationEmailStatus" role="status" aria-live="polite">Disabled' in enabled.text
+    assert "deleteNotificationEmailBtn" not in enabled.text
 
     address = "customer-announcement@example.com"
-    saved = client.post("/api/v1/me/service-email", json={"email": address}, headers=headers)
+    saved = client.post("/api/v1/me/notification-email", json={"email": address}, headers=headers)
     assert saved.status_code == 200
     rendered = client.get("/dashboard")
 
-    assert 'id="announcementStatus" role="status" aria-live="polite">Enabled' in rendered.text
-    assert "deleteAnnouncementEmailBtn" in rendered.text
+    assert 'id="notificationEmailStatus" role="status" aria-live="polite">Enabled' in rendered.text
+    assert "deleteNotificationEmailBtn" in rendered.text
     assert address not in rendered.text
 
 
-def test_dashboard_service_notifications_render_independent_feature_gated_forms(
+def test_dashboard_service_notifications_render_one_form_when_either_category_is_enabled(
     app_client, monkeypatch
 ) -> None:
     from blindport import config
@@ -622,34 +685,24 @@ def test_dashboard_service_notifications_render_independent_feature_gated_forms(
 
     disabled = client.get("/dashboard")
     assert "Service notifications" not in disabled.text
-    assert "reminderForm" not in disabled.text
-    assert "announcementEmailForm" not in disabled.text
+    assert "notificationEmailForm" not in disabled.text
 
     monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
     updates_only = client.get("/dashboard")
     assert "Service notifications" in updates_only.text
-    assert 'id="account-updates-title">Account updates</h3>' in updates_only.text
-    assert "reminderForm" in updates_only.text
-    assert "announcementEmailForm" not in updates_only.text
-    assert "/api/v1/me/reminder-email" in _asset("static/dashboard.js")
+    assert "notificationEmailForm" in updates_only.text
+    assert "/api/v1/me/notification-email" in _asset("static/dashboard.js")
 
     monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", False)
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
     announcements_only = client.get("/dashboard")
     assert "Service notifications" in announcements_only.text
-    assert "reminderForm" not in announcements_only.text
-    assert 'id="service-announcements-title">Service announcements</h3>' in announcements_only.text
-    assert "announcementEmailForm" in announcements_only.text
-    assert "/api/v1/me/service-email" in _asset("static/dashboard.js")
+    assert "notificationEmailForm" in announcements_only.text
 
     monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
     both_enabled = client.get("/dashboard")
     assert both_enabled.text.count("<summary>Service notifications</summary>") == 1
-    assert both_enabled.text.index('id="account-updates-title"') < both_enabled.text.index(
-        'id="service-announcements-title"'
-    )
-    assert "reminderForm" in both_enabled.text
-    assert "announcementEmailForm" in both_enabled.text
+    assert both_enabled.text.count('id="notificationEmailForm"') == 1
 
 
 def test_landing_distinguishes_routed_ip_sale_states(app_client, monkeypatch) -> None:

@@ -17,6 +17,7 @@ from ..core.models import (
     ProductType,
     RelayHeartbeat,
     RelayHostnameScope,
+    RelaySubscriptionConnection,
     Subscription,
     SubscriptionDailyBandwidth,
     SubscriptionStatus,
@@ -92,6 +93,9 @@ class AdminSubscriptionRow:
     status_detail: str
     activity_key: str
     activity_label: str
+    account_last_seen_at: datetime | None
+    connection_state: str
+    last_agent_connected_at: datetime | None
     nwc_state: str
     latest_payment_status: str | None
     latest_payment_method: str | None
@@ -280,14 +284,41 @@ def _row_sort_key(row: AdminSubscriptionRow) -> tuple[int, str, str]:
     return priority, row.account_public_id, row.subscription_public_id or ""
 
 
+def _connection_state(
+    connections: Iterable[RelaySubscriptionConnection], current: datetime
+) -> tuple[str, datetime | None]:
+    observations = tuple(connections)
+    last_connected_at = max(
+        (
+            _utc_datetime(connection.last_connected_at)
+            for connection in observations
+            if connection.last_connected_at is not None
+        ),
+        default=None,
+    )
+    active_observations = [connection for connection in observations if connection.active]
+    if any(
+        _utc_datetime(connection.observed_at)
+        >= current - timedelta(seconds=settings.RELAY_HEARTBEAT_STALE_SECONDS)
+        for connection in active_observations
+    ):
+        return "connected", last_connected_at
+    if active_observations:
+        return "stale", last_connected_at
+    if observations:
+        return "disconnected", last_connected_at
+    return "never", last_connected_at
+
+
 def build_subscription_rows(
     users: Iterable[User],
     subscriptions: Iterable[Subscription],
     payments: Iterable[Payment],
+    connections: Iterable[RelaySubscriptionConnection] = (),
     *,
     now: datetime | None = None,
 ) -> tuple[AdminSubscriptionRow, ...]:
-    """Build administrator rows without inferring subscription activity from traffic."""
+    """Build administrator rows from account, payment, and relay connection observations."""
     current = _utc_datetime(now or datetime.now(UTC))
     customer_by_id = {user.id: user for user in users if not user.is_admin and user.id is not None}
     customer_subscriptions = [
@@ -303,6 +334,16 @@ def build_subscription_rows(
     for payment in payments:
         if payment.subscription_id in subscription_ids:
             payments_by_subscription.setdefault(payment.subscription_id, []).append(payment)
+    configured_edge_ids = {edge.id for edge in settings.relay_edges_list}
+    connections_by_subscription: dict[int, list[RelaySubscriptionConnection]] = {}
+    for connection in connections:
+        if (
+            connection.edge_id in configured_edge_ids
+            and connection.subscription_id in subscription_ids
+        ):
+            connections_by_subscription.setdefault(connection.subscription_id, []).append(
+                connection
+            )
 
     rows: list[AdminSubscriptionRow] = []
     for subscription in customer_subscriptions:
@@ -317,6 +358,9 @@ def build_subscription_rows(
         if user.is_suspended:
             status_detail = "Account access suspended"
         activity_key, activity_label = _activity(user, current)
+        connection_state, last_agent_connected_at = _connection_state(
+            connections_by_subscription.get(subscription.id, []), current
+        )
         rows.append(
             AdminSubscriptionRow(
                 account_public_id=str(user.public_id),
@@ -328,6 +372,11 @@ def build_subscription_rows(
                 status_detail=status_detail,
                 activity_key=activity_key,
                 activity_label=activity_label,
+                account_last_seen_at=(
+                    _utc_datetime(user.last_seen_at) if user.last_seen_at is not None else None
+                ),
+                connection_state=connection_state,
+                last_agent_connected_at=last_agent_connected_at,
                 nwc_state="configured" if user.has_nwc else "not_configured",
                 latest_payment_status=(
                     _enum_key(latest_payment.status) if latest_payment is not None else None
@@ -367,6 +416,11 @@ def build_subscription_rows(
                 ),
                 activity_key=activity_key,
                 activity_label=activity_label,
+                account_last_seen_at=(
+                    _utc_datetime(user.last_seen_at) if user.last_seen_at is not None else None
+                ),
+                connection_state="not_applicable",
+                last_agent_connected_at=None,
                 nwc_state="configured" if user.has_nwc else "not_configured",
                 latest_payment_status=None,
                 latest_payment_method=None,

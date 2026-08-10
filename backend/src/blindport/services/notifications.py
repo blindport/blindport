@@ -25,8 +25,7 @@ from ..core.models import (
     Subscription,
     User,
 )
-from .announcements import decrypt_service_announcement_email
-from .reminders import decrypt_reminder_email
+from .notification_email import lock_and_decrypt_notification_email
 
 MAX_NOTIFICATION_ATTEMPTS = 20
 _MESSAGE_ID_VERSION = "blindport-notification-v1"
@@ -190,8 +189,12 @@ def send_notification(
     session.add(delivery)
     session.commit()
     try:
-        recipient = _decrypt_recipient(
-            user, delivery.category, delivery.recipient_generation, cipher
+        recipient = _locked_recipient(
+            session,
+            user,
+            delivery.category,
+            delivery.recipient_generation,
+            cipher,
         )
         rendered = render_notification(
             delivery,
@@ -386,15 +389,11 @@ def _validate_notification_refs(
 
 
 def _recipient_generation(user: User, category: NotificationCategory) -> int:
-    if category == NotificationCategory.ACCOUNT:
-        if not user.has_reminder_email or user.reminder_email_generation < 1:
-            raise ValueError("user has no account notification recipient")
-        return user.reminder_email_generation
-    if category == NotificationCategory.SERVICE:
-        if not user.has_service_email or user.service_email_generation < 1:
-            raise ValueError("user has no service notification recipient")
-        return user.service_email_generation
-    raise ValueError("notification category is invalid")
+    if category not in (NotificationCategory.ACCOUNT, NotificationCategory.SERVICE):
+        raise ValueError("notification category is invalid")
+    if not user.has_notification_email or user.notification_email_generation < 1:
+        raise ValueError("user has no notification recipient")
+    return user.notification_email_generation
 
 
 def _validate_recipient_generation_override(
@@ -415,17 +414,16 @@ def _validate_recipient_generation_override(
     return generation
 
 
-def _decrypt_recipient(
+def _locked_recipient(
+    session: Session,
     user: User,
     category: NotificationCategory,
     generation: int,
     cipher: CredentialCipher | None,
 ) -> str:
-    if category == NotificationCategory.ACCOUNT:
-        return decrypt_reminder_email(user, generation, cipher=cipher)
-    if category == NotificationCategory.SERVICE:
-        return decrypt_service_announcement_email(user, generation, cipher=cipher)
-    raise CredentialError("notification category is invalid")
+    if category not in (NotificationCategory.ACCOUNT, NotificationCategory.SERVICE):
+        raise CredentialError("notification category is invalid")
+    return lock_and_decrypt_notification_email(session, user.id, generation, cipher=cipher)
 
 
 def _render_expiration(period_end: datetime, rendered_at: datetime) -> RenderedNotification:

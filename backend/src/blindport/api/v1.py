@@ -27,7 +27,6 @@ from ..core.models import (
     AnnouncementDeliveryState,
     AnnouncementState,
     DeliveryMode,
-    NotificationCategory,
     NotificationDelivery,
     Payment,
     PaymentMethod,
@@ -52,16 +51,14 @@ from ..core.schemas import (
     CreateSubscriptionRequest,
     DomainVerificationResponse,
     MeResponse,
+    NotificationEmailRequest,
+    NotificationEmailStatusResponse,
     NwcStatusResponse,
     PaymentConflictResponse,
     PaymentResponse,
     RelayAssignmentResponse,
     RelayProvisioningResponse,
-    ReminderEmailStatusResponse,
-    ServiceEmailStatusResponse,
     SetNwcRequest,
-    SetReminderEmailRequest,
-    SetServiceEmailRequest,
     SignupResponse,
     SubscriptionResponse,
 )
@@ -72,14 +69,10 @@ from ..services import payments as payments_svc
 from ..services import subscriptions as subs_svc
 from ..services.allocator import NoCapacityError
 from ..services.announcements import (
-    AnnouncementEmailError,
     AnnouncementError,
     cancel_announcement,
-    cancel_pending_announcements,
-    clear_service_announcement_email,
     create_announcement,
     queue_announcement,
-    store_service_announcement_email,
 )
 from ..services.browser_sessions import issue_browser_session, set_browser_session_cookies
 from ..services.catalog import ProductUnavailableError, get_catalog
@@ -91,7 +84,11 @@ from ..services.domain_verification import (
     get_domain_verifier,
 )
 from ..services.health import readiness_status
-from ..services.notifications import cancel_pending_notifications
+from ..services.notification_email import (
+    cancel_pending_notification_email_deliveries,
+    clear_notification_email,
+    store_notification_email,
+)
 from ..services.nwc_credentials import (
     clear_nwc_credential,
     decrypt_nwc_credential,
@@ -105,12 +102,6 @@ from ..services.rate_limits import (
     enforce_direct_rate_limit,
     enforce_rate_limit,
     spec_for,
-)
-from ..services.reminders import (
-    ReminderEmailError,
-    cancel_pending_reminders,
-    clear_reminder_email,
-    store_reminder_email,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -537,11 +528,7 @@ def clear_nwc(
     return _nwc_status(user)
 
 
-def _reminder_status(user: User) -> ReminderEmailStatusResponse:
-    return ReminderEmailStatusResponse(configured=user.has_reminder_email)
-
-
-def _locked_reminder_user(session: Session, user: User) -> User:
+def _locked_notification_email_user(session: Session, user: User) -> User:
     if user.id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "account is unavailable")
     return session.exec(
@@ -552,195 +539,104 @@ def _locked_reminder_user(session: Session, user: User) -> User:
     ).one()
 
 
-@router.get("/me/reminder-email", response_model=ReminderEmailStatusResponse)
-def get_reminder_email_status(
-    response: Response,
-    user: User = Depends(current_user),
-) -> ReminderEmailStatusResponse:
-    response.headers["Cache-Control"] = "no-store"
-    if not settings.REMINDER_EMAIL_ENABLED:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    return _reminder_status(user)
+def _notification_email_enabled() -> bool:
+    return settings.REMINDER_EMAIL_ENABLED or settings.ANNOUNCEMENT_EMAIL_ENABLED
 
 
-@router.post("/me/reminder-email", response_model=ReminderEmailStatusResponse)
-async def set_reminder_email(
-    response: Response,
-    request: Request,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> ReminderEmailStatusResponse:
-    response.headers["Cache-Control"] = "no-store"
-    if not settings.REMINDER_EMAIL_ENABLED:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    _enforce_public_rate_limit(
-        session,
-        RateLimitScope.PAYMENT_CREATE,
-        account_identifier(user.id or 0),
-    )
+async def _read_notification_email_request(request: Request) -> NotificationEmailRequest:
+    content_type = request.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+    if content_type != "application/json":
+        raise ValueError("invalid content type")
+    encoded = bytearray()
+    async for chunk in request.stream():
+        encoded.extend(chunk)
+        if len(encoded) > 1024:
+            raise ValueError("request body is too large")
+    return NotificationEmailRequest.model_validate(json.loads(encoded))
+
+
+async def _set_notification_email(
+    request: Request, user: User, session: Session
+) -> NotificationEmailStatusResponse:
     try:
-        content_type = request.headers.get("Content-Type", "").partition(";")[0].strip().lower()
-        if content_type != "application/json":
-            raise ValueError("invalid content type")
-        encoded = bytearray()
-        async for chunk in request.stream():
-            encoded.extend(chunk)
-            if len(encoded) > 1024:
-                raise ValueError("request body is too large")
-        validated = SetReminderEmailRequest.model_validate(json.loads(encoded))
+        validated = await _read_notification_email_request(request)
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError, ValidationError) as error:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "reminder email address is invalid",
+            "notification email address is invalid",
             headers={"Cache-Control": "no-store"},
         ) from error
-    user = _locked_reminder_user(session, user)
+    user = _locked_notification_email_user(session, user)
     try:
-        cancel_pending_reminders(session, user)
-        cancel_pending_notifications(session, user, NotificationCategory.ACCOUNT)
-        store_reminder_email(user, validated.email)
-    except ReminderEmailError as error:
+        cancel_pending_notification_email_deliveries(session, user)
+        store_notification_email(user, validated.email)
+    except ValueError as error:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            str(error),
+            "notification email address is invalid",
             headers={"Cache-Control": "no-store"},
         ) from error
     except CredentialError as error:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "reminder email encryption is unavailable",
+            "notification email encryption is unavailable",
             headers={"Cache-Control": "no-store"},
         ) from error
     session.add(user)
     session.commit()
     session.refresh(user)
-    return _reminder_status(user)
+    return NotificationEmailStatusResponse(configured=user.has_notification_email)
 
 
-@router.delete("/me/reminder-email", response_model=ReminderEmailStatusResponse)
-def delete_reminder_email(
-    response: Response,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> ReminderEmailStatusResponse:
-    response.headers["Cache-Control"] = "no-store"
-    if not settings.REMINDER_EMAIL_ENABLED:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    _enforce_public_rate_limit(
-        session,
-        RateLimitScope.PAYMENT_CREATE,
-        account_identifier(user.id or 0),
-    )
-    user = _locked_reminder_user(session, user)
-    clear_reminder_email(user)
-    cancel_pending_reminders(session, user)
-    cancel_pending_notifications(session, user, NotificationCategory.ACCOUNT)
+def _delete_notification_email(user: User, session: Session) -> NotificationEmailStatusResponse:
+    user = _locked_notification_email_user(session, user)
+    clear_notification_email(user)
+    cancel_pending_notification_email_deliveries(session, user)
     session.add(user)
     session.commit()
     session.refresh(user)
-    return _reminder_status(user)
+    return NotificationEmailStatusResponse(configured=user.has_notification_email)
 
 
-def _service_email_status(user: User) -> ServiceEmailStatusResponse:
-    return ServiceEmailStatusResponse(configured=user.has_service_email)
-
-
-@router.get(
-    "/me/service-email",
-    response_model=ServiceEmailStatusResponse,
-)
-def get_service_email_status(
-    response: Response,
-    user: User = Depends(current_user),
-) -> ServiceEmailStatusResponse:
+@router.get("/me/notification-email", response_model=NotificationEmailStatusResponse)
+def get_notification_email_status(
+    response: Response, user: User = Depends(current_user)
+) -> NotificationEmailStatusResponse:
     response.headers["Cache-Control"] = "no-store"
-    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+    if not _notification_email_enabled():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
-    return _service_email_status(user)
+    return NotificationEmailStatusResponse(configured=user.has_notification_email)
 
 
-@router.post(
-    "/me/service-email",
-    response_model=ServiceEmailStatusResponse,
-)
-async def set_service_email(
+@router.post("/me/notification-email", response_model=NotificationEmailStatusResponse)
+async def set_notification_email(
     response: Response,
     request: Request,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
-) -> ServiceEmailStatusResponse:
+) -> NotificationEmailStatusResponse:
     response.headers["Cache-Control"] = "no-store"
-    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+    if not _notification_email_enabled():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     _enforce_public_rate_limit(
-        session,
-        RateLimitScope.PAYMENT_CREATE,
-        account_identifier(user.id or 0),
+        session, RateLimitScope.PAYMENT_CREATE, account_identifier(user.id or 0)
     )
-    try:
-        content_type = request.headers.get("Content-Type", "").partition(";")[0].strip().lower()
-        if content_type != "application/json":
-            raise ValueError("invalid content type")
-        encoded = bytearray()
-        async for chunk in request.stream():
-            encoded.extend(chunk)
-            if len(encoded) > 1024:
-                raise ValueError("request body is too large")
-        validated = SetServiceEmailRequest.model_validate(json.loads(encoded))
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError, ValidationError) as error:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "service announcement email address is invalid",
-            headers={"Cache-Control": "no-store"},
-        ) from error
-    user = _locked_reminder_user(session, user)
-    try:
-        cancel_pending_announcements(session, user)
-        cancel_pending_notifications(session, user, NotificationCategory.SERVICE)
-        store_service_announcement_email(user, validated.email)
-    except AnnouncementEmailError as error:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            str(error),
-            headers={"Cache-Control": "no-store"},
-        ) from error
-    except CredentialError as error:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "service announcement email encryption is unavailable",
-            headers={"Cache-Control": "no-store"},
-        ) from error
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-    return _service_email_status(user)
+    return await _set_notification_email(request, user, session)
 
 
-@router.delete(
-    "/me/service-email",
-    response_model=ServiceEmailStatusResponse,
-)
-def delete_service_email(
+@router.delete("/me/notification-email", response_model=NotificationEmailStatusResponse)
+def delete_notification_email(
     response: Response,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
-) -> ServiceEmailStatusResponse:
+) -> NotificationEmailStatusResponse:
     response.headers["Cache-Control"] = "no-store"
-    if not settings.ANNOUNCEMENT_EMAIL_ENABLED:
+    if not _notification_email_enabled():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     _enforce_public_rate_limit(
-        session,
-        RateLimitScope.PAYMENT_CREATE,
-        account_identifier(user.id or 0),
+        session, RateLimitScope.PAYMENT_CREATE, account_identifier(user.id or 0)
     )
-    user = _locked_reminder_user(session, user)
-    clear_service_announcement_email(user)
-    cancel_pending_announcements(session, user)
-    cancel_pending_notifications(session, user, NotificationCategory.SERVICE)
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-    return _service_email_status(user)
+    return _delete_notification_email(user, session)
 
 
 # ---- subscriptions --------------------------------------------------------

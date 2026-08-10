@@ -75,10 +75,10 @@ kernel, Tor, database, backup, monitoring, and external log collectors so reques
 visitor source addresses are not retained and all operational logs expire within 30 days.
 The checked-in policy cannot control independent hosting, DNS, payment, email, or
 customer systems; review those providers separately.
-Set all monthly and yearly price variables to positive satoshi amounts; the checked-in
-defaults are 7,500/75,000 for IP, 1,500/15,000 for Port, and 3,000/30,000 for Relay.
-The IP monthly value is retained for historical snapshots and validation; new IP
-subscriptions use the yearly price only.
+Set the yearly IP price and every monthly and yearly Port and Relay price to positive
+satoshi amounts. The checked-in defaults are 75,000 yearly for IP, 1,500/15,000 for
+Port, and 3,000/30,000 for Relay. Historical monthly or framed IP subscription price
+snapshots remain in the database; new IP subscriptions use the yearly price only.
 Keep `BILLING_YEARLY_ENABLED=false` until migration `0009` is applied and all old
 backend and reconciliation replicas are drained, then enable it on every replica.
 Blindport IP has no sellable capacity while yearly billing is disabled.
@@ -96,6 +96,15 @@ derived `WEBAUTHN_RP_ID=${API_DOMAIN}` and `WEBAUTHN_ORIGIN=https://${API_DOMAIN
 enabling the flag on all replicas. Every API replica must share PostgreSQL and
 `SECRET_KEY`; rotating that key revokes customer browser sessions and pending ceremonies.
 Passkeys are public-origin only. Bearer tokens remain required for agents and recovery.
+Stop every old API and notification worker before applying migration `0024`. The migration
+replaces the separate reminder and service-announcement recipient columns with one explicit
+notification preference, resets consent instead of inferring it, and cancels queued email.
+Old application code is incompatible with the new schema. Rollback to pre-`0024` code should
+restore the matching database backup rather than rely on reconstructed empty consent columns.
+Apply migration `0025` with the new backend, then deploy the backend before either new Relay.
+Old Relays may continue heartbeat reporting but omit connection attribution. A new Relay sends
+strict bounded subscription-presence fields that an old backend rejects. Roll back Relays before
+the backend. Truncated snapshots never infer disconnection for omitted subscriptions.
 For routed-IP rollout, replace and verify every relay before deploying the new
 backend. The new relay safely falls back to the old v1 desired state with no
 TCP/25 exceptions. An old relay has no routed nftables policy, so never leave one
@@ -124,9 +133,10 @@ The admin operations summary reports active subscriptions, customers with an act
 subscription, lifetime settled gross sats (not revenue), open pending or processing payments,
 catalog capacity, counts derived from the rate-limited `last_seen_at` account activity field,
 current paying-customer lifecycle counts, and latest Relay/DNS observations. Relay reports
-contain fixed-cardinality aggregate counters only and no customer identifiers. Treat stale or
-missing observations as unavailable; the database is not a metrics store, and DNS observation
-does not perform authoritative record changes.
+contain fixed-cardinality aggregate counters plus a bounded, sorted set of active public
+subscription IDs for connection-state attribution. They contain no source addresses, upstream
+addresses, domains, or traffic content. Treat stale or missing observations as unavailable; the
+database is not a metrics store, and DNS observation does not perform authoritative record changes.
 
 Create secrets with restrictive permissions. Compose file-backed secret `uid`, `gid`,
 and `mode` are not implemented by every Compose runtime, so ownership on the host is

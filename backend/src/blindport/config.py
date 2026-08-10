@@ -555,7 +555,6 @@ class Settings(BaseSettings):
     # Product catalog and sales controls
     IP_ENABLED: bool = True
     IP_SALES_PAUSED: bool = False
-    IP_MONTHLY_SATS: int = 7500
     IP_YEARLY_SATS: int = 75000
     BILLING_YEARLY_ENABLED: bool = False
     PORT_ENABLED: bool = True
@@ -1178,7 +1177,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "DNS_SUPERVISION_RESOLVERS requires two to four resolvers when DNS supervision is enabled"
                 )
-        for product in ("IP", "PORT", "RELAY", "RELAY_WILDCARD"):
+        for product in ("PORT", "RELAY", "RELAY_WILDCARD"):
             monthly = getattr(self, f"{product}_MONTHLY_SATS")
             yearly = getattr(self, f"{product}_YEARLY_SATS")
             if yearly != monthly * 10:
@@ -1514,7 +1513,6 @@ class Settings(BaseSettings):
                 except ValueError as error:
                     failures.append(str(error))
         for price_field in (
-            "IP_MONTHLY_SATS",
             "IP_YEARLY_SATS",
             "PORT_MONTHLY_SATS",
             "PORT_YEARLY_SATS",

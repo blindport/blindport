@@ -175,14 +175,10 @@ class User(SQLModel, table=True):
     nwc_generation: int = 0
     nwc_capabilities: str | None = None
     nwc_last_validated_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
-    has_reminder_email: bool = False
-    reminder_email_ciphertext: str | None = Field(default=None, sa_type=Text)
-    reminder_email_key_version: str | None = Field(default=None, max_length=32)
-    reminder_email_generation: int = 0
-    has_service_email: bool = False
-    service_email_ciphertext: str | None = Field(default=None, sa_type=Text)
-    service_email_key_version: str | None = Field(default=None, max_length=32)
-    service_email_generation: int = 0
+    has_notification_email: bool = False
+    notification_email_ciphertext: str | None = Field(default=None, sa_type=Text)
+    notification_email_key_version: str | None = Field(default=None, max_length=32)
+    notification_email_generation: int = 0
 
 
 # Keep the revoked rolling-deployment column in schema metadata without mapping
@@ -726,6 +722,18 @@ class RelayHeartbeat(SQLModel, table=True):
     accepted_connections_total: int = Field(sa_type=BigInteger)
     forwarded_bytes_total: int = Field(sa_type=BigInteger)
     received_at: datetime = Field(sa_type=DateTime(timezone=True), index=True)
+
+
+class RelaySubscriptionConnection(SQLModel, table=True):
+    """Latest privacy-preserving connection state for one edge subscription pair."""
+
+    __table_args__ = (Index("ix_relaysubscriptionconnection_subscription_id", "subscription_id"),)
+
+    edge_id: str = Field(primary_key=True, max_length=63)
+    subscription_id: int = Field(foreign_key="subscription.id", primary_key=True)
+    active: bool
+    observed_at: datetime = Field(sa_type=DateTime(timezone=True))
+    last_connected_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
 
 
 class SubscriptionDailyBandwidth(SQLModel, table=True):

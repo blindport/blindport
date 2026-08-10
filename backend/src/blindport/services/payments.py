@@ -898,7 +898,7 @@ def _finalize_payment(
         settings.REMINDER_EMAIL_ENABLED
         and user is not None
         and not user.is_suspended
-        and user.has_reminder_email
+        and user.has_notification_email
         and subscription.current_period_end is not None
     ):
         kind = (

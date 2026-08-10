@@ -15,7 +15,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
@@ -29,6 +29,7 @@ from ..core.models import (
     ProductType,
     RelayHeartbeat,
     RelayHostnameScope,
+    RelaySubscriptionConnection,
     Subscription,
     SubscriptionStatus,
     Transport,
@@ -87,6 +88,34 @@ class RelayHeartbeatRequest(BaseModel):
     active_streams: int = Field(ge=0, le=9_223_372_036_854_775_807)
     accepted_connections_total: int = Field(ge=0, le=9_223_372_036_854_775_807)
     forwarded_bytes_total: int = Field(ge=0, le=9_223_372_036_854_775_807)
+    active_subscription_ids: list[str] | None = Field(default=None, max_length=1000)
+    active_subscription_ids_truncated: bool = False
+
+    @field_validator("active_subscription_ids")
+    @classmethod
+    def validate_active_subscription_ids(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return values
+        canonical_ids: list[str] = []
+        for value in values:
+            try:
+                parsed = UUID(value)
+            except (TypeError, ValueError, AttributeError) as error:
+                raise ValueError("active subscription ID must be a canonical UUID") from error
+            if str(parsed) != value:
+                raise ValueError("active subscription ID must be a canonical UUID")
+            canonical_ids.append(value)
+        if len(canonical_ids) != len(set(canonical_ids)):
+            raise ValueError("active subscription IDs must be unique")
+        if canonical_ids != sorted(canonical_ids):
+            raise ValueError("active subscription IDs must be sorted")
+        return canonical_ids
+
+    @model_validator(mode="after")
+    def validate_active_subscription_snapshot(self) -> RelayHeartbeatRequest:
+        if self.active_subscription_ids_truncated and self.active_subscription_ids is None:
+            raise ValueError("truncated active subscription IDs must be present")
+        return self
 
 
 class RelayHeartbeatResponse(BaseModel):
@@ -129,18 +158,94 @@ def persist_relay_heartbeat(
     body: RelayHeartbeatRequest,
     *,
     received_at: datetime,
-) -> None:
-    """Atomically retain the newest server-received heartbeat for one edge."""
-    values = body.model_dump(exclude={"edge_id", "components"}) | body.components.model_dump()
+) -> bool:
+    """Retain the newest heartbeat and report whether this snapshot won the fence."""
+    values = (
+        body.model_dump(
+            exclude={
+                "edge_id",
+                "components",
+                "active_subscription_ids",
+                "active_subscription_ids_truncated",
+            }
+        )
+        | body.components.model_dump()
+    )
     values["received_at"] = received_at
     insert = _relay_heartbeat_insert(session).values(edge_id=body.edge_id, **values)
-    session.execute(
+    result = session.execute(
         insert.on_conflict_do_update(
             index_elements=["edge_id"],
             set_=values,
             where=RelayHeartbeat.received_at < received_at,  # type: ignore[arg-type]
         )
     )
+    return result.rowcount == 1
+
+
+class RelayHeartbeatUnknownSubscriptionError(ValueError):
+    """The relay reported a public subscription ID that is not a customer subscription."""
+
+
+def persist_relay_subscription_connections(
+    session: Session,
+    body: RelayHeartbeatRequest,
+    *,
+    received_at: datetime,
+) -> None:
+    """Apply an edge connection snapshot using server receive time."""
+    if body.active_subscription_ids is None:
+        return
+    public_ids = [UUID(value) for value in body.active_subscription_ids]
+    subscriptions = (
+        session.exec(
+            select(Subscription)
+            .join(User)
+            .where(Subscription.public_id.in_(public_ids), User.is_admin.is_(False))  # type: ignore[union-attr]
+        ).all()
+        if public_ids
+        else []
+    )
+    subscriptions_by_public_id = {
+        subscription.public_id: subscription for subscription in subscriptions
+    }
+    if len(subscriptions_by_public_id) != len(public_ids):
+        raise RelayHeartbeatUnknownSubscriptionError("unknown relay subscription ID")
+
+    active_subscription_ids = {
+        subscription.id for subscription in subscriptions if subscription.id is not None
+    }
+    existing = session.exec(
+        select(RelaySubscriptionConnection).where(
+            RelaySubscriptionConnection.edge_id == body.edge_id
+        )
+    ).all()
+    existing_by_subscription_id = {
+        connection.subscription_id: connection for connection in existing
+    }
+    for subscription_id in active_subscription_ids:
+        connection = existing_by_subscription_id.get(subscription_id)
+        if connection is None:
+            session.add(
+                RelaySubscriptionConnection(
+                    edge_id=body.edge_id,
+                    subscription_id=subscription_id,
+                    active=True,
+                    observed_at=received_at,
+                    last_connected_at=received_at,
+                )
+            )
+            continue
+        connection.active = True
+        connection.observed_at = received_at
+        connection.last_connected_at = received_at
+        session.add(connection)
+    if not body.active_subscription_ids_truncated:
+        for connection in existing:
+            if connection.active and connection.subscription_id not in active_subscription_ids:
+                connection.active = False
+                connection.observed_at = received_at
+                session.add(connection)
 
 
 class AuthorizedPortLease(BaseModel):
@@ -393,8 +498,13 @@ def relay_heartbeat(
         )
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid relay heartbeat token")
-    persist_relay_heartbeat(session, body, received_at=datetime.now(UTC))
-    session.commit()
+    received_at = datetime.now(UTC)
+    try:
+        with session.begin():
+            if persist_relay_heartbeat(session, body, received_at=received_at):
+                persist_relay_subscription_connections(session, body, received_at=received_at)
+    except RelayHeartbeatUnknownSubscriptionError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
     return RelayHeartbeatResponse()
 
 

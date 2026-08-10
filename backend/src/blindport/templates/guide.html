@@ -57,22 +57,29 @@ sudo install -m 0755 blindportd /usr/local/bin/blindportd</code></pre>
       <p>Open <a href="/dashboard#client-config-title">Connect your service</a> in the dashboard. For every active endpoint, enter the local <code>host:port</code> where your app listens. A common local target is <code>127.0.0.1:8080</code>.</p>
       <p>Relay uses automatic HTTPS by default. Review and accept the linked Let's Encrypt Subscriber Agreement in the dashboard, then install the generated config at <code>$HOME/.config/blindport/config.json</code>. Port and framed IP mappings pass traffic through to the local target without changing its protocol.</p>
       <pre><code>{
-  "version": 2,
-  "mappings": [
+  "version": 3,
+  "accounts": [
     {
-      "subscription_id": "12312312-3123-4123-8123-123123123123",
-      "upstream": "127.0.0.1:8080",
-      "tls_mode": "automatic",
-      "acme_terms_accepted": true
-    },
-    {
-      "subscription_id": "45645645-6456-4456-8456-456456456456",
-      "upstream": "127.0.0.1:9000",
-      "tls_mode": "passthrough"
+      "name": "public",
+      "token_file": "/home/blindport/.config/blindport/tokens/public",
+      "state_dir": "/home/blindport/.local/state/blindport-public",
+      "mappings": [
+        {
+          "subscription_id": "12312312-3123-4123-8123-123123123123",
+          "upstream": "127.0.0.1:8080",
+          "tls_mode": "automatic",
+          "acme_terms_accepted": true
+        },
+        {
+          "subscription_id": "45645645-6456-4456-8456-456456456456",
+          "upstream": "127.0.0.1:9000",
+          "tls_mode": "passthrough"
+        }
+      ]
     }
   ]
 }</code></pre>
-      <p>The file must be a regular owner-only file with mode <code>0600</code>, not a symlink. Mapping IDs are canonical, unique UUIDv4 values shown in the dashboard. Bracket IPv6 targets, for example <code>[::1]:8080</code>.</p>
+      <p>The config and its absolute <code>token_file</code> must be regular owner-only files with mode <code>0600</code>, not symlinks. Each account needs a distinct, non-overlapping absolute <code>state_dir</code>. To add accounts, add another named object with its own token file, state directory, and mappings. Mapping IDs are canonical, unique UUIDv4 values shown in the dashboard. Bracket IPv6 targets, for example <code>[::1]:8080</code>.</p>
     </section>
 
     <section id="service">
@@ -80,7 +87,7 @@ sudo install -m 0755 blindportd /usr/local/bin/blindportd</code></pre>
       <p>After installing the config, run:</p>
       <pre><code>export PATH="$HOME/.local/bin:$PATH"
 blindportd -install-user-service{{ backend_flag_shell }}</code></pre>
-      <p>The command asks for your account token without displaying it, stores it with owner-only permissions, validates the config, and enables and starts <code>blindportd.service</code> for your user.</p>
+      <p>The command asks for each missing configured account token without displaying it, stores each at its owner-only <code>token_file</code>, prepares the separate state directories, validates the config, and enables and starts <code>blindportd.service</code> for your user.</p>
       <pre><code>systemctl --user status blindportd.service
 journalctl --user -u blindportd.service -f</code></pre>
       <p>To start the service at boot and keep it running while you are logged out, enable lingering. This policy may require administrator approval:</p>
@@ -89,7 +96,7 @@ journalctl --user -u blindportd.service -f</code></pre>
       <pre><code>curl -fsSL {{ install_script_url_shell }} | sh
 blindportd -version
 systemctl --user restart blindportd.service</code></pre>
-      <p>The installer replaces only the binary. Keep the existing config, token, and <code>$HOME/.local/state/blindport</code> state directory so the client identity and certificates remain available.</p>
+      <p>The installer replaces only the binary. Keep the existing config, account token files, and configured state directories so client identities and certificates remain available.</p>
     </section>
 
     <section id="run">
@@ -97,16 +104,17 @@ systemctl --user restart blindportd.service</code></pre>
       <p>For a temporary session, use the same config without installing the user service:</p>
       <pre><code>export PATH="$HOME/.local/bin:$PATH"
 blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"</code></pre>
-      <p>The first run asks for the account token without echo. Stop the process with <code>Ctrl+C</code>. Restart it after changing the static config.</p>
+      <p>Create every configured owner-only token file first, or run the user-service installer once to prompt for missing tokens. Stop the foreground process with <code>Ctrl+C</code>. Restart it after changing the static config.</p>
     </section>
 
     <section id="docker">
       <h2>Docker</h2>
-      <p>Connect an existing paid Relay subscription directly to an app container. Replace the subscription UUID, set <code>.upstream</code> to the app's Compose service name and internal port, and accept the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> before setting the consent label to <code>true</code>.</p>
+      <p>Connect an existing paid Relay subscription directly to an app container. This version 3 example reads an owner-only token file from a mounted account config, rather than putting a bearer token in Compose. Replace the subscription UUID, set <code>.upstream</code> to the app's Compose service name and internal port, and accept the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> before setting the consent label to <code>true</code>.</p>
       <pre><code>services:
   app:
     image: example/app:latest
     labels:
+      tech.blindport.mapping.web.account: "public"
       tech.blindport.mapping.web.subscription: "12312312-3123-4123-8123-123123123123"
       tech.blindport.mapping.web.upstream: "app:8080"
       tech.blindport.mapping.web.tls_mode: "automatic"
@@ -116,14 +124,14 @@ blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"
     image: ghcr.io/blindport/blindportd:{{ blindportd_version if blindportd_version != "dev" else "latest" }}
     init: true
     restart: unless-stopped
-    command: ["--docker"]
+    command: ["--docker", "--config=/etc/blindport/accounts.json"]
     group_add: ["${DOCKER_GID}"]
     environment:
       BLINDPORT_BACKEND_URL: {{ request_origin_json }}
-      BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"
-      BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/accounts.json:/etc/blindport/accounts.json:ro
+      - ./secrets/public-token:/run/secrets/blindport-public:ro
       - blindport-state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
@@ -133,10 +141,11 @@ blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"
 volumes:
   blindport-state:</code></pre>
       <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
-      <p><code>app</code> and <code>blindportd</code> share Compose's default network, so <code>app:8080</code> resolves directly. The named <code>blindport-state</code> volume preserves the enrolled identity, ACME account, and certificates. Pass the account token through <code>BLINDPORT_TOKEN</code>, and set <code>DOCKER_GID</code> to <code>stat -c '%g' /var/run/docker.sock</code>.</p>
+      <p><code>app</code> and <code>blindportd</code> share Compose's default network, so <code>app:8080</code> resolves directly. The named <code>blindport-state</code> volume preserves the enrolled identity, ACME account, and certificates. The mounted config defines account <code>public</code> with <code>token_file</code> <code>/run/secrets/blindport-public</code> and state directory <code>/var/lib/blindport/accounts/public</code>. Set <code>DOCKER_GID</code> to <code>stat -c '%g' /var/run/docker.sock</code>. In version 3, every Docker mapping must select one configured local account with <code>.account</code>.</p>
       <details><summary>Advanced: create orders from labels</summary>
-      <p>Instead of <code>.subscription</code>, a mapping can declare <code>.product</code>. Every declaration requires <code>.upstream</code>, and its mapping name becomes a stable order key. Relay requires <code>.domain</code>; Port supports <code>.transport</code> values <code>tcp</code> and <code>udp</code>. Omit <code>.transport</code> for TCP and <code>.billing_term</code> for monthly billing. Relay uses TCP only.</p>
+      <p>Instead of <code>.subscription</code>, a mapping can declare <code>.product</code>. Every declaration requires <code>.account</code> and <code>.upstream</code>. Its mapping name becomes the stable, account-scoped order key: changing that name's product, domain, transport, or billing term is rejected, so use a new name for a different order. Relay requires <code>.domain</code>; Port supports <code>.transport</code> values <code>tcp</code> and <code>udp</code>. Omit <code>.transport</code> for TCP and <code>.billing_term</code> for monthly billing. Relay uses TCP only.</p>
       <pre><code># Relay order, with a required domain
+tech.blindport.mapping.web.account: "public"
 tech.blindport.mapping.web.product: "relay"
 tech.blindport.mapping.web.domain: "web.relay.blindport.com"
 tech.blindport.mapping.web.billing_term: "monthly"
@@ -145,14 +154,15 @@ tech.blindport.mapping.web.tls_mode: "automatic"
 tech.blindport.mapping.web.acme_terms_accepted: "true"
 
 # Port order, TCP by default, or set transport to udp
+tech.blindport.mapping.game.account: "public"
 tech.blindport.mapping.game.product: "port"
 tech.blindport.mapping.game.transport: "udp"
 tech.blindport.mapping.game.billing_term: "yearly"
 tech.blindport.mapping.game.upstream: "game:27015"</code></pre>
-      <p>Docker labels cannot order Blindport IP because WireGuard delivery has no upstream mapping. Run routed IP workloads with <code>blindportd -wireguard</code>, separately from Docker discovery.</p>
+      <p>Routed Blindport IP cannot be declared with Docker labels because WireGuard delivery has no upstream mapping. Run it with a separate <code>blindportd -wireguard</code> process.</p>
       <p>With NWC configured for the token's account, an eligible declaration starts one initial wallet payment. <code>payment_pending</code> means that payment is awaiting settlement or reconciliation, not that the endpoint is active. Without NWC, the order remains <code>awaiting_payment</code> until you pay it in the dashboard.</p>
       <p>Managed Relay names can proceed to payment. A customer-owned Relay domain first returns <code>awaiting_domain</code>; publish the exact DNS-only CNAME shown in the dashboard and wait for verification before a payment is created or attempted.</p>
-      <p>Removing labels stops forwarding but does not cancel a paid subscription.</p>
+      <p>Removing labels stops local forwarding but does not cancel, refund, or otherwise end a paid subscription.</p>
       </details>
     </section>
 
@@ -176,6 +186,30 @@ tech.blindport.mapping.game.upstream: "game:27015"</code></pre>
       <p>Run the agent with network administration privileges. Its first root run prompts for the token and creates private root-owned token and identity paths:</p>
       <pre><code>sudo blindportd -wireguard{{ backend_flag_shell }}</code></pre>
       <p>The host needs Linux kernel WireGuard and <code>CAP_NET_ADMIN</code> or equivalent privileges. The agent creates <code>bpwg0</code>, assigns the leased public /32, and installs source policy routing without replacing the host's main default route. TCP, UDP, ICMP, and other IPv4 packets route directly without framed stream or datagram encapsulation. Your application must listen on the assigned address or a wildcard socket; routed mode does not dial an upstream.</p>
+      <details><summary>Run routed WireGuard in a container</summary>
+      <p>Use a separate agent process from Docker discovery. It requires an active annual WireGuard IP subscription, host networking, a root-owned owner-only token file, persistent private state, and only the additional <code>NET_ADMIN</code> capability. Do not mount the Docker socket or add mapping labels.</p>
+      <pre><code>services:
+  blindport-wireguard:
+    image: ghcr.io/blindport/blindportd:{{ blindportd_version if blindportd_version != "dev" else "latest" }}
+    user: "0:0"
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    command: ["--wireguard", "--token-file=/run/blindport/token", "--state-dir=/var/lib/blindport"]
+    environment:
+      BLINDPORT_BACKEND_URL: {{ request_origin_json }}
+    volumes:
+      - ./secrets/wireguard-token:/run/blindport/token:ro
+      - blindport-wireguard-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+volumes:
+  blindport-wireguard-state:</code></pre>
+      </details>
     </section>
 
     <section id="tor">
@@ -188,7 +222,7 @@ tech.blindport.mapping.game.upstream: "game:27015"</code></pre>
     <section id="troubleshooting">
       <h2>Troubleshooting</h2>
       <dl class="troubleshooting-list">
-        <div><dt><code>no token</code></dt><dd>Run the native agent once in a terminal to enter it, or set <code>BLINDPORT_TOKEN</code> for Docker. Explicit token files remain supported.</dd></div>
+        <div><dt><code>no token</code></dt><dd>Run the native agent once in a terminal to enter it. Docker version 3 uses one mounted owner-only <code>token_file</code> per configured account.</dd></div>
         <div><dt>Subscription is missing</dt><dd>Confirm payment is settled and the subscription is active. Docker mode will discover it on the next poll; static and legacy modes still require a restart.</dd></div>
         <div><dt>Domain payment is unavailable</dt><dd>For a customer domain, publish the one exact CNAME name and target from the dashboard and run the DNS check before creating an invoice.</dd></div>
         <div><dt>TLS certificate fails</dt><dd>For automatic HTTPS, confirm the terms checkbox is accepted, the Relay subscription is active, and the state directory is writable. For passthrough, confirm the local TLS listener serves the ordered hostname and complete certificate chain.</dd></div>
@@ -202,6 +236,9 @@ tech.blindport.mapping.game.upstream: "game:27015"</code></pre>
         <li>Docker and active framed provisioning changes can take up to one configured poll interval. Static configuration and routed WireGuard changes require a restart.</li>
         <li>One production client identity is enrolled per account. Docker labels can initiate one idempotent order and initial NWC payment, but cancellation and renewal policy remain account actions.</li>
         <li>Established TCP sessions do not migrate across relay reconnects or DNS changes.</li>
+        <li>Relay and Port use two provider edges for new-connection resilience, without an availability guarantee. DNS is not health steering and may continue returning a failed edge.</li>
+        <li>A routed dedicated IP belongs to one provider and is unavailable during that provider's outage. The hosted website and control plane are not highly available.</li>
+        <li>A previously issued signed Relay or Port authorization may remain usable through its bounded grace timestamp while the control plane is unreachable. Grace does not extend the paid service term, and a successful online denial removes the connection.</li>
         <li>Framed UDP crosses the TCP/mTLS tunnel and may experience head-of-line blocking.</li>
         <li>Routed mode supports Linux IPv4 /32 leases only. It does not manage host firewalls, application listeners, IPv6, or DNS.</li>
       </ul>

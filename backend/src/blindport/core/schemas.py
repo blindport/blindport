@@ -148,7 +148,7 @@ class CatalogProductResponse(BaseModel):
     product: ProductType
     enabled: bool
     sales_paused: bool
-    monthly_price_sats: int
+    monthly_price_sats: int | None = None
     yearly_price_sats: int
     available: bool
     sold_out: bool
@@ -449,23 +449,13 @@ class NwcStatusResponse(BaseModel):
     last_validated_at: datetime | None = None
 
 
-class SetReminderEmailRequest(BaseModel):
+class NotificationEmailRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str = Field(min_length=3, max_length=254)
 
 
-class ReminderEmailStatusResponse(BaseModel):
-    configured: bool
-
-
-class SetServiceEmailRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    email: str = Field(min_length=3, max_length=254)
-
-
-class ServiceEmailStatusResponse(BaseModel):
+class NotificationEmailStatusResponse(BaseModel):
     configured: bool
 
 

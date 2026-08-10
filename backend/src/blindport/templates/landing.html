@@ -69,6 +69,7 @@
     </article>
   </div>
   <p class="fit-check"><strong>Beta boundary:</strong> hosted service is best effort, with no current uptime or high-availability guarantee. There is no fixed traffic allowance today; fair use applies. The published client requires Linux, and payment requires {% if stablecoin_enabled %}a Lightning or supported stablecoin wallet{% else %}a Lightning wallet{% endif %}.</p>
+  <p class="fit-check"><strong>Redundancy boundary:</strong> Relay and Port connect through two provider edges to improve resilience for new connections. DNS is not health steering, failed addresses may remain cached, and established sessions do not migrate. A routed dedicated IP belongs to one provider and goes offline with that provider. The website and control plane currently run at one provider.</p>
 </section>
 
 <section class="workflow-band" aria-labelledby="workflow-title">

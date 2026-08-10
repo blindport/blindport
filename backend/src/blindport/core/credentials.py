@@ -20,8 +20,7 @@ class CredentialPurpose(StrEnum):
     """Closed set of AAD domains for encrypted account-scoped values."""
 
     NWC = "nwc"
-    REMINDER_EMAIL = "reminder-email"
-    SERVICE_EMAIL = "service-email"
+    NOTIFICATION_EMAIL = "notification-email"
 
 
 class CredentialError(ValueError):

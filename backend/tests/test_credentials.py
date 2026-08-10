@@ -61,14 +61,14 @@ def test_credential_purposes_are_cryptographically_separated() -> None:
     encrypted = cipher.encrypt(
         account_id,
         "person@example.com",
-        purpose=CredentialPurpose.REMINDER_EMAIL,
+        purpose=CredentialPurpose.NOTIFICATION_EMAIL,
     )
 
     assert (
         cipher.decrypt(
             account_id,
             encrypted,
-            purpose=CredentialPurpose.REMINDER_EMAIL,
+            purpose=CredentialPurpose.NOTIFICATION_EMAIL,
         )
         == "person@example.com"
     )
@@ -80,7 +80,7 @@ def test_credential_purposes_are_cryptographically_separated() -> None:
         cipher.decrypt(
             account_id,
             nwc,
-            purpose=CredentialPurpose.REMINDER_EMAIL,
+            purpose=CredentialPurpose.NOTIFICATION_EMAIL,
         )
 
 

@@ -23,9 +23,6 @@ from ..core.models import (
     NotificationDelivery,
     NotificationDeliveryState,
     NotificationKind,
-    ReminderDelivery,
-    ReminderDeliveryState,
-    ReminderKind,
     Subscription,
     SubscriptionStatus,
     User,
@@ -82,32 +79,12 @@ def _queue_due_expirations(now: datetime, batch_size: int) -> int:
             )
             .exists()
         )
-        legacy_seven_day_exists = (
-            select(ReminderDelivery.id)
-            .where(
-                ReminderDelivery.subscription_id == Subscription.id,
-                ReminderDelivery.current_period_end == Subscription.current_period_end,
-                ReminderDelivery.kind == ReminderKind.SEVEN_DAY,
-                ReminderDelivery.state != ReminderDeliveryState.CANCELLED,
-            )
-            .exists()
-        )
         one_day_exists = (
             select(NotificationDelivery.id)
             .where(
                 NotificationDelivery.subscription_id == Subscription.id,
                 NotificationDelivery.event_at == Subscription.current_period_end,
                 NotificationDelivery.kind == NotificationKind.EXPIRATION_1_DAY,
-            )
-            .exists()
-        )
-        legacy_one_day_exists = (
-            select(ReminderDelivery.id)
-            .where(
-                ReminderDelivery.subscription_id == Subscription.id,
-                ReminderDelivery.current_period_end == Subscription.current_period_end,
-                ReminderDelivery.kind == ReminderKind.ONE_DAY,
-                ReminderDelivery.state != ReminderDeliveryState.CANCELLED,
             )
             .exists()
         )
@@ -119,20 +96,18 @@ def _queue_due_expirations(now: datetime, batch_size: int) -> int:
                     Subscription.status == SubscriptionStatus.ACTIVE,
                     Subscription.current_period_end.is_not(None),  # type: ignore[union-attr]
                     Subscription.current_period_end > now,  # type: ignore[operator]
-                    User.has_reminder_email,
-                    User.reminder_email_generation >= 1,
+                    User.has_notification_email,
+                    User.notification_email_generation >= 1,
                     User.is_suspended.is_(False),  # type: ignore[union-attr]
                     or_(
                         and_(
                             Subscription.current_period_end <= one_day,  # type: ignore[operator]
                             ~one_day_exists,
-                            ~legacy_one_day_exists,
                         ),
                         and_(
                             Subscription.current_period_end > one_day,  # type: ignore[operator]
                             Subscription.current_period_end <= seven_days,  # type: ignore[operator]
                             ~seven_day_exists,
-                            ~legacy_seven_day_exists,
                         ),
                     ),
                 )
@@ -490,8 +465,8 @@ def _is_delivery_eligible(
         account_consent = bool(
             config.settings.REMINDER_EMAIL_ENABLED
             and not user.is_suspended
-            and user.has_reminder_email
-            and delivery.recipient_generation == user.reminder_email_generation
+            and user.has_notification_email
+            and delivery.recipient_generation == user.notification_email_generation
         )
         if not account_consent or subscription is None or subscription.user_id != user.id:
             return False
@@ -528,8 +503,8 @@ def _is_delivery_eligible(
         and announcement.state == AnnouncementState.QUEUED
         and not user.is_admin
         and not user.is_suspended
-        and user.has_service_email
-        and delivery.recipient_generation == user.service_email_generation
+        and user.has_notification_email
+        and delivery.recipient_generation == user.notification_email_generation
     )
 
 

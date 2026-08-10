@@ -283,6 +283,92 @@ def test_wrong_registration_binding_preserves_rightful_challenge(app_client, mon
         assert session.get(WebAuthnChallenge, options["challenge_id"]) is None
 
 
+def test_registration_enforces_per_user_credential_cap(app_client, monkeypatch) -> None:
+    from blindport.core.models import PasskeyCredential
+    from blindport.db import engine
+
+    client, _ = app_client
+    passkeys = _enable_passkeys(monkeypatch)
+    monkeypatch.setattr(passkeys.settings, "PASSKEY_MAX_CREDENTIALS_PER_USER", 1)
+    token, user_id = _signup(client)
+    with Session(engine) as session:
+        session.add(_credential(user_id, b"existing-credential"))
+        session.commit()
+    options = _registration_options(client, token)
+    monkeypatch.setattr(
+        passkeys,
+        "parse_registration_credential_json",
+        lambda _: SimpleNamespace(response=SimpleNamespace(transports=[])),
+    )
+    monkeypatch.setattr(
+        passkeys,
+        "verify_registration_response",
+        lambda **_: SimpleNamespace(
+            credential_id=b"second-credential",
+            credential_public_key=b"public-key",
+            sign_count=0,
+            credential_device_type=SimpleNamespace(value="single_device"),
+            credential_backed_up=False,
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/passkeys/registration",
+        json={
+            "challenge_id": options["challenge_id"],
+            "credential": {"id": "mock"},
+            "name": "Second",
+        },
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "passkey limit reached"}
+    with Session(engine) as session:
+        assert len(session.exec(select(PasskeyCredential)).all()) == 1
+
+
+def test_registration_rejects_duplicate_credential_id(app_client, monkeypatch) -> None:
+    from blindport.db import engine
+
+    client, _ = app_client
+    passkeys = _enable_passkeys(monkeypatch)
+    token, user_id = _signup(client)
+    with Session(engine) as session:
+        session.add(_credential(user_id, b"duplicate-credential"))
+        session.commit()
+    options = _registration_options(client, token)
+    monkeypatch.setattr(
+        passkeys,
+        "parse_registration_credential_json",
+        lambda _: SimpleNamespace(response=SimpleNamespace(transports=[])),
+    )
+    monkeypatch.setattr(
+        passkeys,
+        "verify_registration_response",
+        lambda **_: SimpleNamespace(
+            credential_id=b"duplicate-credential",
+            credential_public_key=b"public-key",
+            sign_count=0,
+            credential_device_type=SimpleNamespace(value="single_device"),
+            credential_backed_up=False,
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/passkeys/registration",
+        json={
+            "challenge_id": options["challenge_id"],
+            "credential": {"id": "mock"},
+            "name": "Duplicate",
+        },
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "passkey already registered"}
+
+
 def test_discoverable_authentication_validates_handle_updates_credential_and_issues_session(
     app_client, monkeypatch
 ) -> None:

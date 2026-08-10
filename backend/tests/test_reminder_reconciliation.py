@@ -16,7 +16,8 @@ from blindport.core.models import (
     SubscriptionStatus,
     User,
 )
-from blindport.services.reminders import queue_reminder, store_reminder_email
+from blindport.services.notification_email import store_notification_email
+from blindport.services.reminders import queue_reminder
 
 
 class _Smtp:
@@ -44,7 +45,7 @@ def _setup(monkeypatch, tmp_path, *, period_delta: timedelta):
     monkeypatch.setattr(reminder_reconciliation, "get_smtp_adapter", lambda: smtp)
     with Session(local_engine) as session:
         user = User(hashed_token="reminder-worker")
-        store_reminder_email(user, "person@example.com")
+        store_notification_email(user, "person@example.com")
         session.add(user)
         session.flush()
         session.add(
