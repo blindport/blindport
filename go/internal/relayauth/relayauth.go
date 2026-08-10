@@ -17,7 +17,11 @@ import (
 	"github.com/blindport/blindport/internal/protocol"
 )
 
-const maxResponseBody = 64 << 10
+const (
+	maxResponseBody = 64 << 10
+	// MaxHeartbeatActiveSubscriptions bounds one relay presence snapshot.
+	MaxHeartbeatActiveSubscriptions = 1000
+)
 
 // ErrorKind classifies backend outcomes for authorization and readiness.
 type ErrorKind string
@@ -82,13 +86,14 @@ func New(backendURL, secret string) (*Resolver, error) {
 
 // Resolution is the resolver's reply.
 type Resolution struct {
-	AccountID      string                 `json:"account_id"`
-	SubscriptionID string                 `json:"subscription_id"`
-	UserID         int64                  `json:"user_id"`
-	IPs            []string               `json:"ip_ips"`
-	RelayDomains   []string               `json:"relay_domains"`
-	RelayClaims    []AuthorizedRelayClaim `json:"relay_claims"`
-	PortLeases     []PortLease            `json:"port_leases"`
+	AccountID                 string                 `json:"account_id"`
+	SubscriptionID            string                 `json:"subscription_id"`
+	SubscriptionAuthoritative bool                   `json:"-"`
+	UserID                    int64                  `json:"user_id"`
+	IPs                       []string               `json:"ip_ips"`
+	RelayDomains              []string               `json:"relay_domains"`
+	RelayClaims               []AuthorizedRelayClaim `json:"relay_claims"`
+	PortLeases                []PortLease            `json:"port_leases"`
 }
 
 // AuthorizedRelayClaim is one scope-aware Relay hostname authorization.
@@ -162,6 +167,7 @@ func (r *Resolver) Resolve(ctx context.Context, token string, claim *protocol.Cl
 	var out Resolution
 	err = r.postJSON(ctx, "/internal/v3/resolve", v3Body, &out, true)
 	if err == nil {
+		out.SubscriptionAuthoritative = true
 		return &out, nil
 	}
 	var typed *Error
@@ -357,15 +363,17 @@ type HealthComponents struct {
 	WireGuard     string `json:"wireguard"`
 }
 
-// Heartbeat is a fixed-cardinality relay health and traffic snapshot.
+// Heartbeat is a bounded relay health, traffic, and subscription presence snapshot.
 type Heartbeat struct {
-	EdgeID                   string           `json:"edge_id"`
-	Ready                    bool             `json:"ready"`
-	Components               HealthComponents `json:"components"`
-	ActiveTunnels            int64            `json:"active_tunnels"`
-	ActiveStreams            int64            `json:"active_streams"`
-	AcceptedConnectionsTotal int64            `json:"accepted_connections_total"`
-	ForwardedBytesTotal      int64            `json:"forwarded_bytes_total"`
+	EdgeID                         string           `json:"edge_id"`
+	Ready                          bool             `json:"ready"`
+	Components                     HealthComponents `json:"components"`
+	ActiveTunnels                  int64            `json:"active_tunnels"`
+	ActiveStreams                  int64            `json:"active_streams"`
+	AcceptedConnectionsTotal       int64            `json:"accepted_connections_total"`
+	ForwardedBytesTotal            int64            `json:"forwarded_bytes_total"`
+	ActiveSubscriptionIDs          []string         `json:"active_subscription_ids"`
+	ActiveSubscriptionIDsTruncated bool             `json:"active_subscription_ids_truncated"`
 }
 
 // FetchRelayCert asks the backend to issue a server cert for the given SANs.
@@ -394,6 +402,20 @@ func (r *Resolver) ReportHeartbeat(ctx context.Context, token string, heartbeat 
 	}
 	if heartbeat.ActiveTunnels < 0 || heartbeat.ActiveStreams < 0 || heartbeat.AcceptedConnectionsTotal < 0 || heartbeat.ForwardedBytesTotal < 0 {
 		return protocolFailure("validate heartbeat request", errors.New("heartbeat values must be nonnegative"))
+	}
+	if heartbeat.ActiveSubscriptionIDs == nil {
+		heartbeat.ActiveSubscriptionIDs = []string{}
+	}
+	if len(heartbeat.ActiveSubscriptionIDs) > MaxHeartbeatActiveSubscriptions {
+		return protocolFailure("validate heartbeat request", errors.New("too many active subscription IDs"))
+	}
+	for index, subscriptionID := range heartbeat.ActiveSubscriptionIDs {
+		if !canonicalUUID(subscriptionID) {
+			return protocolFailure("validate heartbeat request", errors.New("invalid active subscription ID"))
+		}
+		if index > 0 && heartbeat.ActiveSubscriptionIDs[index-1] >= subscriptionID {
+			return protocolFailure("validate heartbeat request", errors.New("active subscription IDs must be sorted and unique"))
+		}
 	}
 	body, err := json.Marshal(heartbeat)
 	if err != nil {

@@ -327,7 +327,7 @@ func main() {
 	}
 	health.listenersUp.Store(true)
 	if heartbeatEnabled {
-		reporter := newHeartbeatReporter(logger, metrics, *relayEdgeID, *heartbeatInterval, func(ctx context.Context, heartbeat relayauth.Heartbeat) error {
+		reporter := newHeartbeatReporter(logger, metrics, *relayEdgeID, *heartbeatInterval, r.activeSubscriptionIDs, func(ctx context.Context, heartbeat relayauth.Heartbeat) error {
 			return resolver.ReportHeartbeat(ctx, *heartbeatToken, heartbeat)
 		})
 		go reporter.run(ctx)
@@ -465,7 +465,7 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 			}
 		}
 		if authorization.source == authorizationSourceOffline {
-			if r.bandwidth != nil && !canonicalSubscriptionID(authorization.subscriptionID) {
+			if !canonicalSubscriptionID(authorization.subscriptionID) {
 				r.metrics.control[controlAuthDenied].Add(1)
 				r.writeErr(conn, "subscription attribution unavailable")
 				return
@@ -482,7 +482,7 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 		r.writeErr(conn, "invalid token")
 		return
 	}
-	if r.bandwidth != nil && !canonicalSubscriptionID(res.SubscriptionID) {
+	if res == nil || (res.SubscriptionAuthoritative && !canonicalSubscriptionID(res.SubscriptionID)) {
 		r.metrics.control[controlAuthDenied].Add(1)
 		r.writeErr(conn, "subscription attribution unavailable")
 		return
@@ -518,7 +518,7 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 			r.writeErr(conn, "offline entitlement is invalid")
 			return
 		}
-		if r.bandwidth != nil && (verified == nil || verified.Subscription != authorization.subscriptionID) {
+		if verified == nil || (res.SubscriptionAuthoritative && verified.Subscription != authorization.subscriptionID) {
 			r.metrics.control[controlIdentityDenied].Add(1)
 			r.writeErr(conn, "subscription attribution does not match entitlement")
 			return
@@ -885,6 +885,11 @@ func reauthorizationRequiresClose(res *relayauth.Resolution, err error, claim *p
 	return peerIdentity != nil && !peerIdentity.matchesResolution(res)
 }
 
+func subscriptionAttributionRequiresClose(res *relayauth.Resolution, subscriptionID string) bool {
+	return res != nil && res.SubscriptionAuthoritative &&
+		(!canonicalSubscriptionID(res.SubscriptionID) || res.SubscriptionID != subscriptionID)
+}
+
 func (r *relay) watchAuthorization(ctx context.Context, token string, claim *protocol.Claim, peerIdentity *clientIdentity, offlineProof *offlineAuthorization, subscriptionID string, t *tunnel.Conn, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(r.reauthInterval)
@@ -901,13 +906,9 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 			r.metrics.observeAuth(err)
 			now := time.Now()
 			offlineProofValid := false
-			offlineSubscriptionID := ""
 			if relayauth.IsKind(err, relayauth.ErrorInfrastructure) && offlineProof != nil {
-				verified, verifyErr := r.verifyOfflineEntitlement(offlineProof.artifact, claim, offlineProof.identity, now)
+				_, verifyErr := r.verifyOfflineEntitlement(offlineProof.artifact, claim, offlineProof.identity, now)
 				offlineProofValid = verifyErr == nil
-				if verified != nil {
-					offlineSubscriptionID = verified.Subscription
-				}
 			}
 			if reauthorizationRequiresClose(res, err, claim, peerIdentity, lastAuthorized, now, r.reauthMaxStale, offlineProofValid, offlineProof != nil) {
 				if err != nil {
@@ -918,18 +919,10 @@ func (r *relay) watchAuthorization(ctx context.Context, token string, claim *pro
 				_ = t.Close()
 				return
 			}
-			if r.bandwidth != nil {
-				resolvedSubscriptionID := ""
-				if err == nil && res != nil {
-					resolvedSubscriptionID = res.SubscriptionID
-				} else if offlineProofValid {
-					resolvedSubscriptionID = offlineSubscriptionID
-				}
-				if !canonicalSubscriptionID(resolvedSubscriptionID) || resolvedSubscriptionID != subscriptionID {
-					r.log.Info("tunnel subscription attribution changed")
-					_ = t.Close()
-					return
-				}
+			if err == nil && subscriptionAttributionRequiresClose(res, subscriptionID) {
+				r.log.Info("tunnel subscription attribution changed")
+				_ = t.Close()
+				return
 			}
 			if err != nil {
 				if offlineProofValid {

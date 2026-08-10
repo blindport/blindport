@@ -236,6 +236,25 @@ func TestReauthorizationRequiresClose(t *testing.T) {
 	}
 }
 
+func TestSubscriptionAttributionRequiresCloseOnlyForAuthoritativeResolution(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		resolution *relayauth.Resolution
+		wantClose  bool
+	}{
+		{name: "legacy fallback without attribution", resolution: &relayauth.Resolution{}},
+		{name: "authoritative matching attribution", resolution: &relayauth.Resolution{SubscriptionAuthoritative: true, SubscriptionID: testSubscriptionOne}},
+		{name: "authoritative missing attribution", resolution: &relayauth.Resolution{SubscriptionAuthoritative: true}, wantClose: true},
+		{name: "authoritative changed attribution", resolution: &relayauth.Resolution{SubscriptionAuthoritative: true, SubscriptionID: testSubscriptionTwo}, wantClose: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := subscriptionAttributionRequiresClose(test.resolution, testSubscriptionOne); got != test.wantClose {
+				t.Fatalf("subscriptionAttributionRequiresClose() = %t, want %t", got, test.wantClose)
+			}
+		})
+	}
+}
+
 func TestRelayServesOnlyConfiguredInventory(t *testing.T) {
 	r := &relay{
 		listenIPs: []string{"203.0.113.10"}, sharedIPs: []string{"203.0.113.20"},
@@ -286,7 +305,12 @@ func (*allowedResolver) Resolve(context.Context, string, *protocol.Claim) (*rela
 type subscriptionChangingResolver struct{}
 
 func (*subscriptionChangingResolver) Resolve(context.Context, string, *protocol.Claim) (*relayauth.Resolution, error) {
-	return &relayauth.Resolution{UserID: 42, IPs: []string{"203.0.113.10"}, SubscriptionID: testSubscriptionTwo}, nil
+	return &relayauth.Resolution{
+		UserID:                    42,
+		IPs:                       []string{"203.0.113.10"},
+		SubscriptionID:            testSubscriptionTwo,
+		SubscriptionAuthoritative: true,
+	}, nil
 }
 
 func TestReauthorizationClosesChangedSubscriptionAttribution(t *testing.T) {

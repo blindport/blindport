@@ -270,8 +270,9 @@ func startOfflineControl(t *testing.T, r *relay, fixture offlineTestFixture, rel
 
 func matchingOfflineResolution() *relayauth.Resolution {
 	return &relayauth.Resolution{
-		AccountID:  offlineTestAccount,
-		PortLeases: []relayauth.PortLease{{AssignedIP: "198.51.100.30", AssignedPort: 10000, Transport: "tcp"}},
+		AccountID:      offlineTestAccount,
+		SubscriptionID: testSubscriptionOne,
+		PortLeases:     []relayauth.PortLease{{AssignedIP: "198.51.100.30", AssignedPort: 10000, Transport: "tcp"}},
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/blindport/blindport/internal/relayauth"
@@ -35,15 +36,40 @@ type heartbeatReporter struct {
 	ticker   func(time.Duration) heartbeatTicker
 }
 
-func newHeartbeatReporter(logger *slog.Logger, metrics *relayMetrics, edgeID string, interval time.Duration, report func(context.Context, relayauth.Heartbeat) error) *heartbeatReporter {
+func newHeartbeatReporter(logger *slog.Logger, metrics *relayMetrics, edgeID string, interval time.Duration, subscriptions func() ([]string, bool), report func(context.Context, relayauth.Heartbeat) error) *heartbeatReporter {
 	return &heartbeatReporter{
 		log: logger, interval: interval,
-		snapshot: func(now time.Time) relayauth.Heartbeat { return metrics.heartbeatSnapshot(edgeID, now) },
-		report:   report,
+		snapshot: func(now time.Time) relayauth.Heartbeat {
+			heartbeat := metrics.heartbeatSnapshot(edgeID, now)
+			heartbeat.ActiveSubscriptionIDs, heartbeat.ActiveSubscriptionIDsTruncated = subscriptions()
+			return heartbeat
+		},
+		report: report,
 		ticker: func(interval time.Duration) heartbeatTicker {
 			return timeHeartbeatTicker{ticker: time.NewTicker(interval)}
 		},
 	}
+}
+
+func (r *relay) activeSubscriptionIDs() ([]string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	unique := make(map[string]struct{}, len(r.tunnelSubscriptions))
+	for _, subscriptionID := range r.tunnelSubscriptions {
+		if canonicalSubscriptionID(subscriptionID) {
+			unique[subscriptionID] = struct{}{}
+		}
+	}
+	ids := make([]string, 0, len(unique))
+	for subscriptionID := range unique {
+		ids = append(ids, subscriptionID)
+	}
+	sort.Strings(ids)
+	truncated := len(ids) > relayauth.MaxHeartbeatActiveSubscriptions
+	if truncated {
+		ids = ids[:relayauth.MaxHeartbeatActiveSubscriptions]
+	}
+	return ids, truncated
 }
 
 func (r *heartbeatReporter) run(ctx context.Context) {

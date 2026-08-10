@@ -59,6 +59,10 @@ func TestReportHeartbeatSendsStrictAcceptedSnapshot(t *testing.T) {
 		EdgeID: "relay-1", Ready: true,
 		Components:    HealthComponents{Authorization: "ok", Certificate: "ok", Lifecycle: "serving", Listeners: "ok", WireGuard: "disabled"},
 		ActiveTunnels: 2, ActiveStreams: 3, AcceptedConnectionsTotal: 4, ForwardedBytesTotal: 5,
+		ActiveSubscriptionIDs: []string{
+			"018f47b8-2c36-7d4e-9a51-123456789abc",
+			"118f47b8-2c36-7d4e-9a51-123456789abc",
+		},
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/internal/v1/relay/heartbeat" {
@@ -77,7 +81,7 @@ func TestReportHeartbeatSendsStrictAcceptedSnapshot(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantBody := `{"edge_id":"relay-1","ready":true,"components":{"authorization":"ok","certificate":"ok","lifecycle":"serving","listeners":"ok","wireguard":"disabled"},"active_tunnels":2,"active_streams":3,"accepted_connections_total":4,"forwarded_bytes_total":5}`
+		wantBody := `{"edge_id":"relay-1","ready":true,"components":{"authorization":"ok","certificate":"ok","lifecycle":"serving","listeners":"ok","wireguard":"disabled"},"active_tunnels":2,"active_streams":3,"accepted_connections_total":4,"forwarded_bytes_total":5,"active_subscription_ids":["018f47b8-2c36-7d4e-9a51-123456789abc","118f47b8-2c36-7d4e-9a51-123456789abc"],"active_subscription_ids_truncated":false}`
 		if got := string(body); got != wantBody {
 			t.Fatalf("request body = %s, want %s", got, wantBody)
 		}
@@ -92,6 +96,27 @@ func TestReportHeartbeatSendsStrictAcceptedSnapshot(t *testing.T) {
 	}
 	if err := resolver.ReportHeartbeat(context.Background(), testHeartbeatToken, heartbeat); err != nil {
 		t.Fatalf("ReportHeartbeat() error = %v", err)
+	}
+}
+
+func TestReportHeartbeatRejectsInvalidSubscriptionSnapshotBeforeNetwork(t *testing.T) {
+	resolver, err := New("http://127.0.0.1:1", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := "018f47b8-2c36-7d4e-9a51-123456789abc"
+	for _, subscriptions := range [][]string{
+		{valid, valid},
+		{"118f47b8-2c36-7d4e-9a51-123456789abc", valid},
+		{"not-a-uuid"},
+		make([]string, MaxHeartbeatActiveSubscriptions+1),
+	} {
+		err := resolver.ReportHeartbeat(
+			context.Background(), testHeartbeatToken, Heartbeat{ActiveSubscriptionIDs: subscriptions},
+		)
+		if !IsKind(err, ErrorProtocol) {
+			t.Fatalf("ReportHeartbeat(%q) error = %v, want protocol error", subscriptions, err)
+		}
 	}
 }
 
@@ -298,6 +323,9 @@ func TestResolveIncludesClaimScopeWithoutChangingExactJSON(t *testing.T) {
 			if len(resolution.RelayClaims) != 1 || resolution.RelayClaims[0].Domain != "public.example" || resolution.RelayClaims[0].Scope != protocol.RelayHostnameScopeWildcard {
 				t.Fatalf("relay claims = %+v", resolution.RelayClaims)
 			}
+			if !resolution.SubscriptionAuthoritative {
+				t.Fatal("V3 resolution did not mark subscription attribution authoritative")
+			}
 		})
 	}
 }
@@ -323,8 +351,12 @@ func TestResolveUsesV3ThenRollingSafeFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example"}
-	if _, err := resolver.Resolve(context.Background(), "token", claim); err != nil {
+	resolution, err := resolver.Resolve(context.Background(), "token", claim)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if resolution.SubscriptionAuthoritative {
+		t.Fatal("V2 fallback marked subscription attribution authoritative")
 	}
 	if got, want := strings.Join(paths, ","), "/internal/v3/resolve,/internal/v2/resolve"; got != want {
 		t.Fatalf("paths = %q, want %q", got, want)

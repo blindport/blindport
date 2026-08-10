@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/blindport/blindport/internal/relayauth"
+	"github.com/blindport/blindport/internal/tunnel"
 )
 
 const testHeartbeatToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -60,6 +61,47 @@ func TestHeartbeatSnapshotClampsNegativeGaugesAndSaturates(t *testing.T) {
 	got := metrics.heartbeatSnapshot("edge-1", time.Unix(2_000_000_000, 0))
 	if got.ActiveTunnels != math.MaxInt64 || got.ActiveStreams != 0 || got.AcceptedConnectionsTotal != math.MaxInt64 || got.ForwardedBytesTotal != math.MaxInt64 {
 		t.Fatalf("saturated heartbeat = %+v", got)
+	}
+}
+
+func TestActiveSubscriptionIDsAreCanonicalSortedAndDeduplicated(t *testing.T) {
+	r := &relay{
+		tunnelSubscriptions: map[*tunnel.Conn]string{
+			new(tunnel.Conn): bandwidthTestUUID(2),
+			new(tunnel.Conn): bandwidthTestUUID(1),
+			new(tunnel.Conn): bandwidthTestUUID(2),
+			nil:              "not-a-uuid",
+		},
+	}
+
+	got, truncated := r.activeSubscriptionIDs()
+	want := []string{bandwidthTestUUID(1), bandwidthTestUUID(2)}
+	if truncated || !reflect.DeepEqual(got, want) {
+		t.Fatalf("activeSubscriptionIDs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestActiveSubscriptionIDsTruncateCanonicalSortedSnapshot(t *testing.T) {
+	r := &relay{tunnelSubscriptions: make(map[*tunnel.Conn]string, relayauth.MaxHeartbeatActiveSubscriptions+1)}
+	for index := relayauth.MaxHeartbeatActiveSubscriptions; index >= 0; index-- {
+		r.tunnelSubscriptions[new(tunnel.Conn)] = bandwidthTestUUID(index)
+	}
+
+	ids, truncated := r.activeSubscriptionIDs()
+	if !truncated || len(ids) != relayauth.MaxHeartbeatActiveSubscriptions {
+		t.Fatalf("activeSubscriptionIDs() = %d IDs, truncated %t", len(ids), truncated)
+	}
+	if ids[0] != bandwidthTestUUID(0) || ids[len(ids)-1] != bandwidthTestUUID(relayauth.MaxHeartbeatActiveSubscriptions-1) {
+		t.Fatalf("truncated IDs = %q through %q", ids[0], ids[len(ids)-1])
+	}
+
+	reporter := newHeartbeatReporter(
+		slog.Default(), &relayMetrics{health: newRelayHealth(false, time.Minute, time.Minute)},
+		"edge-1", time.Minute, r.activeSubscriptionIDs, func(context.Context, relayauth.Heartbeat) error { return nil },
+	)
+	heartbeat := reporter.snapshot(time.Now())
+	if !heartbeat.ActiveSubscriptionIDsTruncated || !reflect.DeepEqual(heartbeat.ActiveSubscriptionIDs, ids) {
+		t.Fatalf("heartbeat snapshot = %+v", heartbeat)
 	}
 }
 
