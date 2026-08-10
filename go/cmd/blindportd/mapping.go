@@ -22,7 +22,7 @@ const (
 	maxStaticAccounts = 16
 )
 
-var errStaticConfigV3RuntimeUnsupported = errors.New("config version 3 multi-account runtime dispatch is not yet supported")
+var errStaticConfigV3RequiresDocumentLoader = errors.New("config version 3 requires the multi-account config loader")
 
 type mapping struct {
 	AccountName           string `json:"-"`
@@ -44,7 +44,7 @@ type staticConfig struct {
 	Mappings []mapping `json:"mappings"`
 }
 
-// staticConfigDocument retains account boundaries for the future multi-account runtime.
+// staticConfigDocument retains account boundaries for multi-account runtimes.
 type staticConfigDocument struct {
 	Version  int             `json:"version"`
 	Mappings []mapping       `json:"mappings,omitempty"`
@@ -109,7 +109,7 @@ func loadStaticConfigWithPermissions(path string, ownerOnly bool) ([]mapping, er
 		return nil, err
 	}
 	if cfg.IsMultiAccount() {
-		return nil, errStaticConfigV3RuntimeUnsupported
+		return nil, errStaticConfigV3RequiresDocumentLoader
 	}
 	return cfg.Mappings, nil
 }

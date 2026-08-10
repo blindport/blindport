@@ -153,14 +153,12 @@ func TestParseDockerOrderLabelsDefaultsAndFields(t *testing.T) {
 		dockerMappingPrefix + "datagrams.transport":         "udp",
 		dockerMappingPrefix + "datagrams.billing_term":      "yearly",
 		dockerMappingPrefix + "datagrams.upstream":          "collector:9000",
-		dockerMappingPrefix + "framed-address.product":      "ip",
-		dockerMappingPrefix + "framed-address.upstream":     "gateway:8080",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mappings) != 3 {
-		t.Fatalf("len(mappings) = %d, want 3", len(mappings))
+	if len(mappings) != 2 {
+		t.Fatalf("len(mappings) = %d, want 2", len(mappings))
 	}
 	byKey := make(map[string]mapping)
 	for _, item := range mappings {
@@ -174,9 +172,15 @@ func TestParseDockerOrderLabelsDefaultsAndFields(t *testing.T) {
 	if port.Product != "port" || port.Transport != "udp" || port.BillingTerm != "yearly" {
 		t.Fatalf("port declaration = %+v", port)
 	}
-	ip := byKey["framed-address"]
-	if ip.Product != "ip" || ip.Transport != "tcp" || ip.BillingTerm != "monthly" {
-		t.Fatalf("IP declaration = %+v", ip)
+}
+
+func TestParseDockerLabelsRejectsIPOrderLocally(t *testing.T) {
+	_, err := parseDockerLabels("container-id", map[string]string{
+		dockerMappingPrefix + "address.product":  "ip",
+		dockerMappingPrefix + "address.upstream": "gateway:8080",
+	})
+	if err == nil || !strings.Contains(err.Error(), "product ip is not supported for Docker orders") {
+		t.Fatalf("IP order error = %v", err)
 	}
 }
 

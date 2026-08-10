@@ -346,6 +346,9 @@ func validateOrderDeclaration(item mapping) error {
 	if err := validateHostPort(item.Upstream); err != nil {
 		return fmt.Errorf("%s: invalid upstream: %w", item.Source, err)
 	}
+	if item.Product == "ip" {
+		return fmt.Errorf("%s: product ip is not supported for Docker orders because routed WireGuard has no upstream mapping", item.Source)
+	}
 	if err := validateTLSMapping(item, item.Source); err != nil {
 		return err
 	}
@@ -357,7 +360,7 @@ func validateOrderDeclaration(item mapping) error {
 		if err := protocol.ValidateClaim(&protocol.Claim{Kind: protocol.ClaimRelay, Domain: item.Domain}); err != nil {
 			return fmt.Errorf("%s: invalid relay domain: %w", item.Source, err)
 		}
-	case "port", "ip":
+	case "port":
 		if item.TLSMode == tlsModeAutomatic {
 			return fmt.Errorf("%s: automatic TLS is only valid for relay", item.Source)
 		}
@@ -365,7 +368,7 @@ func validateOrderDeclaration(item mapping) error {
 			return fmt.Errorf("%s: domain is only valid for relay", item.Source)
 		}
 	default:
-		return fmt.Errorf("%s: product must be relay, port, or ip", item.Source)
+		return fmt.Errorf("%s: product must be relay or port", item.Source)
 	}
 	if item.Transport != "tcp" && item.Transport != "udp" {
 		return fmt.Errorf("%s: transport must be tcp or udp", item.Source)

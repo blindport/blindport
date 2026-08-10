@@ -123,10 +123,10 @@ func TestLoadStaticConfigDocumentVersion3(t *testing.T) {
 	}
 }
 
-func TestLoadStaticConfigVersion3RequiresRuntimeDispatch(t *testing.T) {
+func TestLoadStaticConfigVersion3RequiresDocumentLoader(t *testing.T) {
 	path := writeConfig(t, `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/blindport-public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"public:443"}]}]}`, 0o600)
-	if _, err := loadStaticConfig(path); !errors.Is(err, errStaticConfigV3RuntimeUnsupported) {
-		t.Fatalf("loadStaticConfig() error = %v, want v3 runtime dispatch error", err)
+	if _, err := loadStaticConfig(path); !errors.Is(err, errStaticConfigV3RequiresDocumentLoader) {
+		t.Fatalf("loadStaticConfig() error = %v, want multi-account loader error", err)
 	}
 }
 

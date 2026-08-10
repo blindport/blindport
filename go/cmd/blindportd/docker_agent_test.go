@@ -464,6 +464,35 @@ func TestDockerAgentRetriesFailedAndAttentionOrdersWithBackoff(t *testing.T) {
 	}
 }
 
+func TestDockerAgentDoesNotRequestOrRetryIPOrders(t *testing.T) {
+	var puts int
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		puts++
+	}))
+	defer server.Close()
+	fake := &fakeDockerClient{containers: []containertypes.Summary{{ID: "address", Labels: map[string]string{
+		dockerMappingPrefix + "address.product":  "ip",
+		dockerMappingPrefix + "address.upstream": "gateway:8080",
+	}}}}
+	agent := newTestDockerAgent(fake, server, &recordingPlanReconciler{}, func(context.Context) ([]provisioning, error) {
+		return []provisioning{{
+			SubscriptionID: testSubscriptionID1,
+			Product:        "relay",
+			Domain:         "unused.example",
+			RelayEndpoint:  "edge.example:5443",
+		}}, nil
+	})
+
+	for range 2 {
+		if err := agent.reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if puts != 0 || len(agent.orderCache) != 0 {
+		t.Fatalf("IP order requests/cache = %d/%+v", puts, agent.orderCache)
+	}
+}
+
 func TestDockerAgentRunStaysAliveWithZeroMappings(t *testing.T) {
 	fake := &fakeDockerClient{}
 	reconciler := &recordingPlanReconciler{}

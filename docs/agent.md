@@ -203,7 +203,13 @@ mappings, credentials, authorization cache, ACME state, and tunnel workers:
       "name": "public",
       "token_file": "/run/secrets/blindport-public",
       "state_dir": "/var/lib/blindport/accounts/public",
-      "mappings": []
+      "mappings": [
+        {
+          "subscription_id": "12312312-3123-4123-8123-123123123123",
+          "upstream": "public-web:8080",
+          "tls_mode": "passthrough"
+        }
+      ]
     },
     {
       "name": "private",
@@ -221,10 +227,18 @@ mappings, credentials, authorization cache, ACME state, and tunnel workers:
 }
 ```
 
+Run this supported multi-account configuration with:
+
+```sh
+blindportd --config /etc/blindport/accounts.json
+```
+
 Account names are lowercase stable IDs. Token and state paths must be absolute,
-canonical, unique, and non-overlapping. Without Docker discovery, every account
-must contain at least one static mapping. Version 3 does not support routed
-WireGuard or legacy single-subscription flags.
+canonical, unique, and non-overlapping. Each account token file contains the
+owner-only bearer token for that backend account. Use a distinct bearer token
+for each distinct backend account. Without Docker discovery, every account must
+contain at least one static mapping. Version 3 does not support routed WireGuard
+or legacy single-subscription flags.
 
 Every configured subscription must appear in the backend's active provisioning
 response. Blindport Relay mappings create one independent tunnel worker for every
