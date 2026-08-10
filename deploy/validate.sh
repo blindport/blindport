@@ -82,6 +82,12 @@ for name, service in services.items():
         assert "offline-entitlement-private-key" in secret_names
     else:
         assert "offline-entitlement-private-key" not in secret_names
+if "relay" in services:
+    relay_environment = services["relay"]["environment"]
+    assert relay_environment["OFFLINE_ENTITLEMENTS_ENABLED"] == "false"
+    assert relay_environment["OFFLINE_ENTITLEMENT_PUBLIC_KEYS"] == ""
+    assert relay_environment["OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS"] == "604800"
+    assert "OFFLINE_ENTITLEMENT_PRIVATE_KEY_FILE" not in relay_environment
 '
 }
 

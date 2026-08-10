@@ -278,6 +278,12 @@ admit a newly connected v2 client during an infrastructure outage only when its 
 certificate identity and signed artifact both verify for that edge; token denials,
 secret failures, and protocol failures remain fail-closed.
 
+For the integrated production Relay, set `LOCAL_RELAY_EDGE_ID` and stage
+`OFFLINE_ENTITLEMENT_PUBLIC_KEYS` plus `OFFLINE_ENTITLEMENT_MAX_GRACE_SECONDS` while
+`LOCAL_RELAY_OFFLINE_ENTITLEMENTS_ENABLED=false`. Enable that local Relay flag only in
+the relay-fallback rollout after backend issuance and normal online authorization pass.
+Split Relay stacks use their own `OFFLINE_ENTITLEMENTS_ENABLED` flag.
+
 The reconciler queues one notice seven days before expiry and one notice one day
 before expiry. Each delivery gets a deterministic Message-ID derived from its outbox
 identity. SMTP acceptance is `sent`; definitive transient rejection retries with
