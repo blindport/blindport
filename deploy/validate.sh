@@ -533,6 +533,7 @@ assert services["relay-a"]["environment"]["BLINDPORT_BACKEND_URL"] == "http://ap
 assert services["relay-b"]["environment"]["BLINDPORT_BACKEND_URL"] == "http://api-lb:8000"
 assert set(services["relay-a"]["networks"]) == {"control", "edge-a"}
 assert set(services["relay-b"]["networks"]) == {"control", "edge-b"}
+assert services["agent"]["cap_add"] == ["NET_ADMIN"]
 assert services["postgres"]["image"].startswith("postgres:17.5-alpine@sha256:")
 assert services["api-lb"]["image"].startswith("haproxy:3.2.1-alpine@sha256:")
 

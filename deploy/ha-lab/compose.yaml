@@ -290,6 +290,7 @@ services:
         condition: service_started
     read_only: true
     cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
 
   tester:
     <<: *service-defaults
