@@ -53,15 +53,7 @@ def get_catalog(session: Session) -> CatalogResponse:
         ).where(Subscription.assigned_ip.is_not(None))  # type: ignore[union-attr]
     ).all()
 
-    framed_inventory = set(settings.relay_public_ips_list)
     wireguard_inventory = set(settings.wireguard_public_ips_list)
-    used_framed = {
-        row.assigned_ip
-        for row in assigned
-        if row.product == ProductType.IP
-        and row.delivery == DeliveryMode.FRAMED
-        and row.assigned_ip in framed_inventory
-    }
     used_wireguard = {
         row.assigned_ip
         for row in assigned
@@ -69,13 +61,13 @@ def get_catalog(session: Session) -> CatalogResponse:
         and row.delivery == DeliveryMode.WIREGUARD
         and row.assigned_ip in wireguard_inventory
     }
-    framed_available = max(0, len(framed_inventory) - len(used_framed))
+    framed_available = 0
     wireguard_available = (
         max(0, len(wireguard_inventory) - len(used_wireguard))
         if settings.BILLING_YEARLY_ENABLED
         else 0
     )
-    ip_available = framed_available + wireguard_available
+    ip_available = wireguard_available
     ip = _available_product(
         ProductType.IP,
         settings.IP_ENABLED,
@@ -83,7 +75,7 @@ def get_catalog(session: Session) -> CatalogResponse:
         settings.IP_MONTHLY_SATS,
         settings.IP_YEARLY_SATS,
         CatalogCapacityResponse(
-            total=len(framed_inventory) + len(wireguard_inventory),
+            total=len(wireguard_inventory),
             available=ip_available,
             framed_available=framed_available,
             wireguard_available=wireguard_available,
@@ -199,11 +191,9 @@ def require_product_available(
         raise ProductUnavailableError(f"{product.value} sales are paused")
     capacity = entry.capacity
     if product == ProductType.IP:
-        available = (
-            capacity.wireguard_available
-            if delivery == DeliveryMode.WIREGUARD
-            else capacity.framed_available
-        )
+        if delivery != DeliveryMode.WIREGUARD:
+            raise ProductUnavailableError("Blindport IP is available with WireGuard delivery only")
+        available = capacity.wireguard_available
         if not available:
             raise ProductUnavailableError(f"no {delivery.value} Blindport IP capacity")
     elif product == ProductType.PORT:

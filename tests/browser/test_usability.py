@@ -73,6 +73,9 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "RELAY_SHARED_IPS": "203.0.113.20",
             "RELAY_SHARED_TCP_PORTS": "10000-10015",
             "RELAY_SHARED_UDP_PORTS": "10000-10015",
+            "WIREGUARD_PUBLIC_IPS": "198.51.100.20,198.51.100.21,198.51.100.22,198.51.100.23,198.51.100.24,198.51.100.25,198.51.100.26,198.51.100.27",
+            "WIREGUARD_RELAY_PUBLIC_KEY": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+            "WIREGUARD_ENDPOINT": "relay:51820",
             "RELAY_POOL_DOMAINS": "relay1.test,relay2.test",
             "RELAY_MANAGED_SUFFIXES": "relay.test",
             "RATE_LIMIT_SIGNUP_REQUESTS": "1000",
@@ -220,6 +223,122 @@ def test_landing_explanation_has_no_horizontal_overflow(
             ).is_checked()
             _assert_layout(page)
             assert errors == []
+    finally:
+        context.close()
+
+
+def test_landing_ip_order_is_wireguard_and_annual_only(
+    browser: Browser,
+    browser_server: BrowserServer,
+) -> None:
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    try:
+        page.goto(browser_server.base_url, wait_until="networkidle")
+        page.locator('input[name="orderProduct"][value="ip"]').check()
+        assert page.locator(
+            'input[name="orderBillingTerm"][value="yearly"]'
+        ).is_checked()
+        assert page.locator("#orderTermControl").is_hidden()
+        assert page.locator("#ipAnnualOnlyHint").is_visible()
+        assert page.locator('input[name="orderDelivery"]').count() == 0
+        assert (
+            "365"
+            in page.locator(
+                '.plan-option:has(input[value="ip"]) .plan-price'
+            ).inner_text()
+        )
+
+        page.locator('input[name="orderProduct"][value="relay"]').check()
+        monthly = page.locator('input[name="orderBillingTerm"][value="monthly"]')
+        assert page.locator("#orderTermControl").is_visible()
+        assert monthly.is_enabled()
+        monthly.check()
+        assert monthly.is_checked()
+
+        page.locator('input[name="orderProduct"][value="ip"]').check()
+        assert page.locator(
+            'input[name="orderBillingTerm"][value="yearly"]'
+        ).is_checked()
+        page.locator("#toConfigBtn").click()
+        assert page.locator("#ipConfig").is_visible()
+        page.locator("#toReviewBtn").click()
+        assert page.locator("#reviewPrice").text_content() == "75000"
+        assert page.locator("#reviewTerm").text_content() == "Yearly, 365 days"
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v2/orders")
+                and response.request.method == "POST"
+            )
+        ) as order_response_info:
+            page.locator("#placeOrderBtn").click()
+        order_response = order_response_info.value
+        assert order_response.ok, order_response.text()
+        assert order_response.request.post_data_json == {
+            "product": "ip",
+            "billing_term": "yearly",
+            "delivery": "wireguard",
+            "transport": "tcp",
+            "domain": None,
+        }
+    finally:
+        context.close()
+
+
+def test_dashboard_ip_order_is_wireguard_and_annual_only(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        page.locator("#product").select_option("ip")
+        assert page.locator('input[name="newBillingTerm"][value="yearly"]').is_checked()
+        assert page.locator("#newOrderTerm").is_hidden()
+        assert page.locator("#dashboardIpAnnualOnlyHint").is_visible()
+        assert page.locator("#deliveryField, #delivery").count() == 0
+        assert page.locator("#selectedPrice").text_content() == "75000 sats / 365 days"
+
+        page.locator("#product").select_option("port")
+        monthly = page.locator('input[name="newBillingTerm"][value="monthly"]')
+        assert page.locator("#newOrderTerm").is_visible()
+        assert monthly.is_enabled()
+        monthly.check()
+        assert monthly.is_checked()
+
+        page.locator("#product").select_option("ip")
+        assert page.locator('input[name="newBillingTerm"][value="yearly"]').is_checked()
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v1/subscriptions")
+                and response.request.method == "POST"
+            )
+        ) as order_response_info:
+            page.locator("#newSubForm").get_by_role(
+                "button", name="Create order"
+            ).click()
+        order_response = order_response_info.value
+        assert order_response.ok, order_response.text()
+        assert order_response.request.post_data_json == {
+            "product": "ip",
+            "billing_term": "yearly",
+            "domain": None,
+            "transport": "tcp",
+            "delivery": "wireguard",
+        }
     finally:
         context.close()
 
@@ -408,7 +527,13 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
             in page.locator("[data-admin-row]:visible").inner_text()
         )
         page.locator("#clearAdminFilters").click()
-        assert page.locator("[data-admin-row]:visible").count() == 1
+        assert page.locator("[data-admin-row]:visible").count() >= 1
+        assert (
+            page.locator(
+                "[data-admin-row]:visible", has_text=account["account_id"]
+            ).count()
+            == 1
+        )
         request = playwright_runtime.request.new_context(
             base_url=browser_server.base_url
         )
@@ -691,12 +816,12 @@ def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
             "receiveAsset": ["LN"],
             "destination": [payment["invoice"]],
         }
-        assert payment["base_amount_sats"] == 7500
-        assert payment["markup_sats"] == 750
-        assert payment["amount_sats"] == 8250
-        assert page.locator("#payAmount").text_content() == "8250"
+        assert payment["base_amount_sats"] == 75000
+        assert payment["markup_sats"] == 7500
+        assert payment["amount_sats"] == 82500
+        assert page.locator("#payAmount").text_content() == "82500"
         assert (
-            "7500 sats service price + 750 sats"
+            "75000 sats service price + 7500 sats"
             in page.locator("#payBreakdown").text_content()
         )
         assert page.locator("#payUri").get_attribute("target") == "_blank"

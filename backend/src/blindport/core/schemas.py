@@ -157,6 +157,13 @@ class CreateSubscriptionRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_transport(self) -> CreateSubscriptionRequest:
+        if self.product == ProductType.IP:
+            if "delivery" in self.model_fields_set and self.delivery != DeliveryMode.WIREGUARD:
+                raise ValueError("Blindport IP is available with WireGuard delivery only")
+            if "billing_term" in self.model_fields_set and self.billing_term != BillingTerm.YEARLY:
+                raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+            self.delivery = DeliveryMode.WIREGUARD
+            self.billing_term = BillingTerm.YEARLY
         if self.transport != Transport.TCP and self.product != ProductType.PORT:
             raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
         if self.delivery != DeliveryMode.FRAMED and self.product != ProductType.IP:
@@ -183,6 +190,13 @@ class AnonymousOrderRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_transport(self) -> AnonymousOrderRequest:
+        if self.product == ProductType.IP:
+            if "delivery" in self.model_fields_set and self.delivery != DeliveryMode.WIREGUARD:
+                raise ValueError("Blindport IP is available with WireGuard delivery only")
+            if "billing_term" in self.model_fields_set and self.billing_term != BillingTerm.YEARLY:
+                raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+            self.delivery = DeliveryMode.WIREGUARD
+            self.billing_term = BillingTerm.YEARLY
         if self.transport != Transport.TCP and self.product != ProductType.PORT:
             raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
         if self.delivery != DeliveryMode.FRAMED and self.product != ProductType.IP:
@@ -263,6 +277,10 @@ class AgentOrderRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_spec(self) -> AgentOrderRequest:
+        if self.product == ProductType.IP:
+            raise ValueError(
+                "Blindport IP is not supported for agent orders because routed mode has no upstream mapping"
+            )
         if self.delivery == DeliveryMode.WIREGUARD:
             raise ValueError("WireGuard delivery is not supported for agent orders")
         if self.transport != Transport.TCP and self.product != ProductType.PORT:

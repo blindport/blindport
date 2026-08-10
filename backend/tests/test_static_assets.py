@@ -111,10 +111,18 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "if (token) accounts.forget(token)" in login
 
     assert "billing_term: term" in dashboard
+    assert 'delivery: product === "ip" ? "wireguard" : "framed"' in dashboard
+    assert 'if (document.getElementById("product")?.value === "ip") return "yearly"' in dashboard
     assert "payment.period_days" in dashboard
     assert 'name="orderBillingTerm"' in _asset("templates/landing.html")
     assert 'name="newBillingTerm"' in _asset("templates/dashboard.html")
     assert 'name="paymentTerm-{{ s.public_id }}"' in _asset("templates/dashboard.html")
+    assert 'name="orderDelivery"' not in _asset("templates/landing.html")
+    assert 'id="deliveryField"' not in _asset("templates/dashboard.html")
+    assert 'id="delivery"' not in _asset("templates/dashboard.html")
+    assert 'data-monthly-price="{{ ip.monthly_price_sats }}"' not in _asset(
+        "templates/landing.html"
+    )
     assert 'current.status === "paid"' in dashboard
     assert 'current.status === "expired"' in dashboard
     assert 'current.status === "failed"' in dashboard
@@ -140,6 +148,10 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert 'button.textContent = copied ? "Copied"' in dashboard
     assert "JSON.stringify(body)" in dashboard
     assert "`${body.domain} (CNAME)`" in landing
+    assert 'if (product === "ip") body.delivery = "wireguard"' in landing
+    assert 'if (selectedProduct()?.value === "ip") return "yearly"' in landing
+    assert "monthly.disabled" not in landing
+    assert "monthlyTerm.disabled" not in dashboard
     assert 'jsonFetch("/api/v1/me/service-email"' in dashboard
     assert "/api/v1/me/service-announcement-email" not in dashboard
 
@@ -229,6 +241,9 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert "has_service_announcement_email" not in dashboard
     assert "Most web services need a public hostname" in dashboard
     assert "Routed WireGuard /32" in dashboard
+    assert 'id="newOrderTerm"' in dashboard
+    assert 'id="dashboardIpAnnualOnlyHint"' in dashboard
+    assert "Relay HTTPS stays on your host" in dashboard
     assert '<script src="/static/account-storage.js"></script>' in dashboard
     assert 'agree to the <a href="/terms">service terms</a>' in dashboard
 
@@ -509,7 +524,7 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
     assert "Best-effort beta" in terms.text
     assert "does not persist visitor or request source IP addresses" in terms.text
     assert "deleted within 30 days" in terms.text
-    assert "Fixed 30 or 365 days" in landing.text
+    assert "Blindport IP: WireGuard-only, 365 days" in landing.text
     assert "reasonable traffic, bandwidth, connection, or rate limits" in terms.text
     assert "application behavior, DNS history, headers" in terms.text
     assert "not eligible for a refund" in terms.text
@@ -529,7 +544,7 @@ def test_dashboard_stablecoin_control_follows_feature_kill_switch(app_client, mo
     client.cookies.set("blindport_token", signup["token"])
     client.post(
         "/api/v1/subscriptions",
-        json={"product": "ip"},
+        json={"product": "port", "transport": "tcp"},
         headers={"Authorization": f"Bearer {signup['token']}"},
     )
 
@@ -590,7 +605,7 @@ def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monke
     signup = client.post("/api/v2/signup").json()
     client.post(
         "/api/v1/subscriptions",
-        json={"product": "ip"},
+        json={"product": "port", "transport": "tcp"},
         headers={"Authorization": f"Bearer {signup['token']}"},
     )
     client.cookies.set("blindport_token", signup["token"])
@@ -598,9 +613,9 @@ def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monke
 
     assert "Prices are denominated in Bitcoin (BTC)." in landing.text
     assert "One bitcoin is 100 million satoshis (sats)." in landing.text
-    assert "about $4.80 USD" in landing.text
+    assert "about $48.00 USD" in landing.text
     assert 'data-btc-usd="64000"' in dashboard.text
-    assert "about $4.80 USD" in dashboard.text
+    assert "about $0.96 USD" in dashboard.text
 
 
 def test_catalog_exposes_only_configured_managed_suffix_metadata(app_client) -> None:

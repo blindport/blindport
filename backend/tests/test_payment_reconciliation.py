@@ -364,7 +364,7 @@ def test_repeated_reconciliation_does_not_double_renew(app_client) -> None:
     with Session(engine) as session:
         period_after = subscription_by_public_id(session, subscription["id"]).current_period_end
     assert period_before is not None and period_after is not None
-    assert period_after - period_before == timedelta(days=30)
+    assert period_after - period_before == timedelta(days=365)
 
 
 def test_reconciler_health_startup_and_staleness_without_sleeping() -> None:

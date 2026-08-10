@@ -4,7 +4,7 @@ These tests assume they run inside the `tester` container of
 `docker/docker-compose.yaml`. They exercise the full path:
 
   1. Sign up via the backend API and obtain a Crockford-base32 token.
-  2. Subscribe to framed or routed Blindport IP and pay via mock Lightning.
+  2. Subscribe to routed Blindport IP and pay via mock Lightning.
   3. Spawn `blindportd`, using an isolated network namespace for WireGuard.
   4. Confirm HTTP reaches the selected local origin through the relay.
   5. Repeat for Blindport Port exact-socket and Blindport Relay SNI/HTTP-01 dispatch.
@@ -37,7 +37,6 @@ from cryptography.x509.oid import NameOID
 
 BACKEND = os.environ["BLINDPORT_BACKEND_URL"]
 RELAY_HOST = os.environ["BLINDPORT_RELAY_HOST"]
-SECOND_IP = os.environ["BLINDPORT_SECOND_IP"]
 SNI_HOST = os.environ["BLINDPORT_SNI_HOST"]
 SNI_PORT = int(os.environ["BLINDPORT_SNI_PORT"])
 HTTP_CHALLENGE_PORT = int(os.environ["BLINDPORT_HTTP_CHALLENGE_PORT"])
@@ -506,35 +505,6 @@ def _udp_echo_origin():
 @pytest.fixture(scope="session", autouse=True)
 def wait_backend():
     _wait_for_backend()
-
-
-def test_ip_end_to_end():
-    token = _signup()
-    sub = _subscribe(token, "ip", billing_term="yearly")
-    assert (sub["billing_term"], sub["period_days"], sub["yearly_price_sats"]) == (
-        "yearly",
-        365,
-        75000,
-    )
-    payment = _create_payment(token, sub["id"])
-    assert (
-        payment["billing_term"],
-        payment["period_days"],
-        payment["amount_sats"],
-    ) == (
-        "yearly",
-        365,
-        75000,
-    )
-    _wait_for_background_activation(token, sub["id"])
-    cfg = _get_config(token)
-    assert any(row["product"] == "ip" and row["assigned_ip"] for row in cfg), cfg
-    assigned = next(row["assigned_ip"] for row in cfg if row["product"] == "ip")
-
-    with _spawn_client(token, "ip", ip=assigned):
-        r = httpx.get(f"http://{assigned}/", timeout=5)
-        assert r.status_code == 200
-        assert "hello from origin" in r.text
 
 
 def test_wireguard_ip_end_to_end():

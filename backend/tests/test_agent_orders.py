@@ -25,7 +25,7 @@ def _signup(client) -> tuple[str, dict[str, str]]:
 def _put(client, headers, key: str = "primary", **body):
     return client.put(
         f"/api/v1/client/orders/{key}",
-        json={"product": "ip", **body},
+        json={"product": "port", **body},
         headers=headers,
     )
 
@@ -74,6 +74,23 @@ def test_order_without_wallet_or_with_nwc_disabled_awaits_payment(app_client, mo
     assert disabled.status_code == 200
     assert disabled.json()["state"] == "awaiting_payment"
     assert disabled.json()["payment"] is None
+
+
+def test_ip_agent_order_is_rejected_without_creating_an_order(app_client) -> None:
+    client, _ = app_client
+    _, headers = _signup(client)
+
+    response = _put(client, headers, product="ip")
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == (
+        "Value error, Blindport IP is not supported for agent orders because routed mode has no upstream mapping"
+    )
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        assert session.exec(select(AgentOrder)).all() == []
+        assert session.exec(select(Subscription)).all() == []
 
 
 def test_managed_relay_creates_one_linked_nwc_payment(app_client) -> None:

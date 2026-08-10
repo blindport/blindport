@@ -15,7 +15,7 @@
   <dl class="intro-facts" aria-label="Service summary">
     <div><dt>Leased identity</dt><dd>TLS hostname, exact socket, or dedicated IPv4</dd></div>
     <div><dt>Account</dt><dd>One bearer token; no email, name, or profile required</dd></div>
-    <div><dt>Service term</dt><dd>Fixed {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}; Bitcoin via {% if stablecoin_enabled %}Lightning or stablecoin checkout{% else %}direct Lightning payment{% endif %}</dd></div>
+    <div><dt>Service term</dt><dd>Relay and Port: {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}. Blindport IP: WireGuard-only, 365 days; Bitcoin via {% if stablecoin_enabled %}Lightning or stablecoin checkout{% else %}direct Lightning payment{% endif %}</dd></div>
   </dl>
 </section>
 
@@ -30,6 +30,7 @@
     {% set relay = catalog_by_product.relay %}
     {% set port = catalog_by_product.port %}
     {% set ip = catalog_by_product.ip %}
+    {% set ip_wireguard_available = ip.available and ip.capacity.wireguard_available %}
     <article>
       <h3>Blindport Relay</h3>
       <p class="product-purpose">One TLS hostname</p>
@@ -54,17 +55,17 @@
       <p class="product-state{% if not port.available %} is-unavailable{% endif %}">{% if port.available %}Available{% elif port.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
       {% if port.available %}<a class="text-link product-jump" href="#order" data-order-product="port">Choose Port</a>{% endif %}
     </article>
-    <article>
+    <article{% if not ip_wireguard_available %} class="is-unavailable"{% endif %}>
       <h3>Blindport IP</h3>
       <p class="product-purpose">One dedicated public IPv4</p>
-      <p class="price-line">{{ ip.monthly_price_sats }} <span>sats / 30 days for framed delivery{% set ip_usd = approximate_usd(ip.monthly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
+      <p class="price-line">{{ ip.yearly_price_sats }} <span>sats / 365 days via WireGuard{% set ip_usd = approximate_usd(ip.yearly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
-        <li>Framed mode forwards configured TCP listeners</li>
         <li>WireGuard routes the complete static /32 in both directions</li>
-        <li>Routed mode is annual and preserves native TCP, UDP, ICMP, and peer IPs</li>
+        <li>Annual service preserves native TCP, UDP, ICMP, and peer IPs</li>
+        <li>Requires Linux kernel WireGuard and network administration privileges</li>
       </ul>
-      <p class="product-state{% if not ip.available %} is-unavailable{% endif %}">{% if ip.available %}Available{% elif ip.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</p>
-      {% if ip.available %}<a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>{% endif %}
+      <p class="product-state{% if not ip_wireguard_available %} is-unavailable{% endif %}">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not ip.enabled %}Unavailable{% else %}WireGuard capacity unavailable{% endif %}</p>
+      {% if ip_wireguard_available %}<a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>{% endif %}
     </article>
   </div>
   <p class="fit-check"><strong>Beta boundary:</strong> hosted service is best effort, with no current uptime or high-availability guarantee. There is no fixed traffic allowance today; fair use applies. The published client requires Linux, and payment requires {% if stablecoin_enabled %}a Lightning or supported stablecoin wallet{% else %}a Lightning wallet{% endif %}.</p>
@@ -151,7 +152,7 @@
         <section id="planPanel" class="order-panel" aria-labelledby="plan-heading">
           <fieldset>
             <legend id="plan-heading">Select a plan</legend>
-            {% if yearly_billing_enabled %}<div class="term-control">
+            {% if yearly_billing_enabled %}<div id="orderTermControl" class="term-control">
               <span id="orderBillingTermLabel">Billing term</span>
               <div class="segmented" role="group" aria-labelledby="orderBillingTermLabel">
                 <label><input type="radio" name="orderBillingTerm" value="monthly" checked><span>Monthly</span></label>
@@ -160,6 +161,7 @@
             </div>{% endif %}
             <div class="plan-grid">
               {% set ip = catalog_by_product.ip %}
+              {% set ip_wireguard_available = ip.available and ip.capacity.wireguard_available %}
               {% set port = catalog_by_product.port %}
               {% set relay = catalog_by_product.relay %}
               <label class="plan-option{% if not relay.available %} is-unavailable{% endif %}">
@@ -176,14 +178,15 @@
                 <span>One shared-IP tuple: public IP, port, and TCP or UDP.</span>
                 <span class="availability">{% if port.available %}Available{% elif port.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</span>
               </label>
-              <label class="plan-option{% if not ip.available %} is-unavailable{% endif %}">
-                <input type="radio" name="orderProduct" value="ip" data-monthly-price="{{ ip.monthly_price_sats }}" data-yearly-price="{{ ip.yearly_price_sats }}" data-name="Blindport IP"{% if not ip.available %} disabled{% endif %}>
+              <label class="plan-option{% if not ip_wireguard_available %} is-unavailable{% endif %}">
+                <input type="radio" name="orderProduct" value="ip" data-yearly-price="{{ ip.yearly_price_sats }}" data-name="Blindport IP"{% if not ip_wireguard_available %} disabled{% endif %}>
                 <span class="plan-title">Blindport IP</span>
-                <span class="plan-price" data-monthly-price="{{ ip.monthly_price_sats }}" data-yearly-price="{{ ip.yearly_price_sats }}"><strong>{{ ip.monthly_price_sats }}</strong> sats / <span>30</span> days</span>
-                <span>One dedicated public IPv4 address.</span>
-                <span class="availability">{% if ip.available %}Available{% elif ip.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</span>
+                <span class="plan-price" data-yearly-price="{{ ip.yearly_price_sats }}"><strong>{{ ip.yearly_price_sats }}</strong> sats / <span>365</span> days</span>
+                <span>One dedicated public IPv4, routed through WireGuard.</span>
+                <span class="availability">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not ip.enabled %}Unavailable{% else %}WireGuard capacity unavailable{% endif %}</span>
               </label>
             </div>
+            <p id="ipAnnualOnlyHint" class="field-help" hidden>Blindport IP is delivered as a routed WireGuard /32 and is billed annually for 365 days.</p>
           </fieldset>
           <div class="form-actions form-actions-end">
             <button type="button" id="toConfigBtn" disabled>Configure plan</button>
@@ -192,13 +195,7 @@
 
         <section id="configPanel" class="order-panel" aria-labelledby="config-heading" hidden>
           <h3 id="config-heading">Configure <span id="configProductName"></span></h3>
-          <fieldset id="ipConfig" hidden>
-            <legend>Delivery mode</legend>
-            <div class="choice-list">
-              <label><input type="radio" name="orderDelivery" value="framed" checked{% if not catalog_by_product.ip.capacity.framed_available %} disabled{% endif %}> <span><strong>Framed</strong> (forward selected local TCP services through <code>blindportd</code>; no network administration capability required)</span></label>
-              <label><input type="radio" name="orderDelivery" value="wireguard"{% if not catalog_by_product.ip.capacity.wireguard_available %} disabled{% endif %}> <span><strong>WireGuard</strong> (annual only; route the complete static public /32 to a Linux host for inbound and outbound traffic; requires kernel WireGuard and <code>CAP_NET_ADMIN</code>)</span></label>
-            </div>
-          </fieldset>
+          <div id="ipConfig" class="notice" hidden>Blindport IP is delivered as a routed WireGuard /32. It is billed annually for 365 days and requires Linux kernel WireGuard with <code>CAP_NET_ADMIN</code> or equivalent root privileges.</div>
           <fieldset id="portConfig" hidden>
             <legend>Transport</legend>
             <div class="segmented">

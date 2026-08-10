@@ -311,8 +311,17 @@ def test_identity_reset_revokes_and_replaces_wireguard_peer(app_client, monkeypa
     ]
 
 
-def test_wireguard_delivery_rejects_wrong_product_or_disabled_plane(app_client) -> None:
+def test_wireguard_delivery_rejects_wrong_product_or_disabled_plane(
+    app_client, monkeypatch
+) -> None:
+    from blindport.services import subscriptions
+
     client, _ = app_client
+    monkeypatch.setattr(
+        subscriptions,
+        "settings",
+        subscriptions.settings.model_copy(update={"WIREGUARD_PUBLIC_IPS": ""}),
+    )
     token = client.post("/api/v1/signup").json()["token"]
     disabled = client.post(
         "/api/v1/subscriptions",
@@ -329,27 +338,37 @@ def test_wireguard_delivery_rejects_wrong_product_or_disabled_plane(app_client) 
     assert invalid.status_code == 422
 
 
-def test_routed_ip_is_annual_only_for_orders_and_payments(app_client, monkeypatch) -> None:
+def test_routed_ip_omitted_order_fields_normalize_and_explicit_monthly_is_rejected(
+    app_client, monkeypatch
+) -> None:
     client, _ = app_client
     _configure_wireguard(monkeypatch)
     token = client.post("/api/v1/signup").json()["token"]
 
-    monthly = client.post(
+    omitted = client.post(
         "/api/v1/subscriptions",
         json={"product": "ip", "delivery": "wireguard"},
         headers=_auth(token),
     )
-    assert monthly.status_code == 400
-    assert (
-        monthly.json()["detail"] == "WireGuard Blindport IP is available with yearly billing only"
+    assert omitted.status_code == 200, omitted.text
+    assert (omitted.json()["delivery"], omitted.json()["billing_term"]) == ("wireguard", "yearly")
+
+    monthly = client.post(
+        "/api/v1/subscriptions",
+        json={"product": "ip", "delivery": "wireguard", "billing_term": "monthly"},
+        headers=_auth(token),
+    )
+    assert monthly.status_code == 422
+    assert monthly.json()["detail"][0]["msg"] == (
+        "Value error, WireGuard Blindport IP is available with yearly billing only"
     )
 
     anonymous = client.post(
         "/api/v2/orders",
         json={"product": "ip", "delivery": "wireguard", "billing_term": "monthly"},
     )
-    assert anonymous.status_code == 400
-    assert anonymous.json()["detail"] == monthly.json()["detail"]
+    assert anonymous.status_code == 422
+    assert anonymous.json()["detail"][0]["msg"] == monthly.json()["detail"][0]["msg"]
 
     yearly = client.post(
         "/api/v1/subscriptions",
@@ -367,13 +386,16 @@ def test_routed_ip_is_annual_only_for_orders_and_payments(app_client, monkeypatc
         headers=_auth(token),
     )
     assert explicit_monthly.status_code == 400
-    omitted = client.post(
+    yearly_omitted = client.post(
         "/api/v1/payments",
         json={"subscription_id": yearly.json()["id"], "method": "lightning"},
         headers=_auth(token),
     )
-    assert omitted.status_code == 200, omitted.text
-    assert (omitted.json()["billing_term"], omitted.json()["period_days"]) == ("yearly", 365)
+    assert yearly_omitted.status_code == 200, yearly_omitted.text
+    assert (yearly_omitted.json()["billing_term"], yearly_omitted.json()["period_days"]) == (
+        "yearly",
+        365,
+    )
 
 
 def test_routed_catalog_capacity_requires_global_yearly_billing(app_client, monkeypatch) -> None:
@@ -386,7 +408,8 @@ def test_routed_catalog_capacity_requires_global_yearly_billing(app_client, monk
         item for item in client.get("/api/v1/catalog").json()["products"] if item["product"] == "ip"
     )
     assert ip["capacity"]["wireguard_available"] == 0
-    assert ip["capacity"]["framed_available"] == 2
+    assert ip["capacity"]["framed_available"] == 0
+    assert ip["capacity"]["total"] == 1
 
 
 def test_routed_smtp_admin_is_default_deny_and_v2_only(app_client, monkeypatch) -> None:
@@ -560,7 +583,7 @@ def test_routed_dashboard_hides_payments_when_yearly_billing_is_disabled(
     assert 'class="inline-nwc-form' not in dashboard.text
 
 
-def test_legacy_monthly_routed_snapshot_settles_and_auto_renews_yearly(
+def test_legacy_ip_payment_history_is_read_only_and_cannot_be_renewed(
     app_client, monkeypatch
 ) -> None:
     client, factory = app_client
@@ -577,71 +600,101 @@ def test_legacy_monthly_routed_snapshot_settles_and_auto_renews_yearly(
         headers=_auth(token),
     ).json()
 
-    from blindport.core.models import BillingTerm, IPLease, IPLeaseState, Payment, PaymentMethod
+    from blindport.core.models import BillingTerm, DeliveryMode, Payment
     from blindport.db import engine
-    from blindport.services.payment_reconciliation import reconcile_pending_payments_once
 
+    factory.get_lightning_adapter().mark_paid(issued["payment_hash"])
+    assert client.get(f"/api/v1/payments/{issued['id']}", headers=_auth(token)).status_code == 200
     with Session(engine) as session:
         payment = session.get(Payment, issued["id"])
         assert payment is not None
-        payment.billing_term = BillingTerm.MONTHLY
-        payment.period_days = 30
-        payment.amount_sats = 7500
-        session.add(payment)
+        subscription_row = subscription_by_public_id(session, subscription["id"])
+        assert subscription_row is not None
+        subscription_row.delivery = DeliveryMode.FRAMED
+        session.add(subscription_row)
         session.commit()
-        lease = session.exec(select(IPLease)).one()
-        assert lease.state == IPLeaseState.RESERVED
 
-    factory.get_lightning_adapter().mark_paid(issued["payment_hash"])
-    settled = client.get(f"/api/v1/payments/{issued['id']}", headers=_auth(token))
-    assert settled.status_code == 200, settled.text
-    assert (settled.json()["billing_term"], settled.json()["period_days"]) == ("monthly", 30)
-
-    omitted_renewal = client.post(
+    framed_renewal = client.post(
         "/api/v1/payments",
         json={"subscription_id": subscription["id"], "method": "lightning"},
         headers=_auth(token),
     )
-    assert omitted_renewal.status_code == 200, omitted_renewal.text
-    assert (omitted_renewal.json()["billing_term"], omitted_renewal.json()["period_days"]) == (
-        "yearly",
-        365,
+    assert framed_renewal.status_code == 400
+    assert (
+        framed_renewal.json()["detail"] == "Blindport IP is available with WireGuard delivery only"
     )
-    with Session(engine) as session:
-        open_renewal = session.get(Payment, omitted_renewal.json()["id"])
-        assert open_renewal is not None
-        open_renewal.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        session.add(open_renewal)
-        session.commit()
-    expired = client.get(f"/api/v1/payments/{omitted_renewal.json()['id']}", headers=_auth(token))
-    assert expired.json()["status"] == "expired"
-
-    nwc = client.post(
+    connected = client.post(
         "/api/v1/me/nwc",
-        json={"nwc_uri": "nostr+walletconnect://legacy-routed-renewal"},
+        json={"nwc_uri": "nostr+walletconnect://historical-ip"},
         headers=_auth(token),
     )
-    assert nwc.status_code == 200, nwc.text
-    with Session(engine) as session:
-        stored = subscription_by_public_id(session, subscription["id"])
-        assert stored is not None
-        assert stored.billing_term == BillingTerm.MONTHLY
-        stored.auto_renew = True
-        stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
-        session.add(stored)
-        session.commit()
-        lease = session.exec(select(IPLease)).one()
-        assert lease.state == IPLeaseState.ACTIVE
+    assert connected.status_code == 200, connected.text
+    framed_auto_renew = client.post(
+        f"/api/v1/subscriptions/{subscription['id']}/auto-renew?enable=true",
+        headers=_auth(token),
+    )
+    assert framed_auto_renew.status_code == 400
+    assert (
+        framed_auto_renew.json()["detail"]
+        == "Blindport IP is available with WireGuard delivery only"
+    )
 
-    summary = reconcile_pending_payments_once()
-    assert summary.auto_renewed == 1
     with Session(engine) as session:
-        renewal = session.exec(select(Payment).where(Payment.method == PaymentMethod.NWC)).one()
-        assert (renewal.billing_term, renewal.period_days, renewal.amount_sats) == (
-            BillingTerm.YEARLY,
-            365,
-            75000,
-        )
+        subscription_row = subscription_by_public_id(session, subscription["id"])
+        assert subscription_row is not None
+        subscription_row.delivery = DeliveryMode.WIREGUARD
+        subscription_row.billing_term = BillingTerm.MONTHLY
+        session.add(subscription_row)
+        session.commit()
+
+    monthly_renewal = client.post(
+        "/api/v1/payments",
+        json={
+            "subscription_id": subscription["id"],
+            "method": "lightning",
+            "billing_term": "yearly",
+        },
+        headers=_auth(token),
+    )
+    assert monthly_renewal.status_code == 400
+    assert (
+        monthly_renewal.json()["detail"]
+        == "WireGuard Blindport IP is available with yearly billing only"
+    )
+    assert client.delete("/api/v1/me/nwc", headers=_auth(token)).status_code == 200
+    monthly_auto_renew = client.post(
+        "/api/v1/me/nwc",
+        json={
+            "nwc_uri": "nostr+walletconnect://historical-monthly-ip",
+            "auto_renew_subscription_id": subscription["id"],
+        },
+        headers=_auth(token),
+    )
+    assert monthly_auto_renew.status_code == 400
+    assert monthly_auto_renew.headers["Cache-Control"] == "no-store"
+    assert (
+        monthly_auto_renew.json()["detail"]
+        == "WireGuard Blindport IP is available with yearly billing only"
+    )
+    assert client.get("/api/v1/me/nwc", headers=_auth(token)).json()["has_nwc"] is False
+
+    client.cookies.set("blindport_token", token)
+    dashboard = client.get("/dashboard")
+    assert dashboard.status_code == 200
+    assert (
+        "This historical Blindport IP remains visible, but new payments and renewals are unavailable."
+        in dashboard.text
+    )
+    assert 'class="payBtn' not in dashboard.text
+    assert 'class="stablecoinPayBtn' not in dashboard.text
+    assert 'class="nwcPayBtn' not in dashboard.text
+    assert 'class="inline-nwc-form' not in dashboard.text
+    assert 'class="autoRenewToggle' not in dashboard.text
+    assert "Unavailable for historical endpoint" in dashboard.text
+
+    historical = client.get(f"/api/v1/payments/{issued['id']}", headers=_auth(token))
+    assert historical.status_code == 200
+    assert historical.json()["id"] == issued["id"]
 
 
 def test_ip_lease_lifecycle_and_reassignment_history(app_client, monkeypatch) -> None:

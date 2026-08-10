@@ -480,6 +480,18 @@ async def set_nwc(
                 "subscription not found",
                 headers=_NWC_RESPONSE_HEADERS,
             )
+        try:
+            subs_svc.require_product_billing_term(
+                subscription.product,
+                subscription.delivery,
+                subscription.billing_term,
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                str(error),
+                headers=_NWC_RESPONSE_HEADERS,
+            ) from error
     try:
         store_nwc_credential(user, nwc_uri, validation.capabilities)
     except ValueError as error:
@@ -929,6 +941,11 @@ def toggle_auto_renew(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "cannot enable auto-renew without a wallet connection"
         )
+    if enable:
+        try:
+            subs_svc.require_product_billing_term(sub.product, sub.delivery, sub.billing_term)
+        except ValueError as error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
     sub.auto_renew = enable
     session.add(sub)
     session.commit()

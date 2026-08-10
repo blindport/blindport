@@ -172,6 +172,10 @@ def put_agent_order(
     spec: AgentOrderSpec,
 ) -> AgentOrderResult:
     """Create or replay an order without ever turning its initial payment into a renewal."""
+    if spec.product == ProductType.IP:
+        raise ValueError(
+            "Blindport IP is not supported for agent orders because routed mode has no upstream mapping"
+        )
     order, subscription = _get_or_create_order(session, user, order_key, spec)
     payment = _linked_payment(session, order.id)
 

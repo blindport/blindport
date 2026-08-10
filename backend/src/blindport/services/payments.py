@@ -666,12 +666,14 @@ def create_payment(
     require_payment_method_enabled(method)
     subs.reap_expired_domain_claims(session)
     session.refresh(subscription)
-    routed_ip = (
-        subscription.product == ProductType.IP and subscription.delivery == DeliveryMode.WIREGUARD
-    )
-    if routed_ip and billing_term == BillingTerm.MONTHLY:
-        raise ValueError("WireGuard Blindport IP is available with yearly billing only")
-    selected_term = BillingTerm.YEARLY if routed_ip else (billing_term or subscription.billing_term)
+    selected_term = billing_term or subscription.billing_term
+    if subscription.product == ProductType.IP:
+        if subscription.delivery != DeliveryMode.WIREGUARD:
+            raise ValueError("Blindport IP is available with WireGuard delivery only")
+        if subscription.billing_term != BillingTerm.YEARLY:
+            raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+        if selected_term != BillingTerm.YEARLY:
+            raise ValueError("WireGuard Blindport IP is available with yearly billing only")
     if agent_order_id is not None:
         order = session.get(AgentOrder, agent_order_id)
         if order is None or order.subscription_id != subscription.id:

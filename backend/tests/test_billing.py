@@ -20,7 +20,17 @@ def _settle(client, factory, token: str, payment: dict) -> dict:
     return response.json()
 
 
-def test_catalog_and_legacy_api_defaults_are_monthly(app_client) -> None:
+def _configure_wireguard(monkeypatch) -> None:
+    from blindport.services import catalog, subscriptions
+
+    for module in (catalog, subscriptions):
+        monkeypatch.setattr(module.settings, "WIREGUARD_PUBLIC_IPS", "198.51.100.20")
+        monkeypatch.setattr(module.settings, "WIREGUARD_RELAY_PUBLIC_KEY", "A" * 44)
+        monkeypatch.setattr(module.settings, "WIREGUARD_ENDPOINT", "relay:51820")
+
+
+def test_catalog_and_ip_api_defaults_are_wireguard_yearly(app_client, monkeypatch) -> None:
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
     catalog = client.get("/api/v1/catalog").json()
     assert catalog["yearly_billing_enabled"] is True
@@ -36,8 +46,9 @@ def test_catalog_and_legacy_api_defaults_are_monthly(app_client) -> None:
         json={"product": "ip"},
         headers=_auth(token),
     ).json()
-    assert subscription["billing_term"] == "monthly"
-    assert subscription["period_days"] == 30
+    assert subscription["delivery"] == "wireguard"
+    assert subscription["billing_term"] == "yearly"
+    assert subscription["period_days"] == 365
     assert subscription["monthly_price_sats"] == 7500
     assert subscription["yearly_price_sats"] == 75000
 
@@ -47,10 +58,35 @@ def test_catalog_and_legacy_api_defaults_are_monthly(app_client) -> None:
         headers=_auth(token),
     ).json()
     assert (payment["billing_term"], payment["period_days"], payment["amount_sats"]) == (
-        "monthly",
-        30,
-        7500,
+        "yearly",
+        365,
+        75000,
     )
+
+
+@pytest.mark.parametrize(
+    ("request_body", "message"),
+    [
+        (
+            {"product": "ip", "delivery": "framed"},
+            "Blindport IP is available with WireGuard delivery only",
+        ),
+        (
+            {"product": "ip", "billing_term": "monthly"},
+            "WireGuard Blindport IP is available with yearly billing only",
+        ),
+    ],
+)
+def test_ip_subscription_rejects_explicit_legacy_delivery_or_term(
+    app_client, request_body, message
+) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+
+    response = client.post("/api/v1/subscriptions", json=request_body, headers=_auth(token))
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == f"Value error, {message}"
 
 
 def test_yearly_anonymous_order_and_omitted_payment_term_use_preference(app_client) -> None:
@@ -75,7 +111,8 @@ def test_yearly_anonymous_order_and_omitted_payment_term_use_preference(app_clie
     assert payment.json()["amount_sats"] == 15000
 
 
-def test_yearly_activation_renewal_and_monthly_switch_use_exact_payment_days(app_client) -> None:
+def test_yearly_activation_and_renewal_use_exact_payment_days(app_client, monkeypatch) -> None:
+    _configure_wireguard(monkeypatch)
     client, factory = app_client
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -119,18 +156,19 @@ def test_yearly_activation_renewal_and_monthly_switch_use_exact_payment_days(app
             "billing_term": "monthly",
         },
         headers=_auth(token),
-    ).json()
-    assert (monthly_renewal["amount_sats"], monthly_renewal["period_days"]) == (7500, 30)
-    _settle(client, factory, token, monthly_renewal)
-    switched = client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]
-    assert datetime.fromisoformat(switched["current_period_end"]) - second_end == timedelta(days=30)
-    assert (switched["billing_term"], switched["period_days"]) == ("monthly", 30)
+    )
+    assert monthly_renewal.status_code == 400
+    assert (
+        monthly_renewal.json()["detail"]
+        == "WireGuard Blindport IP is available with yearly billing only"
+    )
 
 
 def test_delayed_settlement_uses_payment_snapshots_not_current_preference_or_config(
     app_client,
     monkeypatch,
 ) -> None:
+    _configure_wireguard(monkeypatch)
     client, factory = app_client
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -190,6 +228,7 @@ def test_yearly_issuance_gate_preserves_monthly_api_and_existing_invoice(
     app_client,
     monkeypatch,
 ) -> None:
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -259,10 +298,12 @@ def test_yearly_issuance_gate_preserves_monthly_api_and_existing_invoice(
 )
 def test_invalid_payment_snapshot_cannot_transition_to_paid(
     app_client,
+    monkeypatch,
     period_days: int,
     amount_sats: int,
     error: str,
 ) -> None:
+    _configure_wireguard(monkeypatch)
     client, factory = app_client
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(

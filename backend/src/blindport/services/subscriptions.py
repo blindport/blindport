@@ -67,12 +67,11 @@ def require_product_billing_term(
     term: BillingTerm,
 ) -> None:
     """Enforce product-specific terms independently of HTTP request validation."""
-    if (
-        product == ProductType.IP
-        and delivery == DeliveryMode.WIREGUARD
-        and term != BillingTerm.YEARLY
-    ):
-        raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+    if product == ProductType.IP:
+        if delivery != DeliveryMode.WIREGUARD:
+            raise ValueError("Blindport IP is available with WireGuard delivery only")
+        if term != BillingTerm.YEARLY:
+            raise ValueError("WireGuard Blindport IP is available with yearly billing only")
 
 
 def _utcnow() -> datetime:

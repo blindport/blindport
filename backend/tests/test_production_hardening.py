@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+from sqlmodel import Session
+
 import blindport
+from blindport.core.models import DeliveryMode, ProductType, Transport
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -23,6 +27,15 @@ def _catalog_product(client, product: str) -> dict:
     response = client.get("/api/v1/catalog")
     assert response.status_code == 200, response.text
     return next(item for item in response.json()["products"] if item["product"] == product)
+
+
+def _configure_wireguard(monkeypatch) -> None:
+    from blindport.services import catalog, subscriptions
+
+    for module in (catalog, subscriptions):
+        monkeypatch.setattr(module.settings, "WIREGUARD_PUBLIC_IPS", "198.51.100.20")
+        monkeypatch.setattr(module.settings, "WIREGUARD_RELAY_PUBLIC_KEY", "A" * 44)
+        monkeypatch.setattr(module.settings, "WIREGUARD_ENDPOINT", "relay:51820")
 
 
 def test_catalog_reports_transport_capacity_and_conservative_holds(app_client) -> None:
@@ -49,10 +62,13 @@ def test_catalog_reports_transport_capacity_and_conservative_holds(app_client) -
 def test_enabled_ip_can_be_sold_out_and_rejected_before_row_creation(
     app_client, monkeypatch
 ) -> None:
-    from blindport.services import catalog as catalog_service
+    from blindport.services import catalog, subscriptions
 
     client, _ = app_client
-    monkeypatch.setattr(catalog_service.settings, "RELAY_PUBLIC_IPS", "")
+    monkeypatch.setattr(subscriptions.settings, "WIREGUARD_PUBLIC_IPS", "")
+    monkeypatch.setattr(subscriptions.settings, "WIREGUARD_RELAY_PUBLIC_KEY", "A" * 44)
+    monkeypatch.setattr(subscriptions.settings, "WIREGUARD_ENDPOINT", "relay:51820")
+    monkeypatch.setattr(catalog.settings, "WIREGUARD_PUBLIC_IPS", "")
     product = _catalog_product(client, "ip")
     assert product["enabled"] is True
     assert product["sold_out"] is True
@@ -64,14 +80,36 @@ def test_enabled_ip_can_be_sold_out_and_rejected_before_row_creation(
         json={"product": "ip"},
         headers=_auth(token),
     )
-    assert response.status_code == 409
-    assert response.json()["detail"] == "no framed Blindport IP capacity"
+    assert response.status_code == 400
+    assert response.json()["detail"] == "WireGuard Blindport IP delivery is not configured"
     assert client.get("/api/v1/subscriptions", headers=_auth(token)).json() == []
+
+
+def test_catalog_rejects_framed_ip_delivery(app_client) -> None:
+    from blindport.db import engine
+    from blindport.services.catalog import ProductUnavailableError, require_product_available
+
+    del app_client
+    with (
+        Session(engine) as session,
+        pytest.raises(
+            ProductUnavailableError,
+            match="Blindport IP is available with WireGuard delivery only",
+        ),
+    ):
+        require_product_available(
+            session,
+            ProductType.IP,
+            delivery=DeliveryMode.FRAMED,
+            transport=Transport.TCP,
+            domain_is_managed=False,
+        )
 
 
 def test_sales_pause_and_managed_domain_cap_are_enforced(app_client, monkeypatch) -> None:
     from blindport.services import catalog as catalog_service
 
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
     _, token = _signup(client)
     monkeypatch.setattr(catalog_service.settings, "IP_SALES_PAUSED", True)
@@ -102,6 +140,7 @@ def test_sales_pause_and_managed_domain_cap_are_enforced(app_client, monkeypatch
 def test_durable_account_subscription_and_open_payment_caps(app_client, monkeypatch) -> None:
     from blindport.services import payments, subscriptions
 
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
     _, token = _signup(client)
     monkeypatch.setattr(subscriptions.settings, "ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS", 1)
@@ -160,7 +199,8 @@ def test_unpaid_relay_claims_have_a_separate_per_account_cap(app_client, monkeyp
     assert 1790 <= (customer_expiry - managed_expiry).total_seconds() <= 1810
 
 
-def test_suspension_revokes_normal_auth_and_relay_reauthorization(app_client) -> None:
+def test_suspension_revokes_normal_auth_and_relay_reauthorization(app_client, monkeypatch) -> None:
+    _configure_wireguard(monkeypatch)
     client, factory = app_client
     account_id, token = _signup(client)
     subscription = client.post(
@@ -197,7 +237,10 @@ def test_suspension_revokes_normal_auth_and_relay_reauthorization(app_client) ->
     assert client.get("/api/v1/me", headers=_auth(token)).status_code == 200
 
 
-def test_active_direct_lightning_subscription_can_renew_before_expiry(app_client) -> None:
+def test_active_direct_lightning_subscription_can_renew_before_expiry(
+    app_client, monkeypatch
+) -> None:
+    _configure_wireguard(monkeypatch)
     client, factory = app_client
     _, token = _signup(client)
     subscription = client.post(

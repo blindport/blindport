@@ -474,7 +474,6 @@ def test_v2_offline_config_returns_signed_exact_provider_local_claims(
     )
     assert enrolled.status_code == 200
     port = _activate(client, factory, token, "port")
-    dedicated_ip = _activate(client, factory, token, "ip")
     relay = _activate(client, factory, token, "relay", domain="node.relay.test")
 
     response = client.get(f"/api/v2/client/config?instance_id={instance_id}", headers=_auth(token))
@@ -490,17 +489,6 @@ def test_v2_offline_config_returns_signed_exact_provider_local_claims(
     assert rows[port["id"]]["edges"] and {
         edge["claim"]["ip"] for edge in rows[port["id"]]["edges"]
     } == {"203.0.113.20", "203.0.113.21"}
-    dedicated_edge = rows[dedicated_ip["id"]]["edges"]
-    assert len(dedicated_edge) == 1
-    assert dedicated_edge[0]["id"] == "edge-b"
-    assert dedicated_edge[0]["endpoint"] == "secondary.example:5443"
-    assert dedicated_edge[0]["claim"] == {
-        "kind": "ip",
-        "ip": "203.0.113.10",
-        "port": 0,
-        "transport": "",
-        "domain": "",
-    }
     assert {edge["claim"]["domain"] for edge in rows[relay["id"]]["edges"]} == {"node.relay.test"}
     assert all(
         edge["claim"]

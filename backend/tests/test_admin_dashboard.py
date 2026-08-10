@@ -288,7 +288,7 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
     assert [edge.state for edge in summary.relay_edges] == ["healthy", "stale"]
     assert summary.relay_edges[1].active_tunnels is None
     assert summary.dns_targets[0].state == "healthy"
-    assert capacities["ip"].availability == "1 of 2 addresses available"
+    assert capacities["ip"].availability == "8 of 8 addresses available"
     assert capacities["port"].availability == "3 of 4 mappings available"
     assert capacities["relay"].availability == "1 of 2 managed names available"
     assert capacities["relay"].detail == "Customer domains available"

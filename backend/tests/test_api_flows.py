@@ -16,6 +16,20 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _convert_to_historical_framed_ip(public_id: str) -> None:
+    from blindport.core.models import DeliveryMode, Subscription
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        subscription = session.exec(
+            select(Subscription).where(Subscription.public_id == UUID(public_id))
+        ).one()
+        subscription.delivery = DeliveryMode.FRAMED
+        subscription.assigned_ip = "203.0.113.10"
+        session.add(subscription)
+        session.commit()
+
+
 def test_signup_and_me(app_client) -> None:
     client, _ = app_client
     r = client.post("/api/v2/signup")
@@ -169,9 +183,11 @@ def test_ip_lightning_flow(app_client, monkeypatch) -> None:
 
     me = client.get("/api/v1/me", headers=_auth(token)).json()
     assert me["subscriptions"][0]["status"] == "active"
-    assert me["subscriptions"][0]["assigned_ip"] in ("203.0.113.10", "203.0.113.11")
+    assert me["subscriptions"][0]["assigned_ip"].startswith("198.51.100.")
     assert me["subscriptions"][0]["assigned_port"] is None
     assert me["subscriptions"][0]["transport"] == "tcp"
+    assert me["subscriptions"][0]["delivery"] == "wireguard"
+    assert me["subscriptions"][0]["billing_term"] == "yearly"
 
 
 def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
@@ -200,9 +216,10 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     assert response.status_code == 200, response.text
     payment = response.json()
     assert payment["method"] == "stablecoin_swap"
-    assert payment["base_amount_sats"] == 7500
-    assert payment["markup_sats"] == 750
-    assert payment["amount_sats"] == 8250
+    assert payment["base_amount_sats"] == 75000
+    assert payment["markup_sats"] == 7500
+    assert payment["amount_sats"] == 82500
+    assert (payment["billing_term"], payment["period_days"]) == ("yearly", 365)
     assert payment["stablecoin_asset"] == "USDC-BASE"
     assert payment["lightning_uri"] is None
     assert payment["qr_svg"] is None
@@ -227,8 +244,8 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
     paid = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()
     assert paid["status"] == "paid"
-    assert paid["base_amount_sats"] == 7500
-    assert paid["markup_sats"] == 750
+    assert paid["base_amount_sats"] == 75000
+    assert paid["markup_sats"] == 7500
     assert (
         client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]["status"]
         == "active"
@@ -378,9 +395,9 @@ def test_provisioning_endpoints_are_product_specific(app_client, monkeypatch) ->
 
     config = client.get("/api/v1/client/config", headers=_auth(token)).json()
     by_product = {row["product"]: row for row in config}
-    for product in ("ip", "port"):
-        assert by_product[product]["relay_endpoint"] == "primary.example:5443"
-        assert by_product[product]["relay_endpoints"] == ["primary.example:5443"]
+    assert set(by_product) == {"port", "relay"}
+    assert by_product["port"]["relay_endpoint"] == "primary.example:5443"
+    assert by_product["port"]["relay_endpoints"] == ["primary.example:5443"]
     assert by_product["relay"]["relay_endpoint"] == "edge-a.example:5443"
     assert by_product["relay"]["relay_endpoints"] == [
         "edge-a.example:5443",
@@ -452,7 +469,9 @@ def test_port_provisioning_and_authorization_expand_provider_edges(app_client, m
     assert "203.0.113.21:10000" in dashboard.text
 
 
-def test_framed_ip_provisioning_uses_inventory_owner_edge(app_client, monkeypatch) -> None:
+def test_historical_framed_ip_provisioning_uses_inventory_owner_edge(
+    app_client, monkeypatch
+) -> None:
     from blindport.services import relay_routing
 
     client, factory = app_client
@@ -470,6 +489,7 @@ def test_framed_ip_provisioning_uses_inventory_owner_edge(app_client, monkeypatc
     ).json()
     factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
     client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token))
+    _convert_to_historical_framed_ip(sub["id"])
 
     legacy_config = client.get("/api/v1/client/config", headers=_auth(token)).json()[0]
     assert legacy_config["relay_endpoint"] == "secondary.example:5443"
@@ -1035,6 +1055,7 @@ def test_client_config_endpoint(app_client) -> None:
     factory.get_lightning_adapter().mark_paid(pay["payment_hash"])
     # Settle.
     client.get(f"/api/v1/payments/{pay['id']}", headers=_auth(token))
+    _convert_to_historical_framed_ip(sub["id"])
 
     cfg = client.get("/api/v1/client/config", headers=_auth(token)).json()
     assert len(cfg) == 1
@@ -1057,6 +1078,7 @@ def test_expired_subscription_is_removed_from_client_config(app_client) -> None:
     ).json()
     factory.get_lightning_adapter().mark_paid(pay["payment_hash"])
     client.get(f"/api/v1/payments/{pay['id']}", headers=_auth(token))
+    _convert_to_historical_framed_ip(sub["id"])
 
     from blindport.core.models import Subscription
     from blindport.db import engine
@@ -1092,6 +1114,7 @@ def test_internal_resolve(app_client) -> None:
     ).json()
     factory.get_lightning_adapter().mark_paid(pay["payment_hash"])
     client.get(f"/api/v1/payments/{pay['id']}", headers=_auth(token))
+    _convert_to_historical_framed_ip(sub["id"])
 
     # Internal endpoint requires the relay secret. Default SECRET_KEY in tests
     # is "test-secret".

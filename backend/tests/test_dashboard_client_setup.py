@@ -198,7 +198,8 @@ def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_clie
     signup = client.post("/api/v2/signup").json()
     token = signup["token"]
     port_id = _create_subscription(client, token, "port", transport="tcp")
-    ip_id = _create_subscription(client, token, "ip", delivery="framed")
+    ip_id = _create_subscription(client, token, "ip")
+    _set_delivery(ip_id, DeliveryMode.FRAMED)
     _set_status(port_id, SubscriptionStatus.ACTIVE)
     _set_status(ip_id, SubscriptionStatus.ACTIVE)
 
@@ -244,8 +245,7 @@ def test_setup_visibility_tracks_non_cancelled_delivery_modes(app_client) -> Non
         "relay",
         domain="mode.relay.test",
     )
-    wireguard_id = _create_subscription(client, token, "ip", delivery="framed")
-    _set_delivery(wireguard_id, DeliveryMode.WIREGUARD)
+    wireguard_id = _create_subscription(client, token, "ip")
     pending = _dashboard(client, token)
     assert "framedRunCommand" not in pending
     assert "generatedClientConfig" not in pending
@@ -274,8 +274,7 @@ def test_mixed_active_modes_show_both_setup_workflows(app_client) -> None:
         "relay",
         domain="mixed.relay.test",
     )
-    wireguard_id = _create_subscription(client, token, "ip", delivery="framed")
-    _set_delivery(wireguard_id, DeliveryMode.WIREGUARD)
+    wireguard_id = _create_subscription(client, token, "ip")
     _set_status(relay_id, SubscriptionStatus.ACTIVE)
     _set_status(wireguard_id, SubscriptionStatus.ACTIVE)
 

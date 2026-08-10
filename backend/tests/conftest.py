@@ -32,6 +32,16 @@ def app_client(monkeypatch, tmp_path):
     # Each test gets its own SQLite file (so state is isolated).
     db_file = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file}")
+    monkeypatch.setenv(
+        "WIREGUARD_PUBLIC_IPS",
+        "198.51.100.20,198.51.100.21,198.51.100.22,198.51.100.23,"
+        "198.51.100.24,198.51.100.25,198.51.100.26,198.51.100.27",
+    )
+    monkeypatch.setenv(
+        "WIREGUARD_RELAY_PUBLIC_KEY",
+        "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    )
+    monkeypatch.setenv("WIREGUARD_ENDPOINT", "relay.test:51820")
     # And its own CA dir so we don't leak issued certs between tests.
     monkeypatch.setenv("CA_DIR", str(tmp_path / "ca"))
 
@@ -50,6 +60,7 @@ def app_client(monkeypatch, tmp_path):
     from blindport.services import agent_orders as agent_orders_mod
     from blindport.services import bandwidth as bandwidth_mod
     from blindport.services import btc_usd_price as btc_usd_price_mod
+    from blindport.services import catalog as catalog_mod
     from blindport.services import client_enrollment as client_enrollment_mod
     from blindport.services import domain_verification as domain_verification_mod
     from blindport.services import health as health_mod
@@ -66,6 +77,7 @@ def app_client(monkeypatch, tmp_path):
     importlib.reload(factory_mod)
     importlib.reload(client_enrollment_mod)
     importlib.reload(domain_verification_mod)
+    importlib.reload(catalog_mod)
     importlib.reload(subs_mod)
     importlib.reload(relay_routing_mod)
     importlib.reload(bandwidth_mod)

@@ -44,6 +44,7 @@
         {% if subscriptions %}
           <div class="subscription-list">
           {% for s in subscriptions %}
+            {% set legacy_ip = s.product.value == "ip" and (s.delivery.value != "wireguard" or s.billing_term.value != "yearly") %}
             <article class="subscription-card" data-sub-id="{{ s.public_id }}" data-sub-status="{{ s.status.value }}" data-delivery="{{ s.delivery.value }}" data-monthly-price="{{ s.monthly_price_sats }}" data-yearly-price="{{ s.yearly_price_sats }}">
               <header>
                 <div>
@@ -72,7 +73,9 @@
               </dl>
 
               <div class="task-area">
-                {% if s.delivery.value == "wireguard" and not yearly_billing_enabled and s.status.value in ("pending", "expired", "active") %}
+                {% if legacy_ip and s.status.value in ("pending", "expired", "active") %}
+                  <p class="warning">This historical Blindport IP remains visible, but new payments and renewals are unavailable.</p>
+                {% elif s.delivery.value == "wireguard" and not yearly_billing_enabled and s.status.value in ("pending", "expired", "active") %}
                   <p class="warning">Annual routed-IP payments are currently unavailable.</p>
                 {% elif s.delivery.value == "wireguard" and s.status.value in ("pending", "expired", "active") %}
                   <p class="payment-term-summary">Routed Blindport IP renews for 365 service days at {{ s.yearly_price_sats }} sats.</p>
@@ -111,18 +114,18 @@
                       {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">Pay with Lightning</button>{% endif %}
                     </div>
                   </div>
-                {% elif s.status.value in ("pending", "expired") and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% elif not legacy_ip and s.status.value in ("pending", "expired") and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">{% if s.status.value == "expired" %}Renew{% else %}Pay{% endif %} with Lightning</button>
-                {% elif s.status.value == "active" and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% elif not legacy_ip and s.status.value == "active" and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <button type="button" class="payBtn button-secondary" data-sub-id="{{ s.public_id }}">Extend service</button>
                 {% elif s.status.value == "active" %}
                   <p class="success-text">Endpoint active</p>
                 {% endif %}
-                {% if stablecoin_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Pay with stablecoin</button>{% endif %}
-                {% if nwc_enabled and user.has_nwc and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% if not legacy_ip and stablecoin_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Pay with stablecoin</button>{% endif %}
+                {% if not legacy_ip and nwc_enabled and user.has_nwc and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <button type="button" class="nwcPayBtn button-secondary" data-sub-id="{{ s.public_id }}">Pay with connected wallet</button>
                 {% endif %}
-                {% if nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% if not legacy_ip and nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <form class="inline-nwc-form" data-sub-id="{{ s.public_id }}">
                     <label for="inlineNwcUri-{{ s.public_id }}">Pay with Nostr Wallet Connect</label>
                     <p class="field-help">Paste the complete connection URI from your wallet. It is encrypted after validation. Set the wallet budget above the service price to allow for possible routing fees.</p>
@@ -144,9 +147,9 @@
                   <div><dt>Delivery</dt><dd>{{ "Framed tunnel" if s.delivery.value == "framed" else "Routed WireGuard /32" }}</dd></div>
                   <div><dt>Billing</dt><dd class="cardTermLabel">{{ s.billing_term.value | capitalize }}</dd></div>
                   {% if s.relay_pool_domain %}<div><dt>DNS target</dt><dd><code>{{ s.relay_pool_domain }}</code></dd></div>{% endif %}
-                  {% if nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{{ "On" if s.auto_renew else "Off" }}</dd></div>{% endif %}
+                  {% if nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{% if legacy_ip %}Unavailable for historical endpoint{% else %}{{ "On" if s.auto_renew else "Off" }}{% endif %}</dd></div>{% endif %}
                 </dl>
-                {% if nwc_enabled and user.has_nwc and s.status.value == "active" %}<label class="choice-row"><input type="checkbox" class="autoRenewToggle" data-sub-id="{{ s.public_id }}"{% if s.auto_renew %} checked{% endif %}> <span>Automatic renewal</span></label>{% endif %}
+                {% if not legacy_ip and nwc_enabled and user.has_nwc and s.status.value == "active" %}<label class="choice-row"><input type="checkbox" class="autoRenewToggle" data-sub-id="{{ s.public_id }}"{% if s.auto_renew %} checked{% endif %}> <span>Automatic renewal</span></label>{% endif %}
               </details>
             </article>
           {% endfor %}
@@ -181,23 +184,17 @@
             <div class="field-group">
               <label for="product">Endpoint type</label>
               <select id="product">
-                {% for item in catalog.products %}<option value="{{ item.product.value }}" data-monthly-price="{{ item.monthly_price_sats }}" data-yearly-price="{{ item.yearly_price_sats }}"{% if not item.available %} disabled{% endif %}>{% if item.product.value == "ip" %}Dedicated public IP{% elif item.product.value == "port" %}One public port{% else %}Public hostname{% endif %}{% if item.sales_paused %} (sales paused){% elif not item.available %} (unavailable){% endif %}</option>{% endfor %}
+                {% for item in catalog.products %}<option value="{{ item.product.value }}"{% if item.product.value != "ip" %} data-monthly-price="{{ item.monthly_price_sats }}"{% endif %} data-yearly-price="{{ item.yearly_price_sats }}"{% if not item.available or (item.product.value == "ip" and not item.capacity.wireguard_available) %} disabled{% endif %}>{% if item.product.value == "ip" %}Dedicated public IP (WireGuard, annual){% elif item.product.value == "port" %}One public port{% else %}Public hostname{% endif %}{% if item.sales_paused %} (sales paused){% elif not item.available or (item.product.value == "ip" and not item.capacity.wireguard_available) %} (unavailable){% endif %}</option>{% endfor %}
               </select>
               <p class="field-help">Most web services need a public hostname. Choose a port for raw TCP or UDP.</p>
-            </div>
-            <div id="deliveryField" class="field-group">
-              <label for="delivery">IP delivery</label>
-              <select id="delivery">
-                <option value="framed"{% if not catalog_by_product.ip.capacity.framed_available %} disabled{% endif %}>TCP tunnel (recommended)</option>
-                <option value="wireguard"{% if not catalog_by_product.ip.capacity.wireguard_available %} disabled{% endif %}>Bidirectional WireGuard /32 (annual)</option>
-              </select>
             </div>
             <div id="transportField" class="field-group" hidden>
               <label for="transport">Protocol</label>
               <select id="transport"><option value="tcp"{% if not catalog_by_product.port.capacity.tcp_available %} disabled{% endif %}>TCP</option><option value="udp"{% if not catalog_by_product.port.capacity.udp_available %} disabled{% endif %}>UDP</option></select>
             </div>
           </div>
-          {% if yearly_billing_enabled %}<fieldset class="new-order-term"><legend>Service term</legend><div class="segmented"><label><input type="radio" name="newBillingTerm" value="monthly" checked><span>30 days</span></label><label><input type="radio" name="newBillingTerm" value="yearly"><span>365 days</span></label></div></fieldset>{% endif %}
+          {% if yearly_billing_enabled %}<fieldset id="newOrderTerm" class="new-order-term"><legend>Service term</legend><div class="segmented"><label><input type="radio" name="newBillingTerm" value="monthly" checked><span>30 days</span></label><label><input type="radio" name="newBillingTerm" value="yearly"><span>365 days</span></label></div></fieldset>{% endif %}
+          <p id="dashboardIpAnnualOnlyHint" class="field-help" hidden>Blindport IP is a routed WireGuard /32 and is billed annually for 365 days.</p>
           <div id="domainField" class="domain-order-fields" hidden>
             <fieldset>
               <legend>Hostname source</legend>

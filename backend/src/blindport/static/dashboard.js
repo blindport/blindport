@@ -51,10 +51,7 @@ function chooseEnabledRadio(name) {
 }
 
 function selectedNewBillingTerm() {
-  if (document.getElementById("product")?.value === "ip" &&
-      document.getElementById("delivery")?.value === "wireguard") {
-    return "yearly";
-  }
+  if (document.getElementById("product")?.value === "ip") return "yearly";
   return chooseEnabledRadio("newBillingTerm")?.value || "monthly";
 }
 
@@ -94,19 +91,14 @@ function updateDashboardManagedPreview() {
 function updateSubscriptionFields() {
   const productSelect = document.getElementById("product");
   const product = productSelect.value;
-  const delivery = document.getElementById("delivery");
   const transport = document.getElementById("transport");
-  document.getElementById("deliveryField").hidden = product !== "ip";
   document.getElementById("transportField").hidden = product !== "port";
   document.getElementById("domainField").hidden = product !== "relay";
-  if (product !== "ip") delivery.value = "framed";
-  const routed = product === "ip" && delivery.value === "wireguard";
-  const monthlyTerm = document.querySelector('input[name="newBillingTerm"][value="monthly"]');
+  const ipSelected = product === "ip";
   const yearlyTerm = document.querySelector('input[name="newBillingTerm"][value="yearly"]');
-  if (monthlyTerm && yearlyTerm) {
-    monthlyTerm.disabled = routed;
-    if (routed) yearlyTerm.checked = true;
-  }
+  document.getElementById("newOrderTerm")?.toggleAttribute("hidden", ipSelected);
+  document.getElementById("dashboardIpAnnualOnlyHint").hidden = !ipSelected;
+  if (ipSelected && yearlyTerm) yearlyTerm.checked = true;
   updateDashboardDomainMode();
   const option = productSelect.selectedOptions[0];
   const term = selectedNewBillingTerm();
@@ -119,7 +111,7 @@ function updateSubscriptionFields() {
   } else {
     document.getElementById("selectedPrice").textContent = "";
   }
-  const activeSelect = product === "ip" ? delivery : product === "port" ? transport : null;
+  const activeSelect = product === "port" ? transport : null;
   const invalidDomain = product === "relay" && !dashboardDomain();
   document.getElementById("createSubBtn").disabled =
     !product || !option || option.disabled ||
@@ -128,7 +120,6 @@ function updateSubscriptionFields() {
 }
 
 document.getElementById("product").addEventListener("change", updateSubscriptionFields);
-document.getElementById("delivery").addEventListener("change", updateSubscriptionFields);
 document.getElementById("transport").addEventListener("change", updateSubscriptionFields);
 document.querySelectorAll('input[name="newBillingTerm"]').forEach((input) => {
   input.addEventListener("change", updateSubscriptionFields);
@@ -178,7 +169,7 @@ document.getElementById("newSubForm").addEventListener("submit", async (event) =
     billing_term: selectedNewBillingTerm(),
     domain: product === "relay" ? dashboardDomain() : null,
     transport: product === "port" ? document.getElementById("transport").value : "tcp",
-    delivery: product === "ip" ? document.getElementById("delivery").value : "framed",
+    delivery: product === "ip" ? "wireguard" : "framed",
   };
   button.disabled = true;
   button.textContent = "Creating order...";

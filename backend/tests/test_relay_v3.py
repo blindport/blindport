@@ -96,7 +96,6 @@ def test_v3_provisioning_scopes_claims_and_legacy_omits_wildcards(
     )
     exact = _activate(client, factory, token, "relay", domain="exact.relay.test")
     wildcard = _activate(client, factory, token, "relay", domain="wild.relay.test")
-    ip = _activate(client, factory, token, "ip")
     port = _activate(client, factory, token, "port")
 
     with Session(engine) as session:
@@ -113,7 +112,6 @@ def test_v3_provisioning_scopes_claims_and_legacy_omits_wildcards(
     assert v2_response.status_code == 200, v2_response.text
     assert {row["subscription_id"] for row in v2_response.json()["subscriptions"]} == {
         exact["id"],
-        ip["id"],
         port["id"],
     }
     assert client.get("/api/v1/client/config", headers=_auth(token)).json()
@@ -128,7 +126,7 @@ def test_v3_provisioning_scopes_claims_and_legacy_omits_wildcards(
     assert set(body) == {"version", "subscriptions"}
     assert body["version"] == 3
     rows = {row["subscription_id"]: row for row in body["subscriptions"]}
-    assert set(rows) == {exact["id"], wildcard["id"], ip["id"], port["id"]}
+    assert set(rows) == {exact["id"], wildcard["id"], port["id"]}
     assert all(
         set(row)
         == {
@@ -145,11 +143,7 @@ def test_v3_provisioning_scopes_claims_and_legacy_omits_wildcards(
     )
     assert rows[exact["id"]]["relay_hostname_scope"] == "exact"
     assert rows[wildcard["id"]]["relay_hostname_scope"] == "wildcard"
-    assert (
-        rows[ip["id"]]["relay_hostname_scope"]
-        == rows[port["id"]]["relay_hostname_scope"]
-        == "exact"
-    )
+    assert rows[port["id"]]["relay_hostname_scope"] == "exact"
     assert all(
         set(edge["claim"]) == {"kind", "ip", "port", "transport", "domain", "scope"}
         and edge["claim"]["scope"] == row["relay_hostname_scope"]
@@ -171,13 +165,11 @@ def test_v3_resolve_is_strict_and_returns_exact_subscription_attribution(app_cli
     token = signup["token"]
     exact = _activate(client, factory, token, "relay", domain="exact.relay.test")
     wildcard = _activate(client, factory, token, "relay", domain="wild.relay.test")
-    ip = _activate(client, factory, token, "ip")
     port = _activate(client, factory, token, "port")
     active_by_id = {
         subscription["id"]: subscription
         for subscription in client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"]
     }
-    ip = active_by_id[ip["id"]]
     port = active_by_id[port["id"]]
     with Session(engine) as session:
         stored = session.exec(
@@ -199,14 +191,6 @@ def test_v3_resolve_is_strict_and_returns_exact_subscription_attribution(app_cli
     absent = client.post("/internal/v3/resolve", json={"token": token}, headers=headers)
     assert absent.status_code == 200, absent.text
     assert "subscription_id" not in absent.json()
-
-    ip_response = client.post(
-        "/internal/v3/resolve",
-        json={"token": token, "claim": {"kind": "ip", "ip": ip["assigned_ip"]}},
-        headers=headers,
-    )
-    assert ip_response.status_code == 200, ip_response.text
-    assert ip_response.json()["subscription_id"] == ip["id"]
 
     exact_response = client.post(
         "/internal/v3/resolve",

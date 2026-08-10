@@ -16,6 +16,15 @@ def _non_admin_users(session: Session) -> list[User]:
     return list(session.exec(select(User).where(User.is_admin.is_(False))).all())  # type: ignore[union-attr]
 
 
+def _configure_wireguard(monkeypatch) -> None:
+    from blindport.services import catalog, subscriptions
+
+    for module in (catalog, subscriptions):
+        monkeypatch.setattr(module.settings, "WIREGUARD_PUBLIC_IPS", "198.51.100.20")
+        monkeypatch.setattr(module.settings, "WIREGUARD_RELAY_PUBLIC_KEY", "A" * 44)
+        monkeypatch.setattr(module.settings, "WIREGUARD_ENDPOINT", "relay:51820")
+
+
 @pytest.mark.parametrize(
     ("request_body", "expected_product", "expected_transport"),
     [
@@ -31,10 +40,12 @@ def _non_admin_users(session: Session) -> list[User]:
 )
 def test_anonymous_order_variants_are_atomic_and_unbilled(
     app_client,
+    monkeypatch,
     request_body: dict[str, str],
     expected_product: str,
     expected_transport: str,
 ) -> None:
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
 
     response = client.post("/api/v2/orders", json=request_body)
@@ -50,7 +61,10 @@ def test_anonymous_order_variants_are_atomic_and_unbilled(
     assert body["subscription"]["status"] == "pending"
     assert body["monthly_price_sats"] == body["subscription"]["monthly_price_sats"]
     assert body["yearly_price_sats"] == body["subscription"]["yearly_price_sats"]
-    assert (body["billing_term"], body["period_days"]) == ("monthly", 30)
+    expected_term = ("yearly", 365) if expected_product == "ip" else ("monthly", 30)
+    assert (body["billing_term"], body["period_days"]) == expected_term
+    if expected_product == "ip":
+        assert body["subscription"]["delivery"] == "wireguard"
 
     from blindport.db import engine
 
@@ -135,9 +149,34 @@ def test_anonymous_order_validation_errors_create_nothing(app_client, request_bo
         assert session.exec(select(Payment)).all() == []
 
 
+@pytest.mark.parametrize(
+    ("request_body", "message"),
+    [
+        (
+            {"product": "ip", "delivery": "framed"},
+            "Blindport IP is available with WireGuard delivery only",
+        ),
+        (
+            {"product": "ip", "billing_term": "monthly"},
+            "WireGuard Blindport IP is available with yearly billing only",
+        ),
+    ],
+)
+def test_anonymous_ip_order_rejects_explicit_legacy_options(
+    app_client, request_body, message
+) -> None:
+    client, _ = app_client
+
+    response = client.post("/api/v2/orders", json=request_body)
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == f"Value error, {message}"
+
+
 def test_anonymous_order_unavailable_product_rolls_back_account(app_client, monkeypatch) -> None:
     from blindport.services import catalog
 
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
     monkeypatch.setattr(catalog.settings, "IP_SALES_PAUSED", True)
 
@@ -180,6 +219,7 @@ def test_anonymous_order_shares_signup_rate_limit_and_returns_no_store(
 ) -> None:
     from blindport.services import rate_limits
 
+    _configure_wireguard(monkeypatch)
     client, _ = app_client
     monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_SIGNUP_REQUESTS", 1)
 

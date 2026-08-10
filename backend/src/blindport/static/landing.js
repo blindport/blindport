@@ -14,9 +14,7 @@ function selectedProduct() {
 }
 
 function selectedBillingTerm() {
-  if (selectedProduct()?.value === "ip" && selectedValue("orderDelivery") === "wireguard") {
-    return "yearly";
-  }
+  if (selectedProduct()?.value === "ip") return "yearly";
   return selectedValue("orderBillingTerm") || "monthly";
 }
 
@@ -25,21 +23,23 @@ function billingDays(term) {
 }
 
 function updatePlanPrices() {
-  const term = selectedBillingTerm();
-  const priceKey = term === "yearly" ? "yearlyPrice" : "monthlyPrice";
   document.querySelectorAll(".plan-price").forEach((price) => {
+    const product = price.closest(".plan-option")?.querySelector("input")?.value;
+    const term = product === "ip" ? "yearly" : selectedBillingTerm();
+    const priceKey = term === "yearly" ? "yearlyPrice" : "monthlyPrice";
     price.querySelector("strong").textContent = price.dataset[priceKey];
     price.querySelector("span").textContent = billingDays(term);
   });
 }
 
-function enforceRoutedYearly() {
-  const routed = selectedProduct()?.value === "ip" && selectedValue("orderDelivery") === "wireguard";
-  const monthly = orderForm.querySelector('input[name="orderBillingTerm"][value="monthly"]');
+function syncProductBillingTerm() {
+  const ipSelected = selectedProduct()?.value === "ip";
+  const termControl = document.getElementById("orderTermControl");
+  const annualOnlyHint = document.getElementById("ipAnnualOnlyHint");
   const yearly = orderForm.querySelector('input[name="orderBillingTerm"][value="yearly"]');
-  if (!monthly || !yearly) return;
-  monthly.disabled = routed;
-  if (routed) yearly.checked = true;
+  if (termControl) termControl.hidden = ipSelected;
+  annualOnlyHint.hidden = !ipSelected;
+  if (ipSelected && yearly) yearly.checked = true;
   updatePlanPrices();
 }
 
@@ -102,17 +102,13 @@ function configureProduct() {
   document.getElementById("ipConfig").hidden = product !== "ip";
   document.getElementById("portConfig").hidden = product !== "port";
   document.getElementById("relayConfig").hidden = product !== "relay";
-  if (product === "ip") chooseFirstEnabled("orderDelivery");
   if (product === "port") chooseFirstEnabled("orderTransport");
   if (product === "relay") updateRelayMode();
-  enforceRoutedYearly();
+  syncProductBillingTerm();
 }
 
 function validateConfiguration() {
   const product = selectedProduct().value;
-  if (product === "ip" && !selectedValue("orderDelivery")) {
-    return "Select an available delivery mode.";
-  }
   if (product === "port" && !selectedValue("orderTransport")) {
     return "Select an available transport.";
   }
@@ -139,7 +135,7 @@ function orderBody() {
     transport: "tcp",
     domain: null,
   };
-  if (product === "ip") body.delivery = selectedValue("orderDelivery");
+  if (product === "ip") body.delivery = "wireguard";
   if (product === "port") body.transport = selectedValue("orderTransport");
   if (product === "relay") {
     if (selectedValue("domainMode") === "customer") {
@@ -161,7 +157,7 @@ function populateReview() {
   document.getElementById("reviewTerm").textContent =
     `${body.billing_term === "yearly" ? "Yearly" : "Monthly"}, ${billingDays(body.billing_term)} days`;
   let configuration = "Framed delivery";
-  if (body.product === "ip") configuration = `${body.delivery} delivery`;
+  if (body.product === "ip") configuration = "Routed WireGuard /32";
   if (body.product === "port") configuration = `${body.transport.toUpperCase()} tuple`;
   if (body.product === "relay") {
     configuration = selectedValue("domainMode") === "customer"
@@ -189,10 +185,10 @@ async function errorDetail(response) {
 orderForm.addEventListener("change", (event) => {
   if (event.target.name === "orderProduct") {
     document.getElementById("toConfigBtn").disabled = !selectedProduct();
+    syncProductBillingTerm();
   }
   if (event.target.name === "domainMode") updateRelayMode();
   if (event.target.name === "orderBillingTerm") updatePlanPrices();
-  if (event.target.name === "orderDelivery") enforceRoutedYearly();
 });
 
 document.querySelectorAll(".product-jump").forEach((link) => {
@@ -203,6 +199,7 @@ document.querySelectorAll(".product-jump").forEach((link) => {
     if (!option) return;
     option.checked = true;
     document.getElementById("toConfigBtn").disabled = false;
+    syncProductBillingTerm();
   });
 });
 
@@ -287,4 +284,4 @@ document.getElementById("continueDashboardBtn").addEventListener("click", () => 
 chooseFirstEnabled("domainMode");
 updateRelayMode();
 updateManagedPreview();
-updatePlanPrices();
+syncProductBillingTerm();
