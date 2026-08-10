@@ -106,7 +106,9 @@ async def test_passkey_post_body_limit_rejects_chunked_request_without_content_l
         send,
     )
 
-    start = next(message for message in response_messages if message["type"] == "http.response.start")
+    start = next(
+        message for message in response_messages if message["type"] == "http.response.start"
+    )
     headers = {key.decode(): value.decode() for key, value in start["headers"]}
     body = b"".join(
         message.get("body", b"")
@@ -127,9 +129,7 @@ def test_passkeys_are_hidden_on_the_onion_origin(app_client, monkeypatch) -> Non
     onion_host = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam2dqd.onion"
     monkeypatch.setattr(passkeys.settings, "ONION_HOST", onion_host)
 
-    response = client.post(
-        f"http://{onion_host}/api/v1/passkeys/authentication/options"
-    )
+    response = client.post(f"http://{onion_host}/api/v1/passkeys/authentication/options")
 
     assert response.status_code == 404
     assert response.json() == {"detail": "not found"}
@@ -341,7 +341,9 @@ def test_discoverable_authentication_validates_handle_updates_credential_and_iss
         assert stored.device_type == "multi_device"
         assert stored.backed_up is True
         assert stored.last_used_at is not None
-        issued = session.exec(select(BrowserSession).where(BrowserSession.auth_method == "passkey")).one()
+        issued = session.exec(
+            select(BrowserSession).where(BrowserSession.auth_method == "passkey")
+        ).one()
         assert issued.user_id == user_id
         assert session.get(WebAuthnChallenge, options["challenge_id"]) is None
 
@@ -436,7 +438,9 @@ def test_pending_challenge_capacity_is_bounded(app_client, monkeypatch) -> None:
     assert limited.headers["cache-control"] == "no-store"
 
 
-def test_passkey_list_and_delete_enforce_ownership_and_browser_csrf(app_client, monkeypatch) -> None:
+def test_passkey_list_and_delete_enforce_ownership_and_browser_csrf(
+    app_client, monkeypatch
+) -> None:
     from blindport.core.models import PasskeyCredential, User
     from blindport.db import engine
     from blindport.services.browser_sessions import issue_browser_session
@@ -468,7 +472,9 @@ def test_passkey_list_and_delete_enforce_ownership_and_browser_csrf(app_client, 
     assert denied.status_code == 404
     assert denied.json() == {"detail": "passkey not found"}
 
-    client.cookies.set("blindport_session", issued.session_token, domain="testserver.local", path="/")
+    client.cookies.set(
+        "blindport_session", issued.session_token, domain="testserver.local", path="/"
+    )
     client.cookies.set("blindport_csrf", issued.csrf_token, domain="testserver.local", path="/")
     owner_id_encoded = base64.urlsafe_b64encode(owner_identifier).rstrip(b"=").decode()
     csrf_denied = client.delete(f"/api/v1/passkeys/{owner_id_encoded}")
@@ -481,4 +487,9 @@ def test_passkey_list_and_delete_enforce_ownership_and_browser_csrf(app_client, 
     assert deleted.status_code == 204
     assert deleted.headers["cache-control"] == "no-store"
     with Session(engine) as session:
-        assert session.exec(select(PasskeyCredential).where(PasskeyCredential.user_id == owner_id)).all() == []
+        assert (
+            session.exec(
+                select(PasskeyCredential).where(PasskeyCredential.user_id == owner_id)
+            ).all()
+            == []
+        )
