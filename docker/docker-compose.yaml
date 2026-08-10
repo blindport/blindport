@@ -1,8 +1,6 @@
-# Blindport e2e stack. Uses mocked payment adapters so tests can settle
-# invoices without LN/Cashu infra.
+# Blindport e2e stack. Uses mocked payment adapters so tests can settle invoices.
 #
 # Network 10.50.0.0/24:
-#   10.50.0.4   mint (Cashu)
 #   10.50.0.5   backend
 #   10.50.0.10  relay primary; shared SNI and Blindport Port ingress
 #   10.50.0.11..17 dedicated Blindport IP ingress
@@ -29,31 +27,6 @@ networks:
         - subnet: 10.50.0.0/24
 
 services:
-  mint:
-    image: cashubtc/nutshell:0.20.0
-    command: ["poetry", "run", "mint"]
-    environment:
-      MINT_PRIVATE_KEY: dev-mint-private-key-change-me
-      MINT_LISTEN_HOST: 0.0.0.0
-      MINT_LISTEN_PORT: "3338"
-      MINT_BACKEND_BOLT11_SAT: FakeWallet
-      FAKEWALLET_BRR: "true"
-      MINT_RATE_LIMIT: "false"
-      MINT_INPUT_FEE_PPK: "0"
-      MINT_DATABASE: "/data/mint.sqlite3"
-      MINT_INFO_NAME: "Blindport dev mint"
-      MINT_INFO_DESCRIPTION: "Cashu mint bundled with the Blindport dev stack."
-    volumes:
-      - mint-data:/data
-    networks:
-      blindport:
-        ipv4_address: 10.50.0.4
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3338/v1/info')"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-
   backend:
     build:
       context: ..
@@ -86,11 +59,9 @@ services:
       OFFLINE_ENTITLEMENT_KEY_ID: ""
       RELAY_EDGES: ""
       PAYMENT_LIGHTNING_ADAPTER: mock-auto
-      PAYMENT_CASHU_ADAPTER: cashu
-      CASHU_MINTS: "http://mint:3338"
       PAYMENT_NWC_ADAPTER: mock-auto
       NWC_ALLOWED_RELAY_HOSTS: "relay.getalby.com"
-      PAYMENT_ENABLED_METHODS: "lightning,cashu,nwc"
+      PAYMENT_ENABLED_METHODS: "lightning,nwc"
       PAYMENT_RECONCILIATION_ENABLED: "true"
       PAYMENT_RECONCILIATION_INTERVAL_SECONDS: "0.5"
       PAYMENT_RECONCILIATION_BATCH_SIZE: "100"
@@ -111,9 +82,6 @@ services:
         ipv4_address: 10.50.0.5
     ports:
       - "8000:8000"
-    depends_on:
-      mint:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/ready')"]
       interval: 2s
@@ -259,4 +227,3 @@ services:
 
 volumes:
   backend-data:
-  mint-data:

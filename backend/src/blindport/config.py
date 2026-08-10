@@ -135,6 +135,13 @@ def parse_enabled_payment_methods(value: str) -> frozenset[PaymentMethod]:
         raise ValueError("PAYMENT_ENABLED_METHODS contains an unsupported payment method") from e
     if len(methods) != len(set(methods)):
         raise ValueError("PAYMENT_ENABLED_METHODS contains duplicate payment methods")
+    active_methods = {
+        PaymentMethod.LIGHTNING,
+        PaymentMethod.NWC,
+        PaymentMethod.STABLECOIN_SWAP,
+    }
+    if any(method not in active_methods for method in methods):
+        raise ValueError("PAYMENT_ENABLED_METHODS contains an unsupported payment method")
     return frozenset(methods)
 
 
@@ -593,7 +600,6 @@ class Settings(BaseSettings):
     # Adapter selection. Direct LND Lightning is the production payment path;
     # mocks remain the default for local development and tests.
     PAYMENT_LIGHTNING_ADAPTER: str = "mock"
-    PAYMENT_CASHU_ADAPTER: str = "mock"
     PAYMENT_NWC_ADAPTER: str = "mock"
     PAYMENT_ENABLED_METHODS: str = PaymentMethod.LIGHTNING.value
     STABLECOIN_PAYMENTS_ENABLED: bool = False
@@ -652,7 +658,6 @@ class Settings(BaseSettings):
     NOTIFICATION_DELIVERY_LEASE_SECONDS: int = Field(default=45, ge=10, le=300)
 
     # Optional payment integrations
-    CASHU_MINTS: str = ""  # comma-separated mint URLs
     BOLTZ_URL: str = "https://api.boltz.exchange"
     BOLTZ_WEB_URL: str = "https://boltz.exchange"
 
@@ -775,10 +780,6 @@ class Settings(BaseSettings):
     @property
     def dns_supervision_resolvers_list(self) -> list[str]:
         return parse_dns_supervision_resolvers(self.DNS_SUPERVISION_RESOLVERS)
-
-    @property
-    def cashu_mints_list(self) -> list[str]:
-        return [s.strip() for s in self.CASHU_MINTS.split(",") if s.strip()]
 
     @property
     def enabled_payment_methods(self) -> frozenset[PaymentMethod]:

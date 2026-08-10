@@ -152,7 +152,7 @@ def test_anonymous_wildcard_order_snapshots_wildcard_price(app_client, monkeypat
     _set_resolver_verifier(client, resolver)
     payment = client.post(
         "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "cashu"},
+        json={"subscription_id": subscription["id"], "method": "lightning"},
         headers=_auth(body["token"]),
     )
     assert payment.status_code == 200, payment.text

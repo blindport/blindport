@@ -79,10 +79,7 @@ grant an unintended second service period.
 Settlement conditionally changes one open payment to paid and updates the
 subscription in the same transaction. This makes repeated or concurrent polls
 grant at most one snapshotted period and updates the preferred term to the term
-that settled. Cashu first commits a `PENDING` to `PROCESSING` claim;
-only that claimant may mint or swap. An uncertain external error becomes
-`FAILED` and requires operator reconciliation because the proofs may already be
-spent. Cashu remains experimental.
+that settled.
 
 Every API replica also runs a bounded background reconciler after migrations and
 admin bootstrap. It scans pending Lightning, stablecoin swap, and NWC rows in payment ID order,
@@ -91,8 +88,7 @@ consume the enabled-method batch. It checks provider settlement before expiry
 and isolates each row in its own session so malformed data or one provider
 failure does not stop the batch. The same conditional settlement transaction
 makes concurrent replica cycles and request polling idempotent; no distributed
-worker lock is used. `PROCESSING` Cashu is excluded and remains an operator-only
-reconciliation state.
+worker lock is used.
 
 Reconciler freshness is process-local and protected by a small lock because
 cycles run in worker threads while readiness runs on request threads. Readiness

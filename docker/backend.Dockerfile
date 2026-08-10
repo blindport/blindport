@@ -23,13 +23,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# coincurve currently has no Python 3.14 wheels and is pinned to a github
-# source archive; we need the toolchain + libffi headers to build it.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential libffi-dev pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
 # Install locked dependencies first to enable layer caching.
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN python -m venv /opt/venv \

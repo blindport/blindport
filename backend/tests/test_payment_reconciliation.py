@@ -320,7 +320,7 @@ def test_payment_reconciliation_does_not_depend_on_notification_worker(
     del app_client
     from blindport.services import payment_reconciliation
 
-    monkeypatch.setattr(payment_reconciliation.settings, "PAYMENT_ENABLED_METHODS", "cashu")
+    monkeypatch.setattr(payment_reconciliation.settings, "PAYMENT_ENABLED_METHODS", "lightning")
 
     summary = payment_reconciliation.reconcile_pending_payments_once(batch_size=10)
 

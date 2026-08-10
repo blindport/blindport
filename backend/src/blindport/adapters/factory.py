@@ -5,10 +5,9 @@ from __future__ import annotations
 from functools import lru_cache
 
 from ..config import settings
-from .base import CashuAdapter, LightningAdapter, NwcAdapter
-from .cashu_real import RealCashuAdapter
+from .base import LightningAdapter, NwcAdapter
 from .lnd_rest import LndRestLightningAdapter
-from .mock import MockCashuAdapter, MockLightningAdapter, MockNwcAdapter
+from .mock import MockLightningAdapter, MockNwcAdapter
 from .nwc import SubprocessNwcAdapter
 
 
@@ -39,19 +38,6 @@ def get_lightning_adapter() -> LightningAdapter:
 
 
 @lru_cache(maxsize=1)
-def get_cashu_adapter() -> CashuAdapter:
-    name = settings.PAYMENT_CASHU_ADAPTER.lower()
-    if name == "mock":
-        return MockCashuAdapter()
-    if name == "cashu":
-        mints = settings.cashu_mints_list
-        if not mints:
-            raise ValueError("PAYMENT_CASHU_ADAPTER=cashu requires CASHU_MINTS to be set")
-        return RealCashuAdapter(mint_urls=mints)
-    raise ValueError(f"unknown cashu adapter: {name!r}")
-
-
-@lru_cache(maxsize=1)
 def get_nwc_adapter() -> NwcAdapter:
     name = settings.PAYMENT_NWC_ADAPTER.lower()
     if name == "mock":
@@ -71,5 +57,4 @@ def get_nwc_adapter() -> NwcAdapter:
 def reset_adapters_for_tests() -> None:
     """Clear the lru_cache so a fresh adapter is built (test-only)."""
     get_lightning_adapter.cache_clear()
-    get_cashu_adapter.cache_clear()
     get_nwc_adapter.cache_clear()

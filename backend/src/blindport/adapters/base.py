@@ -1,4 +1,4 @@
-"""Adapter interfaces for Lightning, Cashu, and NWC payment backends.
+"""Adapter interfaces for Lightning and NWC payment backends.
 
 Each adapter is intentionally tiny so the rest of the application is agnostic
 to the chosen backend. The default implementations are in-memory mocks, ideal
@@ -62,41 +62,6 @@ class LightningAdapter(ABC):
     @abstractmethod
     def mark_paid(self, payment_hash: str) -> None:
         """Test/admin-only hook to mark an invoice paid (only meaningful in mocks)."""
-
-
-class CashuAdapter(ABC):
-    """Validates Cashu tokens against a trusted mint pool."""
-
-    @abstractmethod
-    def validate_and_redeem(self, token: str, expected_amount_sats: int) -> bool:
-        """Return True if `token` is valid and at least `expected_amount_sats`.
-
-        Real implementation would call the mint's `/v1/swap` (or melt) endpoint
-        to claim the proofs. The mock simply checks an in-memory registry.
-        """
-
-    @abstractmethod
-    def register_test_token(self, token: str, amount_sats: int) -> None:
-        """Test helper: pre-register a token-value pair (mock impls only)."""
-
-    def request_mint_quote(self, amount_sats: int) -> CashuMintQuote:
-        """Optional: ask the trusted mint for a bolt11 LN invoice.
-
-        Real implementations should override to call ``POST /v1/mint/quote/bolt11``;
-        the mock raises so callers know it's unsupported.
-        """
-        raise NotImplementedError("cashu adapter does not support mint quotes")
-
-
-@dataclass
-class CashuMintQuote:
-    """Generic envelope so the API layer doesn't import RealCashuAdapter."""
-
-    quote_id: str
-    bolt11: str
-    amount_sats: int
-    expires_at: int = 0
-    mint_url: str = ""
 
 
 class LightningInvoiceState(StrEnum):

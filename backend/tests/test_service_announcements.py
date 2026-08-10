@@ -316,7 +316,7 @@ def test_notification_worker_failure_isolated_from_payment_reconciliation(
     del app_client
     from blindport.services import notification_reconciliation, payment_reconciliation
 
-    monkeypatch.setattr(payment_reconciliation.settings, "PAYMENT_ENABLED_METHODS", "cashu")
+    monkeypatch.setattr(payment_reconciliation.settings, "PAYMENT_ENABLED_METHODS", "lightning")
     monkeypatch.setattr(notification_reconciliation.config.settings, "REMINDER_EMAIL_ENABLED", True)
     monkeypatch.setattr(notification_reconciliation, "_queue_due_expirations", lambda now, size: 0)
     monkeypatch.setattr(

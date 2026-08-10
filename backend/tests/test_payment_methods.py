@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 from sqlmodel import Session, select
 
 
@@ -22,51 +23,90 @@ def _subscription(client, token: str) -> dict:
     return response.json()
 
 
-def test_disabled_cashu_operations_never_call_adapter(app_client, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "legacy_status",
+    [
+        "pending",
+        "processing",
+        "paid",
+        "failed",
+        "expired",
+    ],
+)
+def test_legacy_cashu_rows_are_read_only_without_provider_settlement(
+    app_client, monkeypatch, legacy_status: str
+) -> None:
     client, _ = app_client
     token = client.post("/api/v1/signup").json()["token"]
     subscription = _subscription(client, token)
-    payment = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "cashu"},
-        headers=_auth(token),
-    ).json()
 
-    from blindport.api import v1
+    from blindport.core.models import Payment, PaymentMethod, PaymentStatus, Subscription
+    from blindport.db import engine
     from blindport.services import payments
 
-    monkeypatch.setattr(payments.settings, "PAYMENT_ENABLED_METHODS", "lightning")
+    with Session(engine) as session:
+        stored_subscription = session.exec(
+            select(Subscription).where(Subscription.public_id == UUID(subscription["id"]))
+        ).one()
+        legacy_payment = Payment(
+            subscription_id=stored_subscription.id or 0,
+            method=PaymentMethod.CASHU,
+            status=PaymentStatus(legacy_status),
+            amount_sats=1000,
+            cashu_token="legacy-token",
+        )
+        session.add(legacy_payment)
+        session.commit()
+        payment_id = legacy_payment.id
+        assert payment_id is not None
 
     def unexpected_adapter():
-        raise AssertionError("disabled Cashu must not reach its adapter")
+        raise AssertionError("legacy rows must not reach a payment provider")
 
-    monkeypatch.setattr(payments, "get_cashu_adapter", unexpected_adapter)
-    monkeypatch.setattr(v1, "get_cashu_adapter", unexpected_adapter)
+    monkeypatch.setattr(payments, "get_lightning_adapter", unexpected_adapter)
+    response = client.get(f"/api/v1/payments/{payment_id}", headers=_auth(token))
+    listed = client.get("/api/v1/payments", headers=_auth(token))
+
+    assert response.status_code == 200
+    assert response.json()["method"] == "cashu"
+    assert response.json()["status"] == legacy_status
+    assert "cashu_token" not in response.json()
+    assert listed.status_code == 200
+    expected_open_ids = (
+        [payment_id]
+        if legacy_status in {PaymentStatus.PENDING.value, PaymentStatus.PROCESSING.value}
+        else []
+    )
+    assert [payment["id"] for payment in listed.json()] == expected_open_ids
+    with Session(engine) as session:
+        persisted = session.get(Payment, payment_id)
+        assert persisted is not None
+        assert persisted.status.value == legacy_status
+        assert persisted.cashu_token == "legacy-token"
+
+
+def test_cashu_creation_and_removed_routes_are_rejected(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _subscription(client, token)
 
     create = client.post(
         "/api/v1/payments",
-        json={"subscription_id": _subscription(client, token)["id"], "method": "cashu"},
-        headers=_auth(token),
-    )
-    submit = client.post(
-        "/api/v1/payments/cashu-submit",
-        json={"payment_id": payment["id"], "cashu_token": "cashu-test"},
-        headers=_auth(token),
-    )
-    quote = client.post(
-        "/api/v1/payments/cashu-quote",
-        json={"payment_id": payment["id"]},
-        headers=_auth(token),
-    )
-    redeem = client.post(
-        "/api/v1/payments/cashu-mint-and-redeem",
-        json={"payment_id": payment["id"], "quote_id": "quote"},
+        json={"subscription_id": subscription["id"], "method": "cashu"},
         headers=_auth(token),
     )
 
-    for response in (create, submit, quote, redeem):
-        assert response.status_code == 400
-        assert response.json()["detail"] == "payment method cashu is disabled"
+    assert create.status_code == 422
+    method_schema = client.get("/openapi.json").json()["components"]["schemas"][
+        "CreatePaymentRequest"
+    ]["properties"]["method"]
+    assert method_schema["enum"] == ["lightning", "nwc", "stablecoin_swap"]
+    for route in (
+        "/api/v1/payments/cashu-submit",
+        "/api/v1/payments/cashu-quote",
+        "/api/v1/payments/cashu-mint-and-redeem",
+    ):
+        assert client.post(route, json={}, headers=_auth(token)).status_code == 405
 
 
 def test_disabled_nwc_setup_creation_poll_and_auto_renew_skip_adapters(

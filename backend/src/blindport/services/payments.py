@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import math
-from base64 import urlsafe_b64encode
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
@@ -22,7 +20,6 @@ from ..adapters.base import (
     NwcPaymentState,
 )
 from ..adapters.factory import (
-    get_cashu_adapter,
     get_lightning_adapter,
     get_nwc_adapter,
 )
@@ -784,8 +781,6 @@ def create_payment(
                 session, payment, subscription, eligibility_deadline, invoice_expiry
             )
             return ensure_lightning_invoice(session, payment)
-        elif method == PaymentMethod.CASHU:
-            payment.expires_at = _local_expiry(eligibility_deadline, 30 * 60)
         elif method == PaymentMethod.NWC:
             user = session.get(User, subscription.user_id)
             if user is None or not user.has_nwc:
@@ -927,6 +922,8 @@ def _finalize_payment(
 
 def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
     """Poll provider state before applying local expiry to a pending payment."""
+    if payment.method not in _LND_BACKED_METHODS:
+        return payment
     # Disabling stablecoin checkout stops new invoice creation, but an invoice
     # already handed to a customer must still settle or expire normally.
     if payment.method != PaymentMethod.STABLECOIN_SWAP:
@@ -957,132 +954,3 @@ def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
     if expires_at is not None and expires_at <= _utcnow():
         return _expire_payment(session, payment)
     return _reload_payment(session, payment.id)  # type: ignore[arg-type]
-
-
-def _claim_cashu_payment(session: Session, payment: Payment) -> Payment | None:
-    payment_id = payment.id
-    if payment_id is None:
-        raise ValueError("payment has no id")
-    if payment.status in _TERMINAL_STATUSES or payment.status == PaymentStatus.PROCESSING:
-        return None
-    expires_at = _aware(payment.expires_at)
-    subscription = session.get(Subscription, payment.subscription_id)
-    domain_deadline = (
-        subs.domain_payment_eligibility_deadline(subscription) if subscription is not None else None
-    )
-    if (expires_at is not None and expires_at <= _utcnow()) or (
-        domain_deadline is not None and domain_deadline <= _utcnow()
-    ):
-        _expire_payment(session, payment)
-        return None
-    if not _conditional_status_update(
-        session, payment_id, PaymentStatus.PENDING, PaymentStatus.PROCESSING
-    ):
-        session.rollback()
-        return None
-    session.commit()
-    return _reload_payment(session, payment_id)
-
-
-def _fail_claimed_cashu_payment(session: Session, payment: Payment) -> Payment:
-    payment_id = payment.id
-    if payment_id is None:
-        raise ValueError("payment has no id")
-    session.rollback()
-    if _conditional_status_update(
-        session, payment_id, PaymentStatus.PROCESSING, PaymentStatus.FAILED
-    ):
-        subscription = session.get(Subscription, payment.subscription_id)
-        if subscription is not None:
-            subs.release_reservation(session, subscription, payment_id)
-        session.commit()
-    else:
-        session.rollback()
-    return _reload_payment(session, payment_id)
-
-
-def submit_cashu_token(session: Session, payment: Payment, token: str) -> Payment:
-    """Claim a Cashu payment before irreversibly swapping the submitted proofs."""
-    require_payment_method_enabled(PaymentMethod.CASHU)
-    if payment.method != PaymentMethod.CASHU:
-        raise ValueError("payment is not a Cashu payment")
-    claimed = _claim_cashu_payment(session, payment)
-    if claimed is None:
-        return _reload_payment(session, payment.id)  # type: ignore[arg-type]
-    try:
-        redeemed = get_cashu_adapter().validate_and_redeem(token, claimed.amount_sats)
-        if not redeemed:
-            return _fail_claimed_cashu_payment(session, claimed)
-        return _finalize_payment(
-            session,
-            claimed,
-            PaymentStatus.PROCESSING,
-            cashu_token=token,
-        )
-    except Exception:
-        _fail_claimed_cashu_payment(session, claimed)
-        raise
-
-
-def mint_and_redeem_quote(
-    session: Session,
-    payment: Payment,
-    quote_id: str,
-    mint_url: str | None = None,
-) -> Payment:
-    """Claim a paid quote before minting and swapping its ecash exactly once."""
-    payment = require_cashu_payment_eligible(session, payment)
-    cashu = get_cashu_adapter()
-    if not hasattr(cashu, "mint_against_quote"):
-        raise ValueError("configured cashu adapter cannot mint against quotes")
-    check = getattr(cashu, "check_mint_quote", None)
-    if callable(check) and not check(quote_id, mint_url):
-        return payment
-
-    claimed = _claim_cashu_payment(session, payment)
-    if claimed is None:
-        return _reload_payment(session, payment.id)  # type: ignore[arg-type]
-    try:
-        proofs = cashu.mint_against_quote(quote_id, claimed.amount_sats, mint_url)
-        blob = {
-            "token": [
-                {
-                    "mint": (mint_url or "").rstrip("/"),
-                    "proofs": proofs,
-                }
-            ]
-        }
-        raw = json.dumps(blob, separators=(",", ":")).encode("utf-8")
-        token = "cashuA" + urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-        return _finalize_payment(
-            session,
-            claimed,
-            PaymentStatus.PROCESSING,
-            cashu_token=token,
-        )
-    except Exception:
-        _fail_claimed_cashu_payment(session, claimed)
-        raise
-
-
-def require_cashu_payment_eligible(session: Session, payment: Payment) -> Payment:
-    """Reject Cashu operations after local payment or domain eligibility ends."""
-    require_payment_method_enabled(PaymentMethod.CASHU)
-    if payment.method != PaymentMethod.CASHU:
-        raise ValueError("payment is not a Cashu payment")
-    if payment.id is None:
-        raise ValueError("payment has no id")
-    payment = _reload_payment(session, payment.id)
-    if payment.status != PaymentStatus.PENDING:
-        raise ValueError("payment is not pending")
-    expires_at = _aware(payment.expires_at)
-    subscription = session.get(Subscription, payment.subscription_id)
-    domain_deadline = (
-        subs.domain_payment_eligibility_deadline(subscription) if subscription is not None else None
-    )
-    if (expires_at is not None and expires_at <= _utcnow()) or (
-        domain_deadline is not None and domain_deadline <= _utcnow()
-    ):
-        expire_pending_payment(session, payment)
-        raise ValueError("payment expired")
-    return payment

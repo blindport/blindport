@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from cryptography import x509
@@ -394,7 +394,11 @@ class DomainVerificationResponse(BaseModel):
 
 class CreatePaymentRequest(BaseModel):
     subscription_id: UUID
-    method: PaymentMethod
+    method: Literal[
+        PaymentMethod.LIGHTNING,
+        PaymentMethod.NWC,
+        PaymentMethod.STABLECOIN_SWAP,
+    ]
     billing_term: BillingTerm | None = None
 
 
@@ -414,7 +418,6 @@ class PaymentResponse(BaseModel):
     qr_svg: str | None = None
     stablecoin_checkout_url: str | None = None
     stablecoin_asset: str | None = None
-    cashu_token_required: bool | None = None  # for cashu: payment requires user-submitted token
     nwc_state: str | None = None
     nwc_attempt_count: int = 0
     nwc_error_code: str | None = None
@@ -431,36 +434,6 @@ class PaymentResponse(BaseModel):
 class PaymentConflictResponse(BaseModel):
     detail: str
     existing_payment: PaymentResponse
-
-
-class SubmitCashuTokenRequest(BaseModel):
-    payment_id: int
-    cashu_token: str
-
-
-class CashuQuoteRequest(BaseModel):
-    """Ask the trusted mint to mint a bolt11 invoice the user can pay."""
-
-    payment_id: int
-
-
-class CashuMintAndRedeemRequest(BaseModel):
-    """Ask the backend to mint ecash against a paid quote and settle the payment."""
-
-    payment_id: int
-    quote_id: str
-    mint_url: str | None = None
-
-
-class CashuQuoteResponse(BaseModel):
-    payment_id: int
-    quote_id: str
-    bolt11: str
-    amount_sats: int
-    mint_url: str
-    expires_at: int = 0
-    lightning_uri: str = ""
-    qr_svg: str = ""
 
 
 class SetNwcRequest(BaseModel):

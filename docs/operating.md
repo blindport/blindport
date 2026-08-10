@@ -5,10 +5,10 @@
 Set `ENVIRONMENT=production` to enable fail-fast production validation. The
 production backend requires PostgreSQL through psycopg, direct Lightning through
 a non-mock adapter, externally run migrations, absolute CA storage, positive
-prices, and strong application and account tokens. Cashu cannot be enabled in
-production. NWC is optional alongside mandatory direct Lightning when its helper
-and credential security requirements are configured. The checked-in deployment
-manifests intentionally leave it disabled. A representative baseline is:
+prices, and strong application and account tokens. NWC is optional alongside
+mandatory direct Lightning when its helper and credential security requirements
+are configured. The checked-in deployment manifests intentionally leave it
+disabled. A representative baseline is:
 
 ```text
 ENVIRONMENT=production
@@ -492,7 +492,6 @@ movement outside Blindport.
 | routed WireGuard endpoint (default 51820) | UDP | blindportd clients |
 | routed Blindport IP inventory | IPv4, any transport | public clients |
 | relay admin (default 127.0.0.1:9090) | HTTP | private probes and Prometheus only |
-| Nutshell mint (when used) | TCP/HTTPS | backend and wallet path as deployed |
 
 Keep the relay admin listener on loopback or a private management network. It
 does not authenticate requests and must not be exposed publicly. Relay probes
@@ -658,8 +657,7 @@ provided, and a pre-rename database may carry the same Alembic revision while
 containing incompatible enum values. Provision fresh state for Blindport.
 
 Python 3.11 remains the minimum runtime, but dependency locks are generated and
-compared only with Python 3.14. Building the pinned `coincurve` source archive
-on Debian or Ubuntu requires `build-essential`, `libffi-dev`, and `pkg-config`.
+compared only with Python 3.14.
 
 ## Capacity and concurrency
 
@@ -831,17 +829,11 @@ manually changing payment state.
 Automatic renewal of a customer-owned Relay hostname also repeats its exact CNAME
 check before creating the NWC invoice.
 
-Cashu is experimental. The backend claims a payment before mint or swap and
-marks uncertain external failures `FAILED`; it does not report those proofs as
-recoverable. Alert on payments left `PROCESSING` after a crash and reconcile
-them against the mint before changing local state. Cashu quote issuance,
-minting, swapping, and token submission are rejected after local payment or
-domain eligibility expires. Mint quote expiry cannot currently be bounded or
-reconciled by the backend, so do not use Cashu for production domain claims.
-The background reconciler intentionally never processes Cashu. Alert on
-`PROCESSING` Cashu rows, which indicate an operator must determine provider state
-before making any local correction; uncertain Cashu failures are never retried
-automatically.
+Cashu runtime support has been removed. The legacy database enum value and token
+column remain read-only so historical rows can be inspected. Before upgrading,
+count all legacy Cashu rows and manually resolve every `PENDING` or `PROCESSING`
+row against the former provider; the application does not settle, expire, or
+release reservations for those ambiguous rows.
 
 ## Anonymous operation and compliance
 

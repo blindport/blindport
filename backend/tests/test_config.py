@@ -252,7 +252,7 @@ def test_onion_hostname_rejects_non_v3_values(hostname: str) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["", "cash", "lightning, cashu", "lightning,", "lightning,lightning"],
+    ["", "cash", "cashu", "lightning, nwc", "lightning,", "lightning,lightning"],
 )
 def test_enabled_payment_methods_are_strict(value: str) -> None:
     with pytest.raises(ValidationError, match="PAYMENT_ENABLED_METHODS"):
@@ -485,8 +485,8 @@ def test_reminder_lease_covers_smtp_timeout() -> None:
         ({"RELAY_WILDCARD_MONTHLY_SATS": 0}, "RELAY_WILDCARD_MONTHLY_SATS"),
         ({"RELAY_WILDCARD_YEARLY_SATS": 0}, "RELAY_WILDCARD_YEARLY_SATS"),
         ({"TOKEN_BYTES": 15}, "TOKEN_BYTES"),
-        ({"PAYMENT_ENABLED_METHODS": "cashu"}, "direct Lightning"),
-        ({"PAYMENT_ENABLED_METHODS": "lightning,cashu"}, "unsupported methods"),
+        ({"PAYMENT_ENABLED_METHODS": "cashu"}, "unsupported payment method"),
+        ({"PAYMENT_ENABLED_METHODS": "lightning,cashu"}, "unsupported payment method"),
         (
             {"PAYMENT_ENABLED_METHODS": "lightning,nwc", "PAYMENT_NWC_ADAPTER": "mock"},
             "PAYMENT_NWC_ADAPTER",

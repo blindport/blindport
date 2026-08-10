@@ -82,7 +82,7 @@ class IPLeaseDelivery(StrEnum):
 
 class PaymentMethod(StrEnum):
     LIGHTNING = "lightning"
-    CASHU = "cashu"
+    CASHU = "cashu"  # Legacy persisted value, read-only.
     NWC = "nwc"
     STABLECOIN_SWAP = "stablecoin_swap"
 
@@ -487,11 +487,11 @@ class Payment(SQLModel, table=True):
     period_days: int = Field(default=30, sa_column_kwargs={"server_default": text("30")})
     amount_sats: int
     markup_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
-    # For Lightning: BOLT11 invoice + payment_hash. For Cashu: token reference.
+    # Lightning uses BOLT11 invoice + payment_hash.
     invoice: str | None = None
     payment_hash: str | None = None
     invoice_idempotency_key: str | None = None
-    cashu_token: str | None = None
+    cashu_token: str | None = None  # Legacy persisted value, read-only.
     nwc_state: str | None = Field(default=None, max_length=32)
     nwc_attempt_count: int = 0
     nwc_first_attempt_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

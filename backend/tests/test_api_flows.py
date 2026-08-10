@@ -558,7 +558,7 @@ def test_subscription_rejects_second_live_payment(app_client) -> None:
     assert first.status_code == 200
     second = client.post(
         "/api/v1/payments",
-        json={"subscription_id": sub["id"], "method": "cashu"},
+        json={"subscription_id": sub["id"], "method": "nwc"},
         headers=_auth(token),
     )
     assert second.status_code == 409
@@ -869,7 +869,7 @@ def test_subscription_resource_uniqueness_constraints(app_client) -> None:
         )
         duplicate = Payment(
             subscription_id=1,
-            method=PaymentMethod.CASHU,
+            method=PaymentMethod.NWC,
             amount_sats=1,
         )
         session.add(first)
@@ -881,7 +881,7 @@ def test_subscription_resource_uniqueness_constraints(app_client) -> None:
     with Session(engine) as session:
         processing = Payment(
             subscription_id=2,
-            method=PaymentMethod.CASHU,
+            method=PaymentMethod.NWC,
             status=PaymentStatus.PROCESSING,
             amount_sats=1,
         )
@@ -914,47 +914,6 @@ def test_subscription_resource_uniqueness_constraints(app_client) -> None:
         session.add(duplicate)
         with pytest.raises(IntegrityError):
             session.commit()
-
-
-def test_relay_cashu_flow(app_client) -> None:
-    client, factory = app_client
-    token = client.post("/api/v1/signup").json()["token"]
-
-    # Relay requires domain
-    bad = client.post(
-        "/api/v1/subscriptions",
-        json={"product": "relay"},
-        headers=_auth(token),
-    )
-    assert bad.status_code == 400
-
-    sub = client.post(
-        "/api/v1/subscriptions",
-        json={"product": "relay", "domain": "alice.relay.test"},
-        headers=_auth(token),
-    ).json()
-
-    pay = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": sub["id"], "method": "cashu"},
-        headers=_auth(token),
-    ).json()
-    assert pay["cashu_token_required"] is True
-
-    # Pre-register a valid mock Cashu token
-    factory.get_cashu_adapter().register_test_token("cashuTOKEN1", pay["amount_sats"])
-
-    settled = client.post(
-        "/api/v1/payments/cashu-submit",
-        json={"payment_id": pay["id"], "cashu_token": "cashuTOKEN1"},
-        headers=_auth(token),
-    ).json()
-    assert settled["status"] == "paid"
-
-    me = client.get("/api/v1/me", headers=_auth(token)).json()
-    assert me["subscriptions"][0]["status"] == "active"
-    assert me["subscriptions"][0]["domain"] == "alice.relay.test"
-    assert me["subscriptions"][0]["relay_pool_domain"] in ("relay1.test", "relay2.test")
 
 
 def test_relay_canonicalizes_idna_and_rejects_cross_user_duplicate(app_client) -> None:
@@ -1190,38 +1149,3 @@ def test_landing_page_renders(app_client) -> None:
     r = client.get("/")
     assert r.status_code == 200
     assert "Blindport" in r.text
-
-
-def test_cashu_quote_unsupported_on_mock(app_client) -> None:
-    """The default mock cashu adapter has no real mint; quote endpoint must 503."""
-    client, _ = app_client
-    token = client.post("/api/v1/signup").json()["token"]
-    sub = client.post("/api/v1/subscriptions", json={"product": "ip"}, headers=_auth(token)).json()
-    pay = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": sub["id"], "method": "cashu"},
-        headers=_auth(token),
-    ).json()
-    r = client.post(
-        "/api/v1/payments/cashu-quote",
-        json={"payment_id": pay["id"]},
-        headers=_auth(token),
-    )
-    assert r.status_code == 503
-
-
-def test_cashu_quote_rejects_non_cashu_payment(app_client) -> None:
-    client, _ = app_client
-    token = client.post("/api/v1/signup").json()["token"]
-    sub = client.post("/api/v1/subscriptions", json={"product": "ip"}, headers=_auth(token)).json()
-    pay = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": sub["id"], "method": "lightning"},
-        headers=_auth(token),
-    ).json()
-    r = client.post(
-        "/api/v1/payments/cashu-quote",
-        json={"payment_id": pay["id"]},
-        headers=_auth(token),
-    )
-    assert r.status_code == 400

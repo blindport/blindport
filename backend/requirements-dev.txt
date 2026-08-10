@@ -222,9 +222,6 @@ click==8.4.2 \
     # via
     #   pip-tools
     #   uvicorn
-coincurve @ https://github.com/ofek/coincurve/archive/7829b29c08ebb1cc80386a1cdaf8c2243c4ef5c5.zip#sha256=623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e \
-    --hash=sha256:623b363c1e39977255d9222351e211a96dc5884aebb28e8a23d85bfef0dec37e
-    # via blindport (backend/pyproject.toml)
 coverage==7.15.2 \
     --hash=sha256:075560438765b7a2ef43bf7aa7758661b53d889df47f062a31bda6c1ade553a2 \
     --hash=sha256:0901cfe6c13bcd2302da4f83e884555d2a22bda6e4c476f09ef204ba20ca536e \

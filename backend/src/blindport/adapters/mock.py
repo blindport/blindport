@@ -12,7 +12,6 @@ import time
 from hashlib import sha256
 
 from .base import (
-    CashuAdapter,
     LightningAdapter,
     LightningInvoice,
     LightningInvoiceState,
@@ -152,29 +151,6 @@ class MockLightningAdapter(LightningAdapter):
         with self._lock:
             if payment_hash in self._invoices:
                 self._invoices[payment_hash]["paid"] = True
-
-
-class MockCashuAdapter(CashuAdapter):
-    """Cashu mock: maintains a token->amount registry."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._tokens: dict[str, int] = {}
-        self._redeemed: set[str] = set()
-
-    def validate_and_redeem(self, token: str, expected_amount_sats: int) -> bool:
-        with self._lock:
-            if token in self._redeemed:
-                return False
-            amount = self._tokens.get(token)
-            if amount is None or amount < expected_amount_sats:
-                return False
-            self._redeemed.add(token)
-            return True
-
-    def register_test_token(self, token: str, amount_sats: int) -> None:
-        with self._lock:
-            self._tokens[token] = amount_sats
 
 
 class MockNwcAdapter(NwcAdapter):

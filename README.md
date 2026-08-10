@@ -65,11 +65,12 @@ reconciler releases elapsed claims, limiting no-cost name reservation abuse.
 Accounts use a one-time Crockford base32 bearer token for recovery and agent access.
 The public browser UI can optionally enroll discoverable passkeys backed by revocable
 opaque sessions; passkey authentication never reveals the bearer token. The primary
-payment path is direct Lightning through LND. Operators may also expose an optional stablecoin
+payment path is direct Lightning through LND. Nostr Wallet Connect is optional
+wallet control over BOLT11 invoices. Operators may separately enable a stablecoin
 checkout that opens a surcharged LND invoice in the external Boltz web app;
 Blindport receives Lightning bitcoin and activates service only after LND reports
-settlement. Cashu and Nostr Wallet Connect adapters remain experimental. Cashu
-quote recovery and reconciliation are not production-ready.
+settlement. Legacy persisted Cashu payment rows remain readable, but Cashu runtime
+support has been removed.
 
 Blindport Port and Relay support fixed monthly (30 service days) and yearly (365
 service days) terms. New Blindport IP subscriptions use 365 service days only.
@@ -153,8 +154,8 @@ docker compose -f docker/docker-compose.yaml down -v
 ```
 
 The dashboard is at `http://localhost:8000`. Compose uses mock Lightning/NWC
-adapters, a development Nutshell mint, and a fixed development-only WireGuard
-keypair. Routed e2e coverage requires a Linux host with kernel WireGuard support.
+adapters and a fixed development-only WireGuard keypair. Routed e2e coverage
+requires a Linux host with kernel WireGuard support.
 
 The development Compose stack is not a production deployment. Production single-host
 and split control/relay manifests, secret preparation, and validation are under
@@ -188,10 +189,8 @@ go test -race ./...
 
 Run `prek run --all-files` before submitting changes.
 
-`backend/pyproject.toml` is the dependency source of truth. The pinned
-`coincurve` source build requires `build-essential`, `libffi-dev`, and
-`pkg-config` on Debian or Ubuntu. Regenerate the committed locks after dependency
-changes with Python 3.14 only:
+`backend/pyproject.toml` is the dependency source of truth. Regenerate the
+committed locks after dependency changes with Python 3.14 only:
 
 ```sh
 python3.14 -m piptools compile -Uv --generate-hashes --strip-extras --allow-unsafe --no-header \

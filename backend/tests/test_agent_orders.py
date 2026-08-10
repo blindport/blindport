@@ -66,8 +66,8 @@ def test_order_without_wallet_or_with_nwc_disabled_awaits_payment(app_client, mo
     _configure_wallet(client, headers, "disabled-order")
     from blindport.services import agent_orders, payments
 
-    monkeypatch.setattr(agent_orders.settings, "PAYMENT_ENABLED_METHODS", "lightning,cashu")
-    monkeypatch.setattr(payments.settings, "PAYMENT_ENABLED_METHODS", "lightning,cashu")
+    monkeypatch.setattr(agent_orders.settings, "PAYMENT_ENABLED_METHODS", "lightning")
+    monkeypatch.setattr(payments.settings, "PAYMENT_ENABLED_METHODS", "lightning")
     disabled = _put(client, headers, key="disabled-nwc", product="port")
 
     assert without_wallet.json()["state"] == "awaiting_payment"

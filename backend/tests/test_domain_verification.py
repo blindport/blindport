@@ -641,7 +641,7 @@ def test_processing_payment_and_failed_reconciliation_retain_elapsed_claim(
     processing_sub = _subscribe(client, token, "processing.relay.test")
     processing_payment = client.post(
         "/api/v1/payments",
-        json={"subscription_id": processing_sub["id"], "method": "cashu"},
+        json={"subscription_id": processing_sub["id"], "method": "lightning"},
         headers=_auth(token),
     ).json()
     uncertain_sub = _subscribe(client, token, "uncertain.relay.test")

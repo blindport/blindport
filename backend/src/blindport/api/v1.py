@@ -15,7 +15,7 @@ from sqlmodel import Session, select
 from starlette.concurrency import run_in_threadpool
 
 from ..adapters.base import NwcAdapterError
-from ..adapters.factory import get_cashu_adapter, get_nwc_adapter
+from ..adapters.factory import get_nwc_adapter
 from ..config import settings
 from ..core import qr, tokens
 from ..core.auth import AdminPrincipal, current_admin, current_bearer_user, current_user
@@ -44,9 +44,6 @@ from ..core.schemas import (
     AgentOrderResponse,
     AnnouncementDetailResponse,
     AnnouncementSummaryResponse,
-    CashuMintAndRedeemRequest,
-    CashuQuoteRequest,
-    CashuQuoteResponse,
     CatalogResponse,
     ClientCertResponse,
     ClientVersionResponse,
@@ -66,7 +63,6 @@ from ..core.schemas import (
     SetReminderEmailRequest,
     SetServiceEmailRequest,
     SignupResponse,
-    SubmitCashuTokenRequest,
     SubscriptionResponse,
 )
 from ..db import get_session
@@ -997,9 +993,6 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
             if p.method == PaymentMethod.STABLECOIN_SWAP
             else None
         ),
-        cashu_token_required=(
-            p.method == PaymentMethod.CASHU and p.status == PaymentStatus.PENDING
-        ),
         nwc_state=p.nwc_state,
         nwc_attempt_count=p.nwc_attempt_count,
         nwc_error_code=p.nwc_error_code,
@@ -1316,97 +1309,6 @@ def list_open_payments(
         if subscription is not None and subscription.user_id == user.id:
             responses.append(_payment_to_response(payment, subscription))
     return responses
-
-
-@router.post("/payments/cashu-submit", response_model=PaymentResponse)
-def submit_cashu(
-    body: SubmitCashuTokenRequest,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> PaymentResponse:
-    p = session.get(Payment, body.payment_id)
-    if not p:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    sub = session.get(Subscription, p.subscription_id)
-    if not sub or sub.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    try:
-        p = payments_svc.submit_cashu_token(session, p, body.cashu_token)
-    except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    return _payment_to_response(p, sub)
-
-
-@router.post("/payments/cashu-quote", response_model=CashuQuoteResponse)
-def cashu_quote(
-    body: CashuQuoteRequest,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> CashuQuoteResponse:
-    """Mint a bolt11 invoice the user can pay to obtain ecash off the trusted mint.
-
-    The user's Cashu wallet then settles this invoice and mints ecash against
-    the returned ``quote_id``. The resulting token must still be submitted via
-    ``/payments/cashu-submit`` for the backend to verify and credit the payment.
-    """
-    p = session.get(Payment, body.payment_id)
-    if not p:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    sub = session.get(Subscription, p.subscription_id)
-    if not sub or sub.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    try:
-        p = payments_svc.require_cashu_payment_eligible(session, p)
-    except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    cashu = get_cashu_adapter()
-    try:
-        quote = cashu.request_mint_quote(p.amount_sats)
-    except NotImplementedError as e:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "configured cashu adapter does not support mint quotes",
-        ) from e
-    except Exception as e:  # pragma: no cover - mint unreachable
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"mint error: {e}") from e
-    return CashuQuoteResponse(
-        payment_id=p.id,
-        quote_id=quote.quote_id,
-        bolt11=quote.bolt11,
-        amount_sats=quote.amount_sats,
-        mint_url=quote.mint_url,
-        expires_at=quote.expires_at,
-        lightning_uri=f"lightning:{quote.bolt11}",
-        qr_svg=qr.render_svg(quote.bolt11.upper()),
-    )
-
-
-@router.post("/payments/cashu-mint-and-redeem", response_model=PaymentResponse)
-def cashu_mint_and_redeem(
-    body: CashuMintAndRedeemRequest,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> PaymentResponse:
-    """Backend-side wallet: mint ecash against a paid NUT-04 quote and settle.
-
-    Polled by the dashboard while the user pays the bolt11 invoice. While the
-    quote is unpaid, the payment is returned unchanged so the caller can poll
-    again. Once paid on the mint, the backend mints+swaps the resulting ecash
-    into operator-owned proofs and marks the payment paid.
-    """
-    p = session.get(Payment, body.payment_id)
-    if not p:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    sub = session.get(Subscription, p.subscription_id)
-    if not sub or sub.user_id != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
-    try:
-        p = payments_svc.mint_and_redeem_quote(session, p, body.quote_id, body.mint_url)
-    except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    except Exception as e:  # pragma: no cover - mint-side errors
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"mint error: {e}") from e
-    return _payment_to_response(p, sub)
 
 
 # ---- client provisioning --------------------------------------------------

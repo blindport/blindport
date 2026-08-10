@@ -157,7 +157,7 @@ def test_idempotency_rejects_changed_references_and_event_time(tmp_path) -> None
         )
         second_payment = Payment(
             subscription_id=subscription.id or 0,
-            method=PaymentMethod.CASHU,
+            method=PaymentMethod.NWC,
             status=PaymentStatus.PAID,
             amount_sats=1000,
         )
