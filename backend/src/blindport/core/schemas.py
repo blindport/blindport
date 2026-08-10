@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from typing import Any
 from uuid import UUID
 
 from cryptography import x509
@@ -32,6 +33,83 @@ class SignupResponse(BaseModel):
 
     token: str = Field(..., description="Bearer token. Save it now; cannot be recovered.")
     user_id: int
+
+
+class PasskeyRegistrationOptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value.strip() != value or not value.isprintable():
+            raise ValueError("passkey name must be trimmed printable text")
+        return value
+
+
+class WebAuthnCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    challenge_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    credential: dict[str, Any]
+
+
+class PasskeyRegistrationRequest(WebAuthnCredentialRequest):
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return PasskeyRegistrationOptionsRequest.validate_name(value)
+
+
+class WebAuthnOptionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    challenge_id: str
+    options: dict[str, Any]
+
+
+class PasskeyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    credential_id: str
+    name: str
+    transports: list[str]
+    device_type: str | None
+    backed_up: bool
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None
+
+
+class PasskeyRegistrationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    passkey: PasskeyResponse
+
+
+class PasskeyAuthenticationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    account_id: UUID
+
+
+class BrowserSessionTokenRequest(BaseModel):
+    """Bearer token exchange request for an opaque browser session."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    token: str = Field(min_length=1, max_length=256)
+
+
+class BrowserSessionTokenResponse(BaseModel):
+    """Public account identity for a completed browser-session exchange."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    account_id: UUID
 
 
 class AccountSignupResponse(BaseModel):

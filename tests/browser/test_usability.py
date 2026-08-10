@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sqlite3
@@ -44,7 +45,7 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
     artifacts.mkdir(parents=True, exist_ok=True)
     log_path = artifacts / "server.log"
     port = _unused_port()
-    base_url = f"http://127.0.0.1:{port}"
+    base_url = f"http://localhost:{port}"
     env = os.environ.copy()
     source_path = str(Path(__file__).resolve().parents[2] / "backend" / "src")
     env["PYTHONPATH"] = os.pathsep.join(
@@ -80,6 +81,9 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "RELAY_MANAGED_SUFFIXES": "relay.test",
             "RATE_LIMIT_SIGNUP_REQUESTS": "1000",
             "ONION_HOST": ONION_HOST,
+            "PASSKEYS_ENABLED": "true",
+            "WEBAUTHN_RP_ID": "localhost",
+            "WEBAUTHN_ORIGIN": base_url,
         }
     )
     with log_path.open("w", encoding="utf-8") as log_file:
@@ -463,6 +467,79 @@ def test_saved_accounts_migrate_switch_and_forget(
         context.close()
 
 
+def test_passkey_registration_and_discoverable_login(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    cdp = context.new_cdp_session(page)
+    cdp.send("WebAuthn.enable")
+    authenticator_id = cdp.send(
+        "WebAuthn.addVirtualAuthenticator",
+        {
+            "options": {
+                "protocol": "ctap2",
+                "ctap2Version": "ctap2_1",
+                "transport": "internal",
+                "hasResidentKey": True,
+                "hasUserVerification": True,
+                "isUserVerified": True,
+                "automaticPresenceSimulation": True,
+            }
+        },
+    )["authenticatorId"]
+    passkey_authorization_headers: list[str | None] = []
+    page.on(
+        "request",
+        lambda request: (
+            passkey_authorization_headers.append(request.headers.get("authorization"))
+            if "/api/v1/passkeys" in request.url
+            else None
+        ),
+    )
+    errors: list[str] = []
+    page.on("pageerror", lambda error: errors.append(error.stack or str(error)))
+    try:
+        with _capture_failure(page, browser_server.artifacts / "passkeys-failure.png"):
+            page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+            page.locator("#tokenInput").fill(account["token"])
+            page.locator("#loginForm").get_by_role("button", name="Sign in").click()
+            page.locator("#dashboardRoot").wait_for(state="visible")
+
+            passkey_section = page.locator("#passkeySection")
+            passkey_section.wait_for(state="visible")
+            passkey_section.locator("summary").click()
+            page.locator("#passkeyName").fill("Test laptop")
+            page.locator("#addPasskeyBtn").click()
+            page.get_by_text("Passkey added.", exact=True).wait_for(state="visible")
+            assert (
+                page.locator("#passkeyList")
+                .get_by_text("Test laptop", exact=True)
+                .is_visible()
+            )
+
+            page.locator("#logoutBtn").click()
+            page.locator("#passkeyLoginBtn").wait_for(state="visible")
+            page.locator("#passkeyLoginBtn").click()
+            page.locator("#dashboardRoot").wait_for(state="visible")
+            assert (
+                page.locator("#dashboardRoot").get_attribute("data-account-id")
+                == account["account_id"]
+            )
+            assert passkey_authorization_headers
+            assert set(passkey_authorization_headers) == {None}
+            assert errors == []
+    finally:
+        cdp.send(
+            "WebAuthn.removeVirtualAuthenticator",
+            {"authenticatorId": authenticator_id},
+        )
+        context.close()
+
+
 def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_login(
     browser: Browser,
     browser_server: BrowserServer,
@@ -693,6 +770,20 @@ def test_dashboard_payment_qr_and_copy_controls(
                 "sameSite": "Lax",
             }
         ]
+    )
+    account_json = json.dumps(
+        {"token": account["token"], "accountId": account["account_id"]}
+    )
+    context.add_init_script(
+        f"""(() => {{
+          const account = {account_json};
+          localStorage.setItem("blindport_accounts_v1", JSON.stringify([{{
+            token: account.token,
+            accountId: account.accountId,
+            lastUsedAt: Date.now(),
+          }}]));
+          localStorage.setItem("blindport_active_token_v1", account.token);
+        }})();"""
     )
     page = context.new_page()
     errors: list[str] = []

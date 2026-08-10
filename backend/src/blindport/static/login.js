@@ -1,4 +1,9 @@
 const accounts = window.BlindportAccounts;
+const loginRoot = document.getElementById("loginRoot");
+if (loginRoot.dataset.invalidCredentials === "true") {
+  const rejectedToken = accounts.activeToken();
+  if (rejectedToken) accounts.forget(rejectedToken);
+}
 let savedAccounts = accounts.list();
 
 function accountLabel(account, index) {
@@ -25,10 +30,11 @@ function renderSavedAccounts() {
 document.getElementById("savedAccountForm").addEventListener("submit", (event) => {
   const index = Number.parseInt(document.getElementById("savedAccountSelect").value, 10);
   const account = savedAccounts[index];
-  if (!account || !accounts.forget(account.token)) {
+  if (!account) {
     event.preventDefault();
     return;
   }
+  accounts.setActive(account.token, account.accountId);
   document.getElementById("savedAccountToken").value = account.token;
 });
 
@@ -48,7 +54,28 @@ document.getElementById("removeSavedAccountBtn").addEventListener("click", () =>
 
 document.getElementById("loginForm").addEventListener("submit", () => {
   const token = document.getElementById("tokenInput").value.trim();
-  if (token) accounts.forget(token);
+  if (token) accounts.setActive(token);
 });
+
+const passkeys = window.BlindportPasskeys;
+const passkeyLogin = document.getElementById("passkeyLogin");
+if (passkeyLogin && passkeys?.supported) {
+  const button = document.getElementById("passkeyLoginBtn");
+  const status = document.getElementById("passkeyLoginStatus");
+  passkeyLogin.hidden = false;
+  button.disabled = false;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    status.textContent = "Signing in with passkey.";
+    try {
+      await passkeys.authenticate();
+      accounts.clearActive();
+      window.location.assign("/dashboard");
+    } catch (_) {
+      status.textContent = "Passkey sign-in failed. Use a saved account or bearer token.";
+      button.disabled = false;
+    }
+  });
+}
 
 renderSavedAccounts();

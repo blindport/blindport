@@ -573,7 +573,6 @@ def test_routed_dashboard_hides_payments_when_yearly_billing_is_disabled(
     from blindport.api import pages
 
     monkeypatch.setattr(pages.settings, "BILLING_YEARLY_ENABLED", False)
-    assert client.post("/login", data={"token": account["token"]}).status_code == 200
     dashboard = client.get("/dashboard")
     assert dashboard.status_code == 200
     assert "Annual routed-IP payments are currently unavailable." in dashboard.text

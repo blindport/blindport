@@ -18,7 +18,7 @@ from ..adapters.base import NwcAdapterError
 from ..adapters.factory import get_cashu_adapter, get_nwc_adapter
 from ..config import settings
 from ..core import qr, tokens
-from ..core.auth import AdminPrincipal, current_admin, current_user
+from ..core.auth import AdminPrincipal, current_admin, current_bearer_user, current_user
 from ..core.ca import issue_client_cert
 from ..core.credentials import CredentialError
 from ..core.models import (
@@ -85,6 +85,7 @@ from ..services.announcements import (
     queue_announcement,
     store_service_announcement_email,
 )
+from ..services.browser_sessions import issue_browser_session, set_browser_session_cookies
 from ..services.catalog import ProductUnavailableError, get_catalog
 from ..services.domain_verification import (
     DomainVerificationResult,
@@ -162,8 +163,15 @@ def signup(
     hashed = tokens.hash_token(normalized)
     user = User(display_token=None, hashed_token=hashed)
     session.add(user)
-    session.commit()
-    session.refresh(user)
+    try:
+        session.flush()
+        issued = issue_browser_session(session, user, "token")
+        session.commit()
+        session.refresh(user)
+    except ValueError:
+        session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "account is unavailable") from None
+    set_browser_session_cookies(response, request, issued)
     return SignupResponse(token=display, user_id=user.id or 0)
 
 
@@ -752,7 +760,7 @@ def put_client_order(
         Path(min_length=1, max_length=63, pattern=r"^[a-z0-9](?:[a-z0-9_-]{0,62})$"),
     ],
     body: AgentOrderRequest,
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
 ) -> AgentOrderResponse:
     _enforce_public_rate_limit(
@@ -1405,7 +1413,7 @@ def cashu_mint_and_redeem(
 
 
 @router.get("/client/version", response_model=ClientVersionResponse)
-def client_version(_: User = Depends(current_user)) -> ClientVersionResponse:
+def client_version(_: User = Depends(current_bearer_user)) -> ClientVersionResponse:
     """Return the operator-configured agent release for update notifications."""
     return ClientVersionResponse(version=settings.BLINDPORTD_VERSION)
 
@@ -1419,7 +1427,7 @@ _RELAY_ASSIGNMENTS_CAPABILITY = "relay-assignments-v1"
     response_model_exclude_unset=True,
 )
 def client_config(
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
     blindport_agent_capabilities: str = Header(default="", alias="Blindport-Agent-Capabilities"),
 ) -> list[RelayProvisioningResponse]:
@@ -1482,7 +1490,7 @@ def client_config(
 @router.get("/client/cert", response_model=ClientCertResponse)
 def client_cert(
     response: Response,
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
 ) -> ClientCertResponse:
     """Issue a short-lived mTLS client certificate for the calling user.
 

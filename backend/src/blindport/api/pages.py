@@ -20,6 +20,7 @@ from ..core import tokens
 from ..core.auth import (
     create_admin_browser_session,
     is_exact_admin_token,
+    optional_browser_session,
     validate_admin_browser_session,
 )
 from ..core.models import (
@@ -50,6 +51,19 @@ from ..services.announcements import (
     eligible_recipient_count,
     queue_announcement,
 )
+from ..services.browser_sessions import (
+    LEGACY_TOKEN_COOKIE,
+    LOGIN_CSRF_COOKIE,
+    SESSION_COOKIE,
+    clear_browser_session_cookies,
+    clear_login_csrf_cookie,
+    generate_login_csrf_token,
+    issue_browser_session,
+    revoke_browser_session,
+    set_browser_session_cookies,
+    set_login_csrf_cookie,
+    valid_login_csrf,
+)
 from ..services.btc_usd_price import approximate_usd, price_cache
 from ..services.catalog import get_catalog
 from ..services.rate_limits import (
@@ -62,7 +76,6 @@ from ..services.rate_limits import (
 router = APIRouter()
 
 _ADMIN_SESSION_COOKIE = "blindport_admin_session"
-_CUSTOMER_COOKIE = "blindport_token"
 _LEGACY_ADMIN_COOKIE = "blindport_admin"
 
 templates: Jinja2Templates | None = None
@@ -196,6 +209,7 @@ def _ctx(request: Request, **extra) -> dict:
         "request_origin_json": json.dumps(request_origin),
         "backend_flag_shell": backend_flag_shell,
         "install_script_url_shell": shlex.quote(f"{request_origin}/downloads/install.sh"),
+        "passkeys_enabled": settings.PASSKEYS_ENABLED and not _is_onion_request(request),
     }
     base.update(extra)
     return base
@@ -227,15 +241,6 @@ def _clear_admin_session(response: Response, request: Request) -> None:
     )
 
 
-def _clear_customer_session(response: Response, request: Request) -> None:
-    response.delete_cookie(
-        _CUSTOMER_COOKIE,
-        path="/",
-        secure=_cookie_secure(request),
-        samesite="lax",
-    )
-
-
 def _clear_legacy_admin_session(response: Response, request: Request) -> None:
     """Expire the retired root-scoped cookie that contained the raw admin token."""
     response.delete_cookie(
@@ -264,13 +269,15 @@ def _enforce_login_rate_limit(
 
 def _invalid_login(request: Request, template_name: str) -> HTMLResponse:
     assert templates is not None
+    login_csrf_token = generate_login_csrf_token()
     response = templates.TemplateResponse(
         request,
         template_name,
-        _ctx(request, invalid_credentials=True),
+        _ctx(request, invalid_credentials=True, login_csrf_token=login_csrf_token),
         status_code=status.HTTP_401_UNAUTHORIZED,
     )
     response.headers["Cache-Control"] = "no-store"
+    set_login_csrf_cookie(response, request, login_csrf_token)
     _clear_legacy_admin_session(response, request)
     return response
 
@@ -310,16 +317,33 @@ def terms(request: Request) -> HTMLResponse:
 
 @router.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-    """Browser dashboard. Reads token from `blindport_token` cookie (set client-side
-    after signup). The cookie is the canonical browser storage of the token.
-    """
     assert templates is not None
-    raw_token = request.cookies.get("blindport_token", "")
-    user = _get_user_by_token(session, raw_token)
+    resolved = optional_browser_session(request, session)
+    issued = None
+    browser_session = None
+    if resolved is not None:
+        browser_session, user = resolved
+    else:
+        user = _get_user_by_token(session, request.cookies.get(LEGACY_TOKEN_COOKIE, ""))
+        if user is not None:
+            try:
+                issued = issue_browser_session(session, user, "token")
+                session.commit()
+            except ValueError:
+                session.rollback()
+                user = None
     if user is None:
-        response = templates.TemplateResponse(request, "login.html", _ctx(request))
-        response.headers["Cache-Control"] = "no-store"
+        login_csrf_token = generate_login_csrf_token()
+        response = templates.TemplateResponse(
+            request,
+            "login.html",
+            _ctx(request, login_csrf_token=login_csrf_token),
+        )
+        clear_browser_session_cookies(response, request)
+        set_login_csrf_cookie(response, request, login_csrf_token)
         return response
+    if issued is not None:
+        browser_session = issued.model
     subs_svc.reap_expired_domain_claims(session)
     subs = session.exec(select(Subscription).where(Subscription.user_id == user.id)).all()
     subs_svc.expire_elapsed_subscriptions(session, subs)
@@ -366,6 +390,7 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         _ctx(
             request,
             user=user,
+            browser_auth_method=browser_session.auth_method if browser_session is not None else "",
             subscriptions=visible_subscriptions,
             pending_subscriptions=[
                 subscription
@@ -390,7 +415,6 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
                 if client_mappings
                 else ""
             ),
-            token=raw_token,
             catalog=catalog,
             catalog_by_product={p.product.value: p for p in catalog.products},
             port_hostname_suffix=settings.PORT_HOSTNAME_SUFFIX,
@@ -398,6 +422,8 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         ),
     )
     response.headers["Cache-Control"] = "no-store"
+    if issued is not None:
+        set_browser_session_cookies(response, request, issued)
     return response
 
 
@@ -405,8 +431,15 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
 def login(
     request: Request,
     token: str = Form(...),
+    login_csrf_token: str = Form(default="", max_length=128),
     session: Session = Depends(get_session),
 ) -> Response:
+    if not valid_login_csrf(request.cookies.get(LOGIN_CSRF_COOKIE), login_csrf_token):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "login CSRF validation failed",
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
     _enforce_login_rate_limit(request, session, RateLimitScope.BROWSER_LOGIN)
 
     is_admin = is_exact_admin_token(token)
@@ -415,17 +448,17 @@ def login(
         return _invalid_login(request, "login.html")
     if user is not None:
         response = RedirectResponse(url="/dashboard", status_code=status.HTTP_303_SEE_OTHER)
-        _clear_admin_session(response, request)
-        _clear_legacy_admin_session(response, request)
-        response.set_cookie(
-            _CUSTOMER_COOKIE,
-            token,
-            path="/",
-            secure=_cookie_secure(request),
-            samesite="lax",
-        )
-        response.headers["Cache-Control"] = "no-store"
-        return response
+        try:
+            issued = issue_browser_session(session, user, "token")
+            session.commit()
+        except ValueError:
+            session.rollback()
+        else:
+            _clear_admin_session(response, request)
+            _clear_legacy_admin_session(response, request)
+            clear_login_csrf_cookie(response, request)
+            set_browser_session_cookies(response, request, issued)
+            return response
     return _invalid_login(request, "login.html")
 
 
@@ -839,7 +872,8 @@ def admin_login(
     if not is_exact_admin_token(token):
         return _invalid_login(request, "admin_login.html")
     resp = RedirectResponse(url="/admin", status_code=303)
-    _clear_customer_session(resp, request)
+    revoke_browser_session(session, request.cookies.get(SESSION_COOKIE, ""))
+    clear_browser_session_cookies(resp, request)
     _clear_legacy_admin_session(resp, request)
     _set_admin_session(resp, request)
     resp.headers["Cache-Control"] = "no-store"

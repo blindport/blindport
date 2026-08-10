@@ -516,6 +516,10 @@ summary { display: flex; min-height: 44px; align-items: center; cursor: pointer;
 .account-token-section > .field-help { margin-bottom: 0.8rem; }
 .sidebar-section form, .account-token-controls { display: grid; gap: 0.65rem; }
 .account-token-controls input { font-family: "SFMono-Regular", Consolas, monospace; }
+.passkey-list { display: grid; margin: 0.75rem 0; gap: 0.55rem; }
+.passkey-row { display: grid; padding-block: 0.55rem; border-block: 1px solid var(--line); gap: 0.3rem; }
+.passkey-row span { color: var(--muted); font-size: 0.82rem; }
+.passkey-row button { width: max-content; max-width: 100%; min-height: 36px; padding-block: 0.4rem; }
 .sidebar-note { padding-block: 1rem; }
 .sidebar-note p { margin: 0.3rem 0 0; color: var(--muted); font-size: 0.82rem; }
 .command-list { display: grid; gap: 0.8rem; }

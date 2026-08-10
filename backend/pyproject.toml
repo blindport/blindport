@@ -22,6 +22,7 @@ dependencies = [
     "cryptography>=43.0.0",
     "dnspython>=2.7.0",
     "psycopg[binary]>=3.2.0",
+    "webauthn>=3.0.0,<4.0.0",
     # coincurve <21.0.0 lacks Python 3.14 support and 21.0.0 has a packaging
     # bug preventing source builds on 3.14 (ofek/coincurve#219). Pin to the
     # unreleased fix commit until 21.0.1+ ships.

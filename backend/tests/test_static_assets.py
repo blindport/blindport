@@ -98,17 +98,19 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "if (accounts.length === 0)" in account_storage
     assert "localStorage.removeItem(STORAGE_KEY)" in account_storage
     assert (
-        "if (!legacyToken || save(legacyToken)) localStorage.removeItem(LEGACY_KEY)"
+        "if (!legacyToken || setActive(legacyToken)) localStorage.removeItem(LEGACY_KEY)"
         in account_storage
     )
-    assert "if (removed && readCookie() === normalizedToken) clearCookie()" in account_storage
+    assert "if (activeToken() === normalizedToken) clearActive()" in account_storage
     assert 'document.getElementById("savedAccountToken").value = account.token' in login
     assert "accounts.forget(account.token)" in login
     assert "!accounts.forget(account.token)" in login
     assert 'action="/login"' in _asset("templates/login.html")
     assert 'name="token"' in _asset("templates/login.html")
     assert 'document.getElementById("loginForm").addEventListener' in login
-    assert "if (token) accounts.forget(token)" in login
+    assert "if (token) accounts.setActive(token)" in login
+    assert "if (rejectedToken) accounts.forget(rejectedToken)" in login
+    assert "Authorization" not in dashboard
 
     assert "billing_term: term" in dashboard
     assert 'delivery: product === "ip" ? "wireguard" : "framed"' in dashboard
@@ -138,12 +140,12 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert 'jsonFetch("/api/v1/payments"' in dashboard
     assert 'method: "DELETE"' in dashboard
     assert "domain_verification_token" in _asset("templates/dashboard.html")
-    assert "accounts.save(token, accountId)" in dashboard
+    assert "accounts.save(activeToken, accountId)" in dashboard
     assert "accounts.clearActive()" in dashboard
-    assert "accounts.forget(token)" in dashboard
-    assert "if (!accounts.forget(token))" in dashboard
+    assert "accounts.forget(localToken)" in dashboard
+    assert "if (!accounts.forget(localToken))" in dashboard
     assert 'window.location.assign("/dashboard")' in dashboard
-    assert "accounts.copyText(token)" in dashboard
+    assert "accounts.copyText(localToken)" in dashboard
     assert "const button = event.currentTarget;" in dashboard
     assert 'button.textContent = copied ? "Copied"' in dashboard
     assert "JSON.stringify(body)" in dashboard

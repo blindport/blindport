@@ -1,24 +1,52 @@
 const dashboardRoot = document.getElementById("dashboardRoot");
-const token = dashboardRoot.dataset.token;
 const accountId = dashboardRoot.dataset.accountId;
+const authMethod = dashboardRoot.dataset.authMethod;
 const accounts = window.BlindportAccounts;
 const btcUsdPrice = Number.parseFloat(dashboardRoot.dataset.btcUsd);
+const savedAccount = accounts.forAccount(accountId);
+const activeToken = accounts.activeToken();
+const activeAccount = accounts.list().find((account) => account.token === activeToken);
+let localToken = savedAccount?.token || "";
 
-accounts.save(token, accountId);
-
-function authHeaders() {
-  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+if (!localToken && authMethod === "token" && activeAccount && !activeAccount.accountId) {
+  accounts.save(activeToken, accountId);
+  localToken = activeToken;
 }
 
-document.getElementById("logoutBtn").addEventListener("click", () => {
-  accounts.clearActive();
-  window.location.assign("/dashboard");
-});
+function authHeaders() {
+  const csrfCookie = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("blindport_csrf="));
+  const csrfToken = csrfCookie ? decodeURIComponent(csrfCookie.slice("blindport_csrf=".length)) : "";
+  return { "Content-Type": "application/json", "X-CSRF-Token": csrfToken };
+}
 
+async function logout() {
+  const button = document.getElementById("logoutBtn");
+  button.disabled = true;
+  try {
+    await fetch("/api/v1/browser-session", { method: "DELETE", headers: authHeaders() });
+  } finally {
+    accounts.clearActive();
+    window.location.assign("/dashboard");
+  }
+}
+
+document.getElementById("logoutBtn").addEventListener("click", () => void logout());
+
+const accountTokenControls = document.getElementById("accountTokenControls");
+const accountTokenUnavailable = document.getElementById("accountTokenUnavailable");
 const accountTokenInput = document.getElementById("accountToken");
-accountTokenInput.value = token;
+if (!localToken) {
+  accountTokenControls.hidden = true;
+  accountTokenUnavailable.hidden = false;
+} else {
+  accountTokenInput.value = localToken;
+}
 
 document.getElementById("revealTokenBtn").addEventListener("click", (event) => {
+  if (!localToken) return;
   const revealed = accountTokenInput.type === "text";
   accountTokenInput.type = revealed ? "password" : "text";
   event.currentTarget.textContent = revealed ? "Reveal" : "Hide";
@@ -26,20 +54,22 @@ document.getElementById("revealTokenBtn").addEventListener("click", (event) => {
 });
 
 document.getElementById("copyAccountTokenBtn").addEventListener("click", async () => {
-  const copied = await accounts.copyText(token);
+  if (!localToken) return;
+  const copied = await accounts.copyText(localToken);
   document.getElementById("accountTokenStatus").textContent = copied
     ? "Token copied."
     : "Copy failed. Reveal the token and copy it manually.";
 });
 
 document.getElementById("forgetAccountBtn").addEventListener("click", () => {
-  if (!window.confirm("Forget this account token from this browser and sign out?")) return;
-  if (!accounts.forget(token)) {
+  if (!localToken || !window.confirm("Forget this account token from this browser and sign out?")) return;
+  if (!accounts.forget(localToken)) {
     document.getElementById("accountTokenStatus").textContent =
       "Could not remove the saved token. Check browser storage permissions and try again.";
     return;
   }
-  window.location.assign("/dashboard");
+  localToken = "";
+  void logout();
 });
 
 function chooseEnabledRadio(name) {
@@ -157,6 +187,78 @@ async function jsonFetch(url, options) {
     throw error;
   }
   return parsed;
+}
+
+const passkeys = window.BlindportPasskeys;
+const passkeySection = document.getElementById("passkeySection");
+if (passkeySection && passkeys?.supported) {
+  const passkeyStatus = document.getElementById("passkeyStatus");
+  const passkeyList = document.getElementById("passkeyList");
+  const passkeyForm = document.getElementById("passkeyForm");
+  const passkeyName = document.getElementById("passkeyName");
+  const addPasskeyButton = document.getElementById("addPasskeyBtn");
+  passkeySection.hidden = false;
+
+  function renderPasskeys(credentials) {
+    passkeyList.replaceChildren();
+    credentials.forEach((credential) => {
+      const row = document.createElement("div");
+      row.className = "passkey-row";
+      const name = document.createElement("strong");
+      name.textContent = credential.name;
+      const detail = document.createElement("span");
+      detail.textContent = credential.last_used_at ? "Used" : "Not used yet";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button-secondary button-danger";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", async () => {
+        if (!window.confirm("Remove this passkey?")) return;
+        remove.disabled = true;
+        passkeyStatus.textContent = "Removing passkey.";
+        try {
+          await jsonFetch(`/api/v1/passkeys/${encodeURIComponent(credential.credential_id)}`, {
+            method: "DELETE",
+            headers: authHeaders(),
+          });
+          await loadPasskeys();
+          passkeyStatus.textContent = "Passkey removed.";
+        } catch (_) {
+          passkeyStatus.textContent = "Passkey could not be removed.";
+          remove.disabled = false;
+        }
+      });
+      row.append(name, detail, remove);
+      passkeyList.appendChild(row);
+    });
+  }
+
+  async function loadPasskeys() {
+    const credentials = await jsonFetch("/api/v1/passkeys", { headers: authHeaders() });
+    renderPasskeys(credentials);
+    if (!credentials.length) passkeyStatus.textContent = "No passkeys added.";
+  }
+
+  passkeyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = passkeyName.value.trim();
+    if (!name) return;
+    addPasskeyButton.disabled = true;
+    passkeyStatus.textContent = "Adding passkey.";
+    try {
+      await passkeys.register(name, authHeaders());
+      passkeyName.value = "";
+      await loadPasskeys();
+      passkeyStatus.textContent = "Passkey added.";
+    } catch (_) {
+      passkeyStatus.textContent = "Passkey could not be added.";
+    }
+    addPasskeyButton.disabled = false;
+  });
+
+  loadPasskeys().catch(() => {
+    passkeyStatus.textContent = "Passkeys are unavailable.";
+  });
 }
 
 document.getElementById("newSubForm").addEventListener("submit", async (event) => {

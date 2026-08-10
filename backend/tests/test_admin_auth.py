@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from sqlmodel import Session, select
 
 
@@ -99,7 +101,7 @@ def test_legacy_admin_rows_have_no_customer_relay_or_admin_access(app_client) ->
 
 
 def test_customer_login_rejects_admin_token_and_admin_login_uses_dedicated_scope(
-    app_client, monkeypatch
+    app_client, customer_login, monkeypatch
 ) -> None:
     from blindport.api import pages
     from blindport.config import EnvironmentMode
@@ -120,9 +122,17 @@ def test_customer_login_rejects_admin_token_and_admin_login_uses_dedicated_scope
     monkeypatch.setattr(pages, "_enforce_login_rate_limit", tracking_limit)
     monkeypatch.setattr(pages, "_get_user_by_token", tracking_lookup)
     monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
-    rejected = client.post("/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
-    ordinary_invalid = client.post(
-        "/login", data={"token": "INVALIDTOKEN0000"}, follow_redirects=False
+    rejected = customer_login(
+        client,
+        "TESTADMIN0000",
+        follow_redirects=False,
+        origin="https://testserver",
+    )
+    ordinary_invalid = customer_login(
+        client,
+        "INVALIDTOKEN0000",
+        follow_redirects=False,
+        origin="https://testserver",
     )
 
     assert rejected.status_code == 401
@@ -132,8 +142,16 @@ def test_customer_login_rejects_admin_token_and_admin_login_uses_dedicated_scope
     assert "blindport_admin_session=" not in rejected.headers.get("set-cookie", "")
     assert client.cookies.get("blindport_admin_session") is None
     assert ordinary_invalid.status_code == rejected.status_code
-    assert ordinary_invalid.text == rejected.text
-    assert looked_up == ["TESTADMIN0000", "INVALIDTOKEN0000"]
+    assert re.sub(
+        r'name="login_csrf_token" value="[A-Za-z0-9_-]+"',
+        'name="login_csrf_token" value="csrf-token"',
+        ordinary_invalid.text,
+    ) == re.sub(
+        r'name="login_csrf_token" value="[A-Za-z0-9_-]+"',
+        'name="login_csrf_token" value="csrf-token"',
+        rejected.text,
+    )
+    assert [value for value in looked_up if value] == ["TESTADMIN0000", "INVALIDTOKEN0000"]
 
     accepted = client.post("/admin/login", data={"token": "TESTADMIN0000"}, follow_redirects=False)
 
@@ -194,16 +212,20 @@ def test_upgrade_expires_legacy_raw_admin_cookie(app_client) -> None:
     assert "Max-Age=0" in response.headers["set-cookie"]
 
 
-def test_customer_login_clears_admin_session_and_sets_only_customer_access(app_client) -> None:
+def test_customer_login_clears_admin_session_and_sets_only_customer_access(
+    app_client, customer_login
+) -> None:
     client, _ = app_client
     account = client.post("/api/v2/signup").json()
+    client.cookies.clear()
     client.post("/admin/login", data={"token": "TESTADMIN0000"})
 
-    response = client.post("/login", data={"token": account["token"]}, follow_redirects=False)
+    response = customer_login(client, account["token"], follow_redirects=False)
 
     assert response.status_code == 303
     assert response.headers["location"] == "/dashboard"
-    assert client.cookies.get("blindport_token") == account["token"]
+    assert client.cookies.get("blindport_token") is None
+    assert client.cookies.get("blindport_session") is not None
     assert client.cookies.get("blindport_admin_session") is None
     assert account["account_id"] in client.get("/dashboard").text
     assert "Admin sign in" in client.get("/admin").text
@@ -211,12 +233,17 @@ def test_customer_login_clears_admin_session_and_sets_only_customer_access(app_c
 
 def test_invalid_browser_logins_are_generic_no_store_and_do_not_reflect_input(
     app_client,
+    customer_login,
 ) -> None:
     client, _ = app_client
     secret = "not-valid-and-do-not-reflect"
 
     for path in ("/login", "/admin/login"):
-        response = client.post(path, data={"token": secret})
+        response = (
+            customer_login(client, secret)
+            if path == "/login"
+            else client.post(path, data={"token": secret})
+        )
         assert response.status_code == 401
         assert response.headers["Cache-Control"] == "no-store"
         assert "Invalid credentials." in response.text

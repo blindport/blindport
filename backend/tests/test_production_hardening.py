@@ -302,42 +302,55 @@ def test_security_headers_and_production_admin_cookie(app_client, monkeypatch) -
 
     package = Path(blindport.__file__).parent
     source = (package / "static" / "account-storage.js").read_text(encoding="utf-8").lower()
-    assert "samesite=lax" in source
-    assert 'dataset.cookiesecure === "true"' in source
-    assert "httponly" not in source
+    assert "localstorage" in source
+    assert "document.cookie" not in source
+    assert "blindport_token=" not in source
 
 
 def test_production_customer_login_cookie_is_clearnet_secure_and_root_scoped(
-    app_client, monkeypatch
+    app_client, customer_login, monkeypatch
 ) -> None:
     from blindport.api import pages
     from blindport.config import EnvironmentMode
+    from blindport.services import browser_sessions
 
     client, _ = app_client
     _, token = _signup(client)
+    client.cookies.clear()
     monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
+    monkeypatch.setattr(browser_sessions.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
 
-    response = client.post(
-        "/login",
-        headers={"Host": "blindport.test"},
-        data={"token": token},
+    response = customer_login(
+        client,
+        token,
         follow_redirects=False,
+        origin="https://blindport.test",
     )
-    cookie = response.headers["set-cookie"].lower()
+    cookies = response.headers.get_list("set-cookie")
+    session_cookie = next(
+        value.lower() for value in cookies if value.startswith("blindport_session=")
+    )
+    csrf_cookie = next(value.lower() for value in cookies if value.startswith("blindport_csrf="))
 
     assert response.status_code == 303
-    assert "blindport_token=" in cookie
-    assert "secure" in cookie
-    assert "path=/" in cookie
-    assert "samesite=lax" in cookie
-    assert "blindport_admin_session=" in cookie
-    assert "max-age=0" in cookie
+    assert "secure" in session_cookie
+    assert "httponly" in session_cookie
+    assert "path=/" in session_cookie
+    assert "samesite=strict" in session_cookie
+    assert "secure" in csrf_cookie
+    assert "httponly" not in csrf_cookie
+    assert "samesite=strict" in csrf_cookie
+    assert any(value.startswith("blindport_token=") and "Max-Age=0" in value for value in cookies)
+    assert any(
+        value.startswith("blindport_admin_session=") and "Max-Age=0" in value for value in cookies
+    )
 
 
 def test_dashboard_renders_catalog_controls_and_external_scripts(app_client) -> None:
     client, _ = app_client
     _, token = _signup(client)
-    client.cookies.set("blindport_token", token)
+    client.cookies.clear()
+    client.cookies.set("blindport_token", token, domain="testserver.local", path="/")
 
     response = client.get("/dashboard")
 
@@ -345,10 +358,12 @@ def test_dashboard_renders_catalog_controls_and_external_scripts(app_client) -> 
     assert "Dedicated public IP" in response.text
     assert "One public port" in response.text
     assert "Public hostname" in response.text
-    assert client.cookies.get("blindport_token") == token
+    assert client.cookies.get("blindport_token") is None
+    assert client.cookies.get("blindport_session") is not None
     assert ">TCP</option>" in response.text
     assert "2 available" not in response.text
-    assert 'data-token="' in response.text
+    assert 'data-token="' not in response.text
+    assert token not in response.text
     assert "window.BLINDPORT_TOKEN" not in response.text
     assert '<script src="/static/dashboard.js"></script>' in response.text
     assert response.headers["Cache-Control"] == "no-store"

@@ -62,8 +62,10 @@ Unpaid managed names are held for 30 minutes and customer-owned names for one
 hour. One account may hold at most two unpaid Relay claims, and the background
 reconciler releases elapsed claims, limiting no-cost name reservation abuse.
 
-Accounts use a one-time Crockford base32 bearer token. The primary payment path
-is direct Lightning through LND. Operators may also expose an optional stablecoin
+Accounts use a one-time Crockford base32 bearer token for recovery and agent access.
+The public browser UI can optionally enroll discoverable passkeys backed by revocable
+opaque sessions; passkey authentication never reveals the bearer token. The primary
+payment path is direct Lightning through LND. Operators may also expose an optional stablecoin
 checkout that opens a surcharged LND invoice in the external Boltz web app;
 Blindport receives Lightning bitcoin and activates service only after LND reports
 settlement. Cashu and Nostr Wallet Connect adapters remain experimental. Cashu

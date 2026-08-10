@@ -10,7 +10,7 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..core import tokens
-from ..core.auth import AdminPrincipal, current_admin, current_user
+from ..core.auth import AdminPrincipal, current_admin, current_bearer_user, current_user
 from ..core.models import (
     ClientCredential,
     DeliveryMode,
@@ -46,6 +46,7 @@ from ..db import get_session
 from ..services import ip_leases, relay_routing
 from ..services import subscriptions as subs_svc
 from ..services.allocator import NoCapacityError
+from ..services.browser_sessions import issue_browser_session, set_browser_session_cookies
 from ..services.catalog import ProductUnavailableError
 from ..services.client_enrollment import (
     ClientEnrollmentConflictError,
@@ -163,8 +164,15 @@ def signup(
     display, normalized = tokens.generate_token()
     user = User(display_token=None, hashed_token=tokens.hash_token(normalized))
     session.add(user)
-    session.commit()
-    session.refresh(user)
+    try:
+        session.flush()
+        issued = issue_browser_session(session, user, "token")
+        session.commit()
+        session.refresh(user)
+    except ValueError:
+        session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "account is unavailable") from None
+    set_browser_session_cookies(response, request, issued)
     return AccountSignupResponse(token=display, account_id=user.public_id)
 
 
@@ -379,6 +387,7 @@ def anonymous_order(
             commit=False,
             reap_domains=False,
         )
+        issued = issue_browser_session(session, user, "token")
         session.commit()
         session.refresh(user)
         session.refresh(subscription)
@@ -398,6 +407,7 @@ def anonymous_order(
     from .v1 import _sub_to_response
 
     subscription_response = _sub_to_response(subscription)
+    set_browser_session_cookies(response, request, issued)
     return AnonymousOrderResponse(
         token=display,
         account_id=user.public_id,
@@ -413,7 +423,7 @@ def anonymous_order(
 def client_certificate(
     request: ClientCertificateRequest,
     response: Response,
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
 ) -> ClientCertificateResponse:
     response.headers["Cache-Control"] = "no-store"
@@ -454,7 +464,7 @@ def client_certificate(
 def offline_client_config(
     response: Response,
     instance_id: str = Query(min_length=36, max_length=36),
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
 ) -> OfflineEntitlementConfigResponse:
     """Return v2 framed provisioning with one edge-scoped signed entitlement per claim."""
@@ -610,7 +620,7 @@ def offline_client_config(
 @router.get("/client/wireguard", response_model=WireGuardConfigResponse)
 def wireguard_config(
     response: Response,
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
 ) -> WireGuardConfigResponse:
     response.headers["Cache-Control"] = "no-store"
@@ -627,7 +637,7 @@ def wireguard_config(
 def wireguard_key(
     request: WireGuardKeyRequest,
     response: Response,
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
 ) -> WireGuardConfigResponse:
     response.headers["Cache-Control"] = "no-store"

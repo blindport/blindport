@@ -77,6 +77,20 @@ def validate_v3_onion_hostname(value: str) -> str:
     return value
 
 
+def _canonical_http_origin(value: str) -> str:
+    parsed = urlsplit(value)
+    hostname = parsed.hostname or ""
+    try:
+        rendered_host = f"[{hostname}]" if ip_address(hostname).version == 6 else hostname
+    except ValueError:
+        rendered_host = hostname.lower()
+    default_port = (parsed.scheme == "http" and parsed.port == 80) or (
+        parsed.scheme == "https" and parsed.port == 443
+    )
+    port = None if default_port else parsed.port
+    return f"{parsed.scheme.lower()}://{rendered_host}{f':{port}' if port is not None else ''}"
+
+
 RELAY_REAUTH_INTERVAL_DEFAULT_SECONDS = 45
 RELAY_REAUTH_MAX_STALENESS_DEFAULT_SECONDS = 90
 RELAY_RENEWAL_GRACE_MIN_SECONDS = (
@@ -521,6 +535,15 @@ class Settings(BaseSettings):
     # Dedicated administrator bearer and browser session lifetime.
     ADMIN_TOKEN: str = DEFAULT_ADMIN_TOKEN
     ADMIN_SESSION_MAX_AGE_SECONDS: int = Field(default=900, ge=60, le=86400)
+    PASSKEYS_ENABLED: bool = False
+    WEBAUTHN_RP_ID: str = "localhost"
+    WEBAUTHN_RP_NAME: str = Field(default="Blindport", min_length=1, max_length=100)
+    WEBAUTHN_ORIGIN: str = "http://localhost:8000"
+    PASSKEY_CHALLENGE_TTL_SECONDS: int = Field(default=300, ge=60, le=600)
+    PASSKEY_MAX_PENDING_CHALLENGES: int = Field(default=10000, ge=100, le=1000000)
+    PASSKEY_MAX_CREDENTIALS_PER_USER: int = Field(default=20, ge=1, le=100)
+    BROWSER_SESSION_MAX_AGE_SECONDS: int = Field(default=2592000, ge=300, le=31536000)
+    BROWSER_SESSION_MAX_PER_USER: int = Field(default=20, ge=1, le=100)
 
     # Product catalog and sales controls
     IP_ENABLED: bool = True
@@ -852,7 +875,53 @@ class Settings(BaseSettings):
             or invalid_port
         ):
             raise ValueError("PUBLIC_SITE_URL must be an absolute HTTP or HTTPS origin")
-        return value.rstrip("/")
+        return _canonical_http_origin(value)
+
+    @field_validator("WEBAUTHN_RP_ID")
+    @classmethod
+    def validate_webauthn_rp_id(cls, value: str) -> str:
+        if not value or not value.isascii() or value != value.lower():
+            raise ValueError("WEBAUTHN_RP_ID must be a lowercase ASCII DNS hostname or localhost")
+        try:
+            canonical = canonicalize_hostname(value)
+        except ValueError as error:
+            raise ValueError(
+                "WEBAUTHN_RP_ID must be a lowercase ASCII DNS hostname or localhost"
+            ) from error
+        if canonical != value:
+            raise ValueError("WEBAUTHN_RP_ID must be a lowercase ASCII DNS hostname or localhost")
+        return value
+
+    @field_validator("WEBAUTHN_RP_NAME")
+    @classmethod
+    def validate_webauthn_rp_name(cls, value: str) -> str:
+        if not value.isascii() or not value.isprintable():
+            raise ValueError("WEBAUTHN_RP_NAME must contain only printable ASCII characters")
+        return value
+
+    @field_validator("WEBAUTHN_ORIGIN")
+    @classmethod
+    def validate_webauthn_origin(cls, value: str) -> str:
+        if not value or value.strip() != value:
+            raise ValueError("WEBAUTHN_ORIGIN must be an exact HTTP or HTTPS origin")
+        parsed = urlsplit(value)
+        try:
+            _ = parsed.port
+            invalid_port = False
+        except ValueError:
+            invalid_port = True
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or invalid_port
+        ):
+            raise ValueError("WEBAUTHN_ORIGIN must be an exact HTTP or HTTPS origin")
+        return _canonical_http_origin(value)
 
     @field_validator("BOLTZ_WEB_URL")
     @classmethod
@@ -1078,6 +1147,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_separate_ip_inventory(self) -> Settings:
+        if self.PASSKEYS_ENABLED:
+            origin_hostname = urlsplit(self.WEBAUTHN_ORIGIN).hostname
+            if origin_hostname is None or (
+                origin_hostname != self.WEBAUTHN_RP_ID
+                and not origin_hostname.endswith(f".{self.WEBAUTHN_RP_ID}")
+            ):
+                raise ValueError(
+                    "WEBAUTHN_ORIGIN hostname must equal WEBAUTHN_RP_ID or be its subdomain"
+                )
         edge_ids = {edge.id for edge in self.relay_edges_list}
         heartbeat_key_ids = set(self.relay_heartbeat_keys)
         if not edge_ids and self.RELAY_HEARTBEAT_KEYS:
@@ -1341,6 +1419,13 @@ class Settings(BaseSettings):
         failures: list[str] = []
         if not self.PUBLIC_SITE_URL.startswith("https://"):
             failures.append("PUBLIC_SITE_URL must use HTTPS in production")
+        if self.PASSKEYS_ENABLED:
+            if not self.WEBAUTHN_ORIGIN.startswith("https://"):
+                failures.append("WEBAUTHN_ORIGIN must use HTTPS when passkeys are enabled")
+            if self.WEBAUTHN_ORIGIN != self.PUBLIC_SITE_URL:
+                failures.append(
+                    "WEBAUTHN_ORIGIN must equal PUBLIC_SITE_URL when passkeys are enabled"
+                )
         try:
             database_driver = make_url(self.DATABASE_URL).drivername
         except Exception:

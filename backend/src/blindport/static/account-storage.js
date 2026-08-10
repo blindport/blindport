@@ -3,36 +3,8 @@
 
   const STORAGE_KEY = "blindport_accounts_v1";
   const LEGACY_KEY = "blindport_token";
-  const COOKIE_NAME = "blindport_token";
+  const ACTIVE_KEY = "blindport_active_token_v1";
   const MAX_ACCOUNTS = 20;
-
-  function cookieSuffix() {
-    return document.body.dataset.cookieSecure === "true" ? "; secure" : "";
-  }
-
-  function readCookie() {
-    const prefix = `${COOKIE_NAME}=`;
-    const cookie = document.cookie
-      .split(";")
-      .map((part) => part.trim())
-      .find((part) => part.startsWith(prefix));
-    if (!cookie) return "";
-    try {
-      return decodeURIComponent(cookie.slice(prefix.length));
-    } catch (_) {
-      return "";
-    }
-  }
-
-  function writeCookie(token) {
-    document.cookie =
-      `${COOKIE_NAME}=${encodeURIComponent(token)}; path=/; samesite=lax${cookieSuffix()}`;
-  }
-
-  function clearCookie() {
-    document.cookie =
-      `${COOKIE_NAME}=; path=/; max-age=0; samesite=lax${cookieSuffix()}`;
-  }
 
   function normalizeAccount(value) {
     if (!value || typeof value.token !== "string" || !value.token.trim()) return null;
@@ -71,7 +43,7 @@
   }
 
   function save(token, accountId = "") {
-    const normalizedToken = token.trim();
+    const normalizedToken = typeof token === "string" ? token.trim() : "";
     if (!normalizedToken) return false;
     const accounts = readAccounts();
     const existing = accounts.find((account) => account.token === normalizedToken);
@@ -88,22 +60,49 @@
   }
 
   function setActive(token, accountId = "") {
-    const normalizedToken = token.trim();
-    if (!normalizedToken) return false;
-    save(normalizedToken, accountId);
-    writeCookie(normalizedToken);
-    return true;
+    const normalizedToken = typeof token === "string" ? token.trim() : "";
+    if (!normalizedToken || !save(normalizedToken, accountId)) return false;
+    try {
+      localStorage.setItem(ACTIVE_KEY, normalizedToken);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function activeToken() {
+    try {
+      return localStorage.getItem(ACTIVE_KEY) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function clearActive() {
+    try {
+      localStorage.removeItem(ACTIVE_KEY);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function forAccount(accountId) {
+    const normalizedAccountId = typeof accountId === "string" ? accountId.trim() : "";
+    if (!normalizedAccountId) return null;
+    return readAccounts().find((account) => account.accountId === normalizedAccountId) || null;
   }
 
   function forget(token) {
-    const normalizedToken = token.trim();
+    const normalizedToken = typeof token === "string" ? token.trim() : "";
+    if (!normalizedToken) return false;
     const accounts = readAccounts();
     const saved = accounts.some((account) => account.token === normalizedToken);
-    const removed = !saved || writeAccounts(
-      accounts.filter((account) => account.token !== normalizedToken),
-    );
-    if (removed && readCookie() === normalizedToken) clearCookie();
-    return removed;
+    if (saved && !writeAccounts(accounts.filter((account) => account.token !== normalizedToken))) {
+      return false;
+    }
+    if (activeToken() === normalizedToken) clearActive();
+    return true;
   }
 
   async function copyText(text) {
@@ -134,17 +133,18 @@
   function migrateLegacyToken() {
     try {
       const legacyToken = localStorage.getItem(LEGACY_KEY);
-      if (!legacyToken || save(legacyToken)) localStorage.removeItem(LEGACY_KEY);
+      if (!legacyToken || setActive(legacyToken)) localStorage.removeItem(LEGACY_KEY);
     } catch (_) {
-      // Restricted storage still permits cookie-only sessions.
+      // Storage access can be restricted by browser privacy settings.
     }
   }
 
   migrateLegacyToken();
   window.BlindportAccounts = Object.freeze({
-    activeToken: readCookie,
-    clearActive: clearCookie,
+    activeToken,
+    clearActive,
     copyText,
+    forAccount,
     forget,
     list: readAccounts,
     save,

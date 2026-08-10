@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Dashboard | {{ brand_name }}{% endblock %}
 {% block content %}
-<div id="dashboardRoot" class="dashboard content-wide" data-token="{{ token }}" data-account-id="{{ user.public_id }}" data-btc-usd="{{ btc_usd_price }}">
+<div id="dashboardRoot" class="dashboard content-wide" data-account-id="{{ user.public_id }}" data-auth-method="{{ browser_auth_method }}" data-btc-usd="{{ btc_usd_price }}">
   <header class="dashboard-header">
     <div>
       <p class="eyebrow">Control desk</p>
@@ -291,14 +291,27 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
       <details class="sidebar-section account-token-section">
         <summary>Account token</summary>
         <p class="field-help">Required to sign in and connect the agent. Blindport cannot recover it.</p>
-        <div class="account-token-controls">
+        <div id="accountTokenControls" class="account-token-controls">
           <label class="visually-hidden" for="accountToken">Bearer token</label>
           <input id="accountToken" type="password" readonly spellcheck="false" aria-label="Bearer token">
           <div class="button-row"><button type="button" class="button-secondary" id="revealTokenBtn" aria-pressed="false">Reveal</button><button type="button" class="button-secondary" id="copyAccountTokenBtn">Copy</button></div>
           <button type="button" class="button-secondary button-danger" id="forgetAccountBtn">Forget account</button>
           <p id="accountTokenStatus" class="field-help" role="status" aria-live="polite"></p>
         </div>
+        <p id="accountTokenUnavailable" class="field-help" role="status" aria-live="polite" hidden>Token unavailable in this browser. Sign in with a saved token to recover it.</p>
       </details>
+      {% if passkeys_enabled %}
+      <details id="passkeySection" class="sidebar-section" hidden>
+        <summary>Passkeys</summary>
+        <p id="passkeyStatus" class="field-help" role="status" aria-live="polite"></p>
+        <div id="passkeyList" class="passkey-list"></div>
+        <form id="passkeyForm">
+          <label for="passkeyName">Passkey name</label>
+          <input id="passkeyName" type="text" maxlength="100" required>
+          <button id="addPasskeyBtn" type="submit">Add passkey</button>
+        </form>
+      </details>
+      {% endif %}
       {% if nwc_enabled %}<details class="sidebar-section"><summary>Wallet connection</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% else %}Not connected{% endif %}</p>{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
       {% if reminder_email_enabled %}
       <details class="sidebar-section">
@@ -333,5 +346,6 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
   </div>
 </div>
 <script src="/static/account-storage.js"></script>
+{% if passkeys_enabled %}<script src="/static/passkeys.js"></script>{% endif %}
 <script src="/static/dashboard.js"></script>
 {% endblock %}

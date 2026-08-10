@@ -14,6 +14,7 @@ from alembic.migration import MigrationContext
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi import HTTPException
 from sqlalchemy import MetaData, Table, delete, func, inspect, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -46,6 +47,7 @@ from blindport.core.models import (
     SubscriptionStatus,
     Transport,
     User,
+    WebAuthnChallenge,
 )
 from blindport.migrations import database_revisions, downgrade_database, upgrade_database
 from blindport.services.agent_orders import AgentOrderSpec, put_agent_order
@@ -79,6 +81,61 @@ from blindport.services.subscriptions import (
 
 POSTGRES_URL = os.getenv("TEST_POSTGRES_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not POSTGRES_URL, reason="PostgreSQL test URL is not configured")
+
+
+def test_postgres_pending_passkey_challenge_cap_is_serialized(monkeypatch) -> None:
+    assert POSTGRES_URL is not None
+    from blindport.api import passkeys
+
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    monkeypatch.setattr(passkeys.settings, "PASSKEY_MAX_PENDING_CHALLENGES", 1)
+    first_ready = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+
+    with Session(engine) as session:
+        session.exec(delete(WebAuthnChallenge))
+        session.commit()
+
+    def create_challenge(binding_hash: str, *, hold: bool) -> str | int:
+        now = datetime.now(UTC)
+        with Session(engine) as session:
+            if not hold:
+                second_started.set()
+            passkeys._lock_pending_challenge_capacity(session)
+            try:
+                passkeys._enforce_pending_challenge_limit(session, now)
+            except HTTPException as error:
+                session.rollback()
+                return error.status_code
+            session.add(
+                WebAuthnChallenge(
+                    challenge=b"postgres-challenge",
+                    ceremony_type="authentication",
+                    binding_hash=binding_hash,
+                    expires_at=now + timedelta(minutes=5),
+                )
+            )
+            session.flush()
+            if hold:
+                first_ready.set()
+                assert release_first.wait(timeout=10)
+            session.commit()
+            return "created"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(create_challenge, "a" * 64, hold=True)
+        assert first_ready.wait(timeout=10)
+        second = executor.submit(create_challenge, "b" * 64, hold=False)
+        assert second_started.wait(timeout=10)
+        release_first.set()
+        assert first.result(timeout=10) == "created"
+        assert second.result(timeout=10) == 429
+
+    with Session(engine) as session:
+        session.exec(delete(WebAuthnChallenge))
+        session.commit()
 
 
 def test_postgres_concurrent_first_bandwidth_cursors_preserve_all_deltas() -> None:
@@ -523,7 +580,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0022")
+    assert database_revisions(engine) == ("0008", "0023")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -576,7 +633,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -1307,7 +1364,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0022", "0022")
+        assert database_revisions(engine) == ("0023", "0023")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

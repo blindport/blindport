@@ -90,6 +90,12 @@ recipient-encryption settings are installed. Reminder delivery does not require
 customer NWC enablement.
 Keep service announcements disabled until migration `0018` is applied, every old
 writer is drained, and the same SMTP and recipient-encryption settings are installed.
+Apply migration `0023` before deploying browser-session code. Keep
+`PASSKEYS_ENABLED=false` until every old API replica is drained, then verify the Compose
+derived `WEBAUTHN_RP_ID=${API_DOMAIN}` and `WEBAUTHN_ORIGIN=https://${API_DOMAIN}` before
+enabling the flag on all replicas. Every API replica must share PostgreSQL and
+`SECRET_KEY`; rotating that key revokes customer browser sessions and pending ceremonies.
+Passkeys are public-origin only. Bearer tokens remain required for agents and recovery.
 For routed-IP rollout, replace and verify every relay before deploying the new
 backend. The new relay safely falls back to the old v1 desired state with no
 TCP/25 exceptions. An old relay has no routed nftables policy, so never leave one

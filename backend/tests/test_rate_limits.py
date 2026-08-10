@@ -68,15 +68,17 @@ def test_admin_login_is_direct_client_limited(app_client, monkeypatch) -> None:
     assert int(limited.headers["Retry-After"]) >= 1
 
 
-def test_regular_browser_login_has_a_separate_transient_limit(app_client, monkeypatch) -> None:
+def test_regular_browser_login_has_a_separate_transient_limit(
+    app_client, customer_login, monkeypatch
+) -> None:
     from blindport.core.models import RateLimitBucket
     from blindport.db import engine
     from blindport.services import rate_limits
 
     client, _ = app_client
     monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_BROWSER_LOGIN_REQUESTS", 1)
-    rejected = client.post("/login", data={"token": "wrong"})
-    limited = client.post("/login", data={"token": "wrong-again"})
+    rejected = customer_login(client, "wrong")
+    limited = customer_login(client, "wrong-again")
 
     assert rejected.status_code == 401
     assert limited.status_code == 429

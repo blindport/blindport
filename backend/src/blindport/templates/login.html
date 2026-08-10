@@ -1,12 +1,19 @@
 {% extends "base.html" %}
 {% block title %}Sign in | {{ brand_name }}{% endblock %}
 {% block content %}
-<section class="auth-page content-narrow" aria-labelledby="login-title">
+<section id="loginRoot" class="auth-page content-narrow" aria-labelledby="login-title" data-invalid-credentials="{{ 'true' if invalid_credentials else 'false' }}">
   <p class="eyebrow">Account access</p>
-  <h1 id="login-title">Sign in with your token</h1>
-  <p>Your bearer token is the only account credential. This browser can keep more than one account, but Blindport cannot recover their tokens.</p>
+  <h1 id="login-title">Sign in</h1>
+  {% if passkeys_enabled %}
+  <div id="passkeyLogin" class="auth-form" hidden>
+    <button type="button" id="passkeyLoginBtn" disabled>Sign in with passkey</button>
+    <p id="passkeyLoginStatus" class="field-help" role="status" aria-live="polite"></p>
+  </div>
+  {% endif %}
+  <p>Your bearer token remains available for account recovery and agent access.</p>
   <form id="savedAccountForm" method="post" action="/login" class="auth-form saved-account-form" hidden>
     <input type="hidden" id="savedAccountToken" name="token">
+    <input type="hidden" name="login_csrf_token" value="{{ login_csrf_token }}">
     <label for="savedAccountSelect">Saved account</label>
     <select id="savedAccountSelect"></select>
     <div class="form-actions auth-actions">
@@ -17,6 +24,7 @@
   </form>
   <p id="manualLoginLabel" class="auth-divider"><span>Or enter a token</span></p>
   <form id="loginForm" method="post" action="/login" class="auth-form">
+    <input type="hidden" name="login_csrf_token" value="{{ login_csrf_token }}">
     <label for="tokenInput">Bearer token</label>
     <input type="password" id="tokenInput" name="token" autocomplete="current-password" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX..." required>
     <button type="submit">Sign in</button>
@@ -25,5 +33,6 @@
   <p class="muted">No account yet? <a class="text-link" href="/#order">Choose a plan and create an order</a>.</p>
 </section>
 <script src="/static/account-storage.js"></script>
+{% if passkeys_enabled %}<script src="/static/passkeys.js"></script>{% endif %}
 <script src="/static/login.js"></script>
 {% endblock %}

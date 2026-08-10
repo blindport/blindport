@@ -306,6 +306,39 @@ EXPECTED_COLUMNS = {
         "lease_token",
         "lease_until",
     },
+    "passkeycredential": {
+        "id",
+        "user_id",
+        "credential_id",
+        "credential_public_key",
+        "sign_count",
+        "name",
+        "transports_json",
+        "device_type",
+        "backed_up",
+        "created_at",
+        "updated_at",
+        "last_used_at",
+    },
+    "webauthnchallenge": {
+        "id",
+        "challenge",
+        "ceremony_type",
+        "user_id",
+        "binding_hash",
+        "expires_at",
+        "created_at",
+    },
+    "browsersession": {
+        "id",
+        "user_id",
+        "token_hash",
+        "csrf_token_hash",
+        "auth_method",
+        "created_at",
+        "expires_at",
+        "last_seen_at",
+    },
 }
 
 EXPECTED_DATETIME_COLUMNS = {
@@ -380,6 +413,14 @@ EXPECTED_DATETIME_COLUMNS = {
     ("notificationdelivery", "sent_at"),
     ("notificationdelivery", "terminal_at"),
     ("notificationdelivery", "lease_until"),
+    ("passkeycredential", "created_at"),
+    ("passkeycredential", "updated_at"),
+    ("passkeycredential", "last_used_at"),
+    ("webauthnchallenge", "expires_at"),
+    ("webauthnchallenge", "created_at"),
+    ("browsersession", "created_at"),
+    ("browsersession", "expires_at"),
+    ("browsersession", "last_seen_at"),
 }
 
 
@@ -391,7 +432,7 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path)
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
     verify_database_current(engine)
 
     inspector = inspect(engine)
@@ -411,6 +452,9 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
         "relaybandwidthcursor",
         "reminderdelivery",
         "notificationdelivery",
+        "passkeycredential",
+        "webauthnchallenge",
+        "browsersession",
         "subscription",
         "subscriptiondailybandwidth",
         "user",
@@ -475,6 +519,19 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
         "ix_notificationdelivery_subscription_id",
         "ix_notificationdelivery_user_id",
     }
+    assert {index["name"] for index in inspector.get_indexes("passkeycredential")} == {
+        "ix_passkeycredential_credential_id",
+        "ix_passkeycredential_user_id",
+    }
+    assert {index["name"] for index in inspector.get_indexes("webauthnchallenge")} == {
+        "ix_webauthnchallenge_expires_at",
+        "ix_webauthnchallenge_user_id",
+    }
+    assert {index["name"] for index in inspector.get_indexes("browsersession")} == {
+        "ix_browsersession_expires_at",
+        "ix_browsersession_token_hash",
+        "ix_browsersession_user_id",
+    }
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("ratelimitbucket")
     } == {"uq_ratelimitbucket_scope_identifier_window"}
@@ -518,6 +575,13 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
         "subscription",
         "user",
     }
+    assert [fk["referred_table"] for fk in inspector.get_foreign_keys("passkeycredential")] == [
+        "user"
+    ]
+    assert [fk["referred_table"] for fk in inspector.get_foreign_keys("webauthnchallenge")] == [
+        "user"
+    ]
+    assert [fk["referred_table"] for fk in inspector.get_foreign_keys("browsersession")] == ["user"]
     assert {
         constraint["name"] for constraint in inspector.get_unique_constraints("clientcredential")
     } == {"uq_clientcredential_instance_id"}
@@ -619,7 +683,7 @@ def test_0014_upgrades_deployed_0013_subscription_identity(tmp_path) -> None:
 
     original_public_ids = {row.id: str(row.public_id) for row in rows}
     downgrade_database(engine, "0013")
-    assert database_revisions(engine) == ("0013", "0022")
+    assert database_revisions(engine) == ("0013", "0023")
     downgraded = Table("subscription", MetaData(), autoload_with=engine)
     assert "public_id" in downgraded.c
     assert any(
@@ -868,7 +932,7 @@ def test_sqlite_upgrade_from_0003_preserves_tcp_lease_and_adds_transport_identit
 
     with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
         downgrade_database(engine, "0003")
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
     assert any(
         constraint["column_names"] == ["assigned_ip", "assigned_port", "transport"]
         for constraint in inspect(engine).get_unique_constraints("subscription")
@@ -984,12 +1048,12 @@ def test_0016_rejects_downgrade_with_stablecoin_payments(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
         downgrade_database(engine, "0015")
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
 
     with engine.begin() as connection:
         connection.execute(payment.delete().where(payment.c.id == payment_id))
     downgrade_database(engine, "0015")
-    assert database_revisions(engine) == ("0015", "0022")
+    assert database_revisions(engine) == ("0015", "0023")
     assert "markup_sats" not in {
         column["name"] for column in inspect(engine).get_columns("payment")
     }
@@ -1043,7 +1107,7 @@ def test_0017_backfills_current_ip_lease_and_downgrades_cleanly(tmp_path) -> Non
     assert row.smtp_enabled is False
 
     downgrade_database(engine, "0016")
-    assert database_revisions(engine) == ("0016", "0022")
+    assert database_revisions(engine) == ("0016", "0023")
     assert not inspect(engine).has_table("iplease")
     with engine.connect() as connection:
         assert (
@@ -1057,7 +1121,7 @@ def test_0018_service_announcements_downgrade_cleanly_on_sqlite(tmp_path) -> Non
 
     downgrade_database(engine, "0017")
 
-    assert database_revisions(engine) == ("0017", "0022")
+    assert database_revisions(engine) == ("0017", "0023")
     inspector = inspect(engine)
     assert not inspector.has_table("announcement")
     assert not inspector.has_table("announcementdelivery")
@@ -1070,7 +1134,7 @@ def test_0018_service_announcements_downgrade_cleanly_on_sqlite(tmp_path) -> Non
     }.isdisjoint(columns)
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
 
 
 def test_0019_production_observations_downgrade_cleanly_on_sqlite(tmp_path) -> None:
@@ -1079,13 +1143,13 @@ def test_0019_production_observations_downgrade_cleanly_on_sqlite(tmp_path) -> N
 
     downgrade_database(engine, "0018")
 
-    assert database_revisions(engine) == ("0018", "0022")
+    assert database_revisions(engine) == ("0018", "0023")
     inspector = inspect(engine)
     assert not inspector.has_table("relayheartbeat")
     assert not inspector.has_table("dnsobservation")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
 
 
 def test_0020_relay_hostname_scope_defaults_existing_rows_and_downgrades_cleanly(tmp_path) -> None:
@@ -1157,7 +1221,7 @@ def test_0020_relay_hostname_scope_defaults_existing_rows_and_downgrades_cleanly
     }
 
     downgrade_database(engine, "0019")
-    assert database_revisions(engine) == ("0019", "0022")
+    assert database_revisions(engine) == ("0019", "0023")
     assert "relay_hostname_scope" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -1173,7 +1237,7 @@ def test_0021_daily_bandwidth_upgrade_and_downgrade_ordering(tmp_path) -> None:
     assert not inspect(engine).has_table("relaybandwidthcursor")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
     inspector = inspect(engine)
     assert [
         fk["referred_table"] for fk in inspector.get_foreign_keys("subscriptiondailybandwidth")
@@ -1186,7 +1250,7 @@ def test_0021_daily_bandwidth_upgrade_and_downgrade_ordering(tmp_path) -> None:
     ) == ("subscription_id", "day")
 
     downgrade_database(engine, "0020")
-    assert database_revisions(engine) == ("0020", "0022")
+    assert database_revisions(engine) == ("0020", "0023")
     assert not inspect(engine).has_table("subscriptiondailybandwidth")
     assert not inspect(engine).has_table("relaybandwidthcursor")
 
@@ -1197,7 +1261,7 @@ def test_0022_notification_outbox_downgrades_to_0021_on_sqlite(tmp_path) -> None
 
     downgrade_database(engine, "0021")
 
-    assert database_revisions(engine) == ("0021", "0022")
+    assert database_revisions(engine) == ("0021", "0023")
     inspector = inspect(engine)
     assert not inspector.has_table("notificationdelivery")
     assert not inspector.has_table("announcementrecipientsnapshot")
@@ -1209,7 +1273,24 @@ def test_0022_notification_outbox_downgrades_to_0021_on_sqlite(tmp_path) -> None
     )
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
+
+
+def test_0023_passkey_persistence_downgrades_to_0022_on_sqlite(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path)
+    upgrade_database(engine)
+
+    downgrade_database(engine, "0022")
+
+    assert database_revisions(engine) == ("0022", "0023")
+    inspector = inspect(engine)
+    assert not inspector.has_table("passkeycredential")
+    assert not inspector.has_table("webauthnchallenge")
+    assert not inspector.has_table("browsersession")
+    assert inspector.has_table("notificationdelivery")
+
+    upgrade_database(engine)
+    assert database_revisions(engine) == ("0023", "0023")
 
 
 def test_sqlite_0008_backfills_unique_uuid4_public_ids_and_enforces_immutability(
@@ -1372,7 +1453,7 @@ def test_sqlite_0009_backfills_billing_snapshots_and_supports_rolling_inserts(
     assert (rolling_payment.billing_term, rolling_payment.period_days) == ("monthly", 30)
 
     downgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0022")
+    assert database_revisions(engine) == ("0008", "0023")
     assert "billing_term" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -1416,7 +1497,7 @@ def test_sqlite_downgrade_rejects_wireguard_subscriptions(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="cannot downgrade while WireGuard subscriptions exist"):
         downgrade_database(engine, "0004")
 
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
     assert "delivery" in {column["name"] for column in inspect(engine).get_columns("subscription")}
     assert inspect(engine).has_table("wireguardpeer")
 
@@ -1427,10 +1508,10 @@ def test_sqlite_downgrade_and_upgrade_round_trip(tmp_path) -> None:
     downgrade_database(engine, "base")
 
     assert inspect(engine).get_table_names() == ["alembic_version"]
-    assert database_revisions(engine) == (None, "0022")
+    assert database_revisions(engine) == (None, "0023")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
 
 
 def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypatch) -> None:
@@ -1449,7 +1530,7 @@ def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypa
 
     assert not inspect(engine).has_table("injected_migration_failure")
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0022", "0022")
+    assert database_revisions(engine) == ("0023", "0023")
 
 
 def test_all_persisted_datetimes_are_timezone_aware_in_metadata() -> None:
@@ -1485,15 +1566,15 @@ def test_current_cli_can_check_head(tmp_path, monkeypatch, capsys) -> None:
 
     assert cli.main(["upgrade"]) == 0
     assert cli.main(["current", "--check"]) == 0
-    assert "current: 0022\nhead: 0022" in capsys.readouterr().out
+    assert "current: 0023\nhead: 0023" in capsys.readouterr().out
 
     cli.main(["downgrade", "base"])
     capsys.readouterr()
     assert cli.main(["current", "--check"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "current: unversioned\nhead: 0022\n"
+    assert captured.out == "current: unversioned\nhead: 0023\n"
     assert captured.err == (
-        "error: database revision is unversioned, expected migration head 0022\n"
+        "error: database revision is unversioned, expected migration head 0023\n"
     )
     assert "Traceback" not in captured.err
 
@@ -1522,8 +1603,8 @@ def test_current_cli_check_subprocess_exits_without_traceback(tmp_path) -> None:
     )
 
     assert result.returncode == 1
-    assert result.stdout == "current: unversioned\nhead: 0022\n"
+    assert result.stdout == "current: unversioned\nhead: 0023\n"
     assert result.stderr == (
-        "error: database revision is unversioned, expected migration head 0022\n"
+        "error: database revision is unversioned, expected migration head 0023\n"
     )
     assert "Traceback" not in result.stderr

@@ -213,6 +213,30 @@ def test_public_site_url_is_canonicalized_and_requires_https_in_production() -> 
         _production_settings(PUBLIC_SITE_URL="http://blindport.com")
 
 
+def test_http_origins_canonicalize_hostname_and_default_port() -> None:
+    settings = Settings(
+        _env_file=None,
+        PASSKEYS_ENABLED=True,
+        PUBLIC_SITE_URL="https://EXAMPLE.com:443/",
+        WEBAUTHN_RP_ID="example.com",
+        WEBAUTHN_ORIGIN="https://EXAMPLE.com:443",
+    )
+
+    assert settings.PUBLIC_SITE_URL == "https://example.com"
+    assert settings.WEBAUTHN_RP_ID == "example.com"
+    assert settings.WEBAUTHN_ORIGIN == "https://example.com"
+
+
+def test_production_passkeys_require_the_canonical_public_origin() -> None:
+    settings = _production_settings(
+        PASSKEYS_ENABLED=True,
+        WEBAUTHN_RP_ID="blindport.com",
+        WEBAUTHN_ORIGIN="https://BLINDPORT.com:443",
+    )
+
+    assert settings.WEBAUTHN_ORIGIN == settings.PUBLIC_SITE_URL == "https://blindport.com"
+
+
 @pytest.mark.parametrize(
     "hostname",
     [

@@ -7,15 +7,22 @@ import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from itsdangerous import BadData, URLSafeTimedSerializer
 from sqlalchemy import or_, update
 from sqlmodel import Session, select
 
 from ..config import settings
 from ..db import get_session
+from ..services.browser_sessions import (
+    CSRF_COOKIE,
+    SESSION_COOKIE,
+    hash_browser_session_token,
+    resolve_browser_session,
+    valid_csrf,
+)
 from . import tokens
-from .models import User
+from .models import BrowserSession, User
 
 _LAST_SEEN_WRITE_INTERVAL = timedelta(minutes=5)
 _ADMIN_BROWSER_AUDIENCE = "blindport-admin-browser-v1"
@@ -56,15 +63,8 @@ def _touch_last_seen(session: Session, user: User, now: datetime) -> bool:
     return result.rowcount == 1
 
 
-def current_user(
-    authorization: str | None = Header(default=None),
-    session: Session = Depends(get_session),
-) -> User:
-    """Resolve the current user from the Bearer token. Raises 401 otherwise.
-
-    The returned User is detached from the lookup session so callers can safely
-    attach it to their own session via `session.merge(...)`.
-    """
+def _current_bearer_user(authorization: str | None, session: Session) -> User:
+    """Resolve an active non-admin customer from a bearer credential."""
     provided = _extract_token(authorization)
     try:
         normalized = tokens.crockford.normalize(provided)
@@ -89,8 +89,68 @@ def current_user(
     )
     if normalized_last_seen is None or normalized_last_seen <= now - _LAST_SEEN_WRITE_INTERVAL:
         _touch_last_seen(session, user, now)
+    return user
+
+
+def current_bearer_user(
+    authorization: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+) -> User:
+    """Resolve a customer exclusively from an Authorization bearer token."""
+    user = _current_bearer_user(authorization, session)
     session.expunge(user)
     return user
+
+
+def current_user(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+) -> User:
+    """Resolve the current user from bearer or browser-session authentication.
+
+    The returned User is detached from the lookup session so callers can safely
+    attach it to their own session via `session.merge(...)`.
+    """
+    if authorization is not None:
+        user = _current_bearer_user(authorization, session)
+    else:
+        resolved = optional_browser_session(request, session)
+        if resolved is None:
+            _raise_browser_session_auth_error(session, request.cookies.get(SESSION_COOKIE, ""))
+        browser_session, user = resolved
+        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"} and not valid_csrf(
+            browser_session,
+            request.cookies.get(CSRF_COOKIE),
+            request.headers.get("X-CSRF-Token"),
+        ):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "CSRF validation failed")
+    session.expunge(user)
+    return user
+
+
+def optional_browser_session(
+    request: Request, session: Session
+) -> tuple[BrowserSession, User] | None:
+    """Resolve an active browser session for server-rendered pages without raising."""
+    return resolve_browser_session(session, request.cookies.get(SESSION_COOKIE, ""))
+
+
+def _raise_browser_session_auth_error(session: Session, raw_token: str) -> None:
+    """Preserve the established suspended-account response for browser sessions."""
+    try:
+        token_hash = hash_browser_session_token(raw_token) if raw_token else None
+    except ValueError:
+        token_hash = None
+    if token_hash is not None:
+        browser_session = session.exec(
+            select(BrowserSession).where(BrowserSession.token_hash == token_hash)
+        ).first()
+        if browser_session is not None:
+            user = session.get(User, browser_session.user_id)
+            if user is not None and not user.is_admin and user.is_suspended:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "account suspended")
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
 
 
 def current_admin(authorization: str | None = Header(default=None)) -> AdminPrincipal:

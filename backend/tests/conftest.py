@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 
@@ -25,6 +26,26 @@ os.environ.setdefault("RELAY_SHARED_TCP_PORTS", "10000-10001")
 os.environ.setdefault("RELAY_SHARED_UDP_PORTS", "10000-10001")
 os.environ.setdefault("RELAY_POOL_DOMAINS", "relay1.test,relay2.test")
 os.environ.setdefault("RELAY_MANAGED_SUFFIXES", "relay.test")
+
+
+@pytest.fixture
+def customer_login():
+    """Submit the browser login form with its browser-bound CSRF token."""
+
+    def submit(client, token: str, *, follow_redirects: bool = True, origin: str = ""):
+        page = client.get(f"{origin}/dashboard")
+        match = re.search(
+            r'name="login_csrf_token" value="([A-Za-z0-9_-]+)"',
+            page.text,
+        )
+        assert match is not None, page.text
+        return client.post(
+            f"{origin}/login",
+            data={"token": token, "login_csrf_token": match.group(1)},
+            follow_redirects=follow_redirects,
+        )
+
+    return submit
 
 
 @pytest.fixture

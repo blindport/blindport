@@ -134,6 +134,12 @@ x-backend-environment: &backend-environment
   BRAND_NAME: ${BRAND_NAME:-Blindport}
   BRAND_TAGLINE: ${BRAND_TAGLINE:-Public reach for self-hosted services. TLS stays on your box.}
   PUBLIC_SITE_URL: https://${API_DOMAIN}
+  PASSKEYS_ENABLED: ${PASSKEYS_ENABLED:-false}
+  WEBAUTHN_RP_ID: ${API_DOMAIN}
+  WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Blindport}
+  WEBAUTHN_ORIGIN: https://${API_DOMAIN}
+  BROWSER_SESSION_MAX_AGE_SECONDS: ${BROWSER_SESSION_MAX_AGE_SECONDS:-2592000}
+  BROWSER_SESSION_MAX_PER_USER: ${BROWSER_SESSION_MAX_PER_USER:-20}
 
 x-backend-secrets: &backend-secrets
   - source: database-url

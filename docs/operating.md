@@ -137,6 +137,24 @@ is terminal; retryable failures retry before the SMTP boundary, while interrupte
 ambiguous sends are terminal `delivery_ambiguous`. Existing legacy outboxes remain
 drain-only during migration.
 
+Revision `0023` adds passkey credentials, one-time WebAuthn challenges, and opaque
+customer browser sessions. Apply `0023` before deploying this backend. Browser sessions
+store only domain-separated HMAC hashes, require a matching CSRF header for mutations,
+and expire after `BROWSER_SESSION_MAX_AGE_SECONDS`; rotating `SECRET_KEY` revokes every
+customer browser session and pending WebAuthn ceremony. Bearer tokens remain unchanged
+for agents, API clients, and account recovery, but are kept only in browser local storage
+and are never embedded in dashboard HTML or returned by passkey authentication.
+
+Keep `PASSKEYS_ENABLED=false` for the schema and application rollout. Set
+`WEBAUTHN_RP_ID` to the exact public API hostname, `WEBAUTHN_ORIGIN` to the canonical
+HTTPS `PUBLIC_SITE_URL`, and `WEBAUTHN_RP_NAME` to the user-visible service name on every
+API replica. All replicas must share PostgreSQL and `SECRET_KEY`. After old API replicas
+are drained and registration plus discoverable authentication have been tested on the
+public origin, enable passkeys on every replica together. Passkeys remain unavailable on
+the onion origin; token login continues to work there. A downgrade to `0022` deletes all
+passkeys and browser sessions, so rollback should normally restore the matching
+pre-migration database backup instead.
+
 Offline entitlement provisioning is disabled by default. The v2 endpoint returns an
 edge-specific signed artifact and an identical explicit claim object, so agents can build
 plans without decoding the artifact. Enable it only after all relays and agents support the

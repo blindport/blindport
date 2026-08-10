@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..core.auth import current_user
+from ..core.auth import current_bearer_user
 from ..core.models import (
     ClientCredential,
     DeliveryMode,
@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api/v3")
 def offline_client_config(
     response: Response,
     instance_id: str = Query(min_length=36, max_length=36),
-    user: User = Depends(current_user),
+    user: User = Depends(current_bearer_user),
     session: Session = Depends(get_session),
 ) -> OfflineEntitlementV3ConfigResponse:
     """Return v3 framed provisioning with explicit exact or wildcard scopes."""

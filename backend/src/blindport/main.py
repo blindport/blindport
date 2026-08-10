@@ -6,18 +6,19 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from . import __version__
 from .adapters.factory import get_lightning_adapter, get_nwc_adapter
-from .api import internal, pages, v1, v2, v3
+from .api import internal, pages, passkeys, v1, v2, v3
 from .config import settings
 from .core.models import PaymentMethod
 from .db import prepare_database
 from .services.bandwidth import run_bandwidth_cleanup
+from .services.browser_sessions import SESSION_COOKIE
 from .services.btc_usd_price import run_btc_usd_price_refresh
 from .services.dns_supervision import run_dns_supervisor
 from .services.notification_reconciliation import (
@@ -27,6 +28,8 @@ from .services.notification_reconciliation import (
 from .services.payment_reconciliation import reconciler_health, run_payment_reconciler
 from .services.rate_limits import DirectRateLimiter
 from .services.reminder_reconciliation import get_smtp_adapter
+
+PASSKEY_POST_BODY_LIMIT = 256 * 1024
 
 
 @asynccontextmanager
@@ -121,7 +124,18 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
+        if _is_limited_passkey_post(request) and not await _cache_bounded_body(request):
+            response = JSONResponse(
+                status_code=413,
+                content={"detail": "request body too large"},
+            )
+            _set_security_headers(request, response)
+            return response
         response = await call_next(request)
+        _set_security_headers(request, response)
+        return response
+
+    def _set_security_headers(request: Request, response: Response) -> None:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
             "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "
@@ -130,7 +144,16 @@ def create_app() -> FastAPI:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Permissions-Policy"] = (
+            "camera=(), microphone=(), geolocation=(), publickey-credentials-get=(self)"
+        )
+        if (
+            request.url.path.startswith("/api/v1/passkeys")
+            or request.url.path.startswith("/api/v1/browser-session")
+            or (request.url.path.startswith("/api/") and SESSION_COOKIE in request.cookies)
+        ):
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Pragma"] = "no-cache"
         if settings.ENVIRONMENT.value == "production" and not (
             settings.ONION_HOST and request.url.hostname == settings.ONION_HOST
         ):
@@ -144,7 +167,18 @@ def create_app() -> FastAPI:
             if request.url.query:
                 path_and_query += f"?{request.url.query}"
             response.headers["Onion-Location"] = f"http://{settings.ONION_HOST}{path_and_query}"
-        return response
+
+    def _is_limited_passkey_post(request: Request) -> bool:
+        return request.method == "POST" and request.url.path.startswith("/api/v1/passkeys/")
+
+    async def _cache_bounded_body(request: Request) -> bool:
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(chunk) > PASSKEY_POST_BODY_LIMIT - len(body):
+                return False
+            body.extend(chunk)
+        request._body = bytes(body)
+        return True
 
     pkg_dir = Path(__file__).parent
 
@@ -163,6 +197,7 @@ def create_app() -> FastAPI:
     app.include_router(v1.router)
     app.include_router(v2.router)
     app.include_router(v3.router)
+    app.include_router(passkeys.router)
     app.include_router(internal.legacy_router)
     app.include_router(internal.router)
     app.include_router(internal.v2_router)

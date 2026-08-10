@@ -241,6 +241,13 @@ orderForm.addEventListener("submit", async (event) => {
     if (!response.ok) throw new Error(await errorDetail(response));
     const result = await response.json();
     if (existingToken) {
+      await fetch("/api/v1/browser-session/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: existingToken }),
+      }).then(async (sessionResponse) => {
+        if (!sessionResponse.ok) throw new Error(await errorDetail(sessionResponse));
+      });
       status.textContent = "Order created. Opening the dashboard.";
       window.location.assign("/dashboard");
       return;
