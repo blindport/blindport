@@ -10,6 +10,7 @@ venv/
 *.coverage
 htmlcov/
 build/
+backend/uv.lock
 
 # JavaScript / Bun
 node_modules/
