@@ -1405,7 +1405,7 @@ def test_postgres_cancel_and_payment_creation_have_one_winner(
         session.flush()
         subscription = Subscription(
             user_id=user.id,
-            product=ProductType.IP,
+            product=ProductType.PORT,
             monthly_price_sats=1,
             yearly_price_sats=10,
         )
@@ -1633,9 +1633,10 @@ def test_postgres_concurrent_same_method_creation_returns_winning_payment(
         session.flush()
         subscription = Subscription(
             user_id=user.id,
-            product=ProductType.IP,
+            product=ProductType.PORT,
             status=SubscriptionStatus.ACTIVE,
             assigned_ip="198.51.100.248",
+            assigned_port=24800,
             monthly_price_sats=1,
             current_period_start=now,
             current_period_end=now + timedelta(days=5),
