@@ -270,7 +270,6 @@ matching release's `blindport-images.env` asset in production:
 ```sh
 docker pull ghcr.io/blindport/blindportd:latest
 export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
-export BLINDPORT_TOKEN="replace-with-account-token"
 ```
 
 If CI is outside your trust boundary, verify the pinned GPG fingerprint and
@@ -284,13 +283,14 @@ export BLINDPORTD_IMAGE=blindportd:local
 ```
 
 Declare a Relay order before it exists in the dashboard by using the mapping name
-as its stable account-scoped order key:
+as its stable, account-scoped order key:
 
 ```yaml
 services:
   web:
     image: example/web:latest
     labels:
+      tech.blindport.mapping.web.account: "public"
       tech.blindport.mapping.web.product: "relay"
       tech.blindport.mapping.web.domain: "web.relay.blindport.com"
       tech.blindport.mapping.web.billing_term: "monthly"
@@ -302,15 +302,15 @@ services:
     image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
     init: true
     restart: unless-stopped
-    command: ["--docker"]
+    command: ["--docker", "--config=/etc/blindport/accounts.json"]
     group_add:
       - "${DOCKER_GID}"
     environment:
       BLINDPORT_BACKEND_URL: "https://api.blindport.example"
-      BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN}"
-      BLINDPORT_STATE_DIR: /var/lib/blindport
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/accounts.json:/etc/blindport/accounts.json:ro
+      - ./secrets/public-token:/run/secrets/blindport-public:ro
       - blindport-state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
@@ -321,6 +321,23 @@ services:
 
 volumes:
   blindport-state:
+```
+
+The mounted `config/accounts.json` is a version 3 Docker account config. It
+uses an empty `mappings` list because Docker labels provide the mappings:
+
+```json
+{
+  "version": 3,
+  "accounts": [
+    {
+      "name": "public",
+      "token_file": "/run/secrets/blindport-public",
+      "state_dir": "/var/lib/blindport/accounts/public",
+      "mappings": []
+    }
+  ]
+}
 ```
 
 Mapping names contain lowercase ASCII letters, digits, underscores, or hyphens,
@@ -336,6 +353,18 @@ exclusive. Relay mappings may add `.tls_mode` as `automatic` or `passthrough`.
 Automatic mode also requires `.acme_terms_accepted: "true"`; omitted mode keeps
 legacy Docker mappings in passthrough mode. All provisioned relay-edge workers
 for one hostname share one in-process certificate and HTTP-01 challenge manager.
+
+For example, a declarative Port order selects its account and stable mapping key
+the same way:
+
+```yaml
+labels:
+  tech.blindport.mapping.game.account: "public"
+  tech.blindport.mapping.game.product: "port"
+  tech.blindport.mapping.game.transport: "udp"
+  tech.blindport.mapping.game.billing_term: "yearly"
+  tech.blindport.mapping.game.upstream: "game:27015"
+```
 
 With a version 3 config, every Docker mapping must also select one configured
 local account name. Arbitrary account UUIDs and names absent from the config are
@@ -365,6 +394,13 @@ names can proceed immediately; customer-owned names wait for DNS verification.
 Without NWC, the order appears in the dashboard pending manual payment. Automatic
 renewal remains a separate dashboard setting.
 
+`payment_pending` means an NWC-created initial payment is awaiting settlement or
+reconciliation, not that the endpoint is active. Without NWC, the order is
+`awaiting_payment` until the dashboard payment settles. A customer-owned Relay
+domain is `awaiting_domain` until the customer publishes the exact DNS-only CNAME
+shown in the dashboard and verification succeeds; no payment is created or
+attempted first.
+
 In version 3, the pending subscription appears only in the dashboard belonging
 to the selected account token. Existing NWC auto-payment settings for that
 account are reused. Two local account names configured with the same bearer token
@@ -373,10 +409,10 @@ same order key are rejected by the backend. Product declarations and local order
 caches otherwise remain isolated by configured account name.
 
 Successful snapshots add, update, and remove tunnel workers without restarting
-the daemon. Removing a label stops its local forwarding but does not cancel or
-refund the subscription. Transient Docker, label, order, or provisioning errors
-retain the last valid workers and are retried. Static and Docker mappings can be
-combined; duplicate active subscription IDs remain invalid.
+the daemon. Removing a label stops its local forwarding but does not cancel,
+refund, or otherwise end the subscription. Transient Docker, label, order, or
+provisioning errors retain the last valid workers and are retried. Static and
+Docker mappings can be combined; duplicate active subscription IDs remain invalid.
 
 One agent can serve containers from several Compose projects only when their
 upstream names are reachable from the agent, typically through a shared external
@@ -394,10 +430,11 @@ The published image runs as UID/GID `10001`. Set `DOCKER_GID` to the numeric
 group owner of the host socket so Compose grants only the required supplementary
 group. A named volume inherits the image's private state ownership on first use.
 
-Docker environment values are visible to users with Docker inspection access
-and in rendered Compose output. Those users already control the container and
-its mounted Docker socket. Secret-manager and explicit owner-only token files
-remain supported for deployments with a different threat model.
+The v3 Docker examples mount each account's owner-only `token_file`; they never
+put bearer tokens in Compose environment or rendered output. Make each mounted
+token readable only by the container's effective UID and preserve its distinct
+private state directory. Docker socket access remains root-equivalent even when
+the socket is mounted read-only.
 
 ## Routed WireGuard mode
 
@@ -439,6 +476,58 @@ key causes the next startup to enroll a replacement at the next generation;
 losing `credential.json` still requires the operator reset described above.
 `BLINDPORT_INSECURE_SKIP_TLS` is incompatible with routed mode because enrollment
 requires that identity.
+
+### Containerized routed WireGuard
+
+Run routed WireGuard as a separate agent process from Docker discovery. It needs
+an active annual WireGuard Blindport IP subscription. It cannot use Docker labels
+because routed delivery has no upstream mapping. The container must use the host
+network namespace so `bpwg0`, source rules, and routes apply to the host:
+
+```yaml
+services:
+  blindport-wireguard:
+    image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    user: "0:0"
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    command: ["--wireguard", "--token-file=/run/blindport/token", "--state-dir=/var/lib/blindport"]
+    environment:
+      BLINDPORT_BACKEND_URL: "https://blindport.com"
+    volumes:
+      - ./secrets/wireguard-token:/run/blindport/token:ro
+      - blindport-wireguard-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+volumes:
+  blindport-wireguard-state:
+```
+
+Create `secrets/wireguard-token` as a root-owned regular file with mode `0600`.
+The named state volume is initialized by the root process and remains root-owned;
+it contains the client identity and WireGuard private key. `NET_ADMIN` is the only
+additional container capability required. Do not give this process the Docker
+socket or combine it with `--docker`.
+
+## Availability and authorization boundaries
+
+Relay and Port use two provider edges for resilience of new connections. The
+agent opens independent workers to the provisioned edges, but established
+connections do not migrate. DNS can advertise multiple edge addresses, yet it is
+not health steering, cached failed answers can remain in use, and this model makes
+no availability guarantee. Routed WireGuard IP is provider-specific: an outage of
+that provider takes the routed IP down. The hosted website and control plane are
+not an HA service.
+
+Offline entitlement grace can retain a previously issued paid framed
+authorization during a typed control-plane reachability failure. It is not an
+extension of the paid term. An online denial or malformed authoritative response
+wins and removes the worker; routed WireGuard never uses offline entitlements.
 
 ## Current limitations
 

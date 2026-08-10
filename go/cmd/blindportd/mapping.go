@@ -118,6 +118,10 @@ func loadStaticConfigDocument(path string) (staticConfigDocument, error) {
 	return loadStaticConfigDocumentWithPermissions(path, false)
 }
 
+func loadOwnerOnlyStaticConfigDocument(path string) (staticConfigDocument, error) {
+	return loadStaticConfigDocumentWithPermissions(path, true)
+}
+
 func loadStaticConfigDocumentWithPermissions(path string, ownerOnly bool) (staticConfigDocument, error) {
 	f, err := openStaticConfig(path)
 	if err != nil {

@@ -210,6 +210,9 @@ func TestSOCKS5ForwardsDomainsAndReusesRandomIsolationCredentials(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if outbound.relayDNSResolver != nil {
+		t.Fatal("SOCKS5 transport enabled local relay DNS resolution")
+	}
 	for _, target := range []string{"bootstrap-example.onion:80", "relay-example.onion:5443"} {
 		conn, err := outbound.relayDialer.DialContext(context.Background(), "tcp", target)
 		if err != nil {
@@ -415,6 +418,9 @@ func TestDirectModeDialsWithoutSOCKS5(t *testing.T) {
 	outbound, err := newOutboundTransport("")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if outbound.relayDNSResolver == nil {
+		t.Fatal("direct transport did not enable relay DNS monitoring")
 	}
 	defer outbound.httpClient.CloseIdleConnections()
 	if _, err := fetchConfigWithClient(context.Background(), outbound.httpClient, server.URL, "token"); err != nil {

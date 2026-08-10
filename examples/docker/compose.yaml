@@ -7,6 +7,7 @@ services:
     volumes:
       - ./site/index.html:/usr/share/nginx/html/index.html:ro
     labels:
+      tech.blindport.mapping.site.account: "public"
       tech.blindport.mapping.site.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID in .env}"
       tech.blindport.mapping.site.upstream: "site:80"
       tech.blindport.mapping.site.tls_mode: "automatic"
@@ -19,16 +20,16 @@ services:
     depends_on:
       site:
         condition: service_started
-    command: ["--docker"]
+    command: ["--docker", "--config=/etc/blindport/accounts.json"]
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID in .env}"
     environment:
       BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
-      BLINDPORT_TOKEN: "${BLINDPORT_TOKEN:?set BLINDPORT_TOKEN in .env}"
-      BLINDPORT_STATE_DIR: /var/lib/blindport
       BLINDPORT_ACME_EMAIL: "${ACME_EMAIL:-}"
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ./config/accounts.json:/etc/blindport/accounts.json:ro
+      - ./secrets/public-token:/run/secrets/blindport-public:ro
       - blindport-state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]

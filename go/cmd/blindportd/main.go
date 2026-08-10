@@ -362,7 +362,7 @@ func runFramedProvisioner(ctx context.Context, logger *slog.Logger, token string
 		if credentials != nil {
 			proof = supervisor.entitlements.Get
 		}
-		runWorkerWithEntitlement(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof)
+		runWorkerWithEntitlementAndDNS(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof, outbound.relayDNSResolver, relayDNSRefreshInterval)
 	})
 	defer supervisor.Shutdown()
 
@@ -430,7 +430,7 @@ func runDockerFramed(ctx context.Context, logger *slog.Logger, docker dockerCont
 		if credentials != nil {
 			proof = supervisor.entitlements.Get
 		}
-		runWorkerWithEntitlement(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof)
+		runWorkerWithEntitlementAndDNS(workerCtx, logger, plan, token, outbound.relayDialer, tlsConfig, automatic, proof, outbound.relayDNSResolver, relayDNSRefreshInterval)
 	})
 	defer supervisor.Shutdown()
 	var reconciler planReconciler = automaticPlanReconciler{registry: registry, workers: supervisor}

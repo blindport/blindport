@@ -22,8 +22,9 @@ type contextDialer interface {
 }
 
 type outboundTransport struct {
-	httpClient  *http.Client
-	relayDialer contextDialer
+	httpClient       *http.Client
+	relayDialer      contextDialer
+	relayDNSResolver hostnameResolver
 }
 
 type contextErrorDialer struct {
@@ -60,6 +61,7 @@ func validateOutboundMode(wireguard bool, socks5Address string) error {
 func newOutboundTransport(socks5Address string) (*outboundTransport, error) {
 	direct := &net.Dialer{Timeout: outboundDialTimeout, KeepAlive: 30 * time.Second}
 	dialer := contextDialer(direct)
+	resolver := hostnameResolver(systemHostnameResolver{resolver: net.DefaultResolver})
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = direct.DialContext
 
@@ -80,6 +82,7 @@ func newOutboundTransport(socks5Address string) (*outboundTransport, error) {
 			return nil, errors.New("SOCKS5 dialer does not support contexts")
 		}
 		dialer = contextErrorDialer{dialer: contextProxyDialer}
+		resolver = nil
 		transport.Proxy = nil
 		transport.DialContext = dialer.DialContext
 	}
@@ -92,7 +95,8 @@ func newOutboundTransport(socks5Address string) (*outboundTransport, error) {
 				return http.ErrUseLastResponse
 			},
 		},
-		relayDialer: dialer,
+		relayDialer:      dialer,
+		relayDNSResolver: resolver,
 	}, nil
 }
 

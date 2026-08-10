@@ -11,8 +11,9 @@ Docker Engine with Compose, and outbound Internet access.
 ## 1. Prepare the account
 
 Create and pay for a Relay endpoint at [blindport.com](https://blindport.com).
-Store the account token, then copy the active subscription UUID from **Endpoint
-details** in the dashboard. The account and subscription must match.
+Store the account token in a local owner-only file, then copy the active
+subscription UUID from **Endpoint details** in the dashboard. The account and
+subscription must match.
 
 ## 2. Configure
 
@@ -23,11 +24,26 @@ cp .env.example .env
 chmod 600 .env
 ```
 
+Create the v3 account token file for the image's unprivileged UID. Do not put
+the bearer token in `.env`, Compose environment, or rendered Compose output:
+
+```sh
+sudo chown 10001:10001 config/accounts.json
+chmod 0600 config/accounts.json
+sudo install -d -o 10001 -g 10001 -m 0700 secrets
+sudo install -o 10001 -g 10001 -m 0600 /dev/null secrets/public-token
+sudoedit secrets/public-token
+```
+
+`config/accounts.json` selects that mounted file and keeps this account's
+identity and ACME state in `/var/lib/blindport/accounts/public`. The config and
+token files must both be owned by the image's UID `10001`; keep that ownership
+after editing the config.
+
 Set:
 
 - `DOMAIN` to the active Relay hostname, for the verification command below.
 - `BLINDPORT_SUBSCRIPTION_ID` to the active Relay subscription UUID.
-- `BLINDPORT_TOKEN` to that account's bearer token.
 - `DOCKER_GID` to `stat -c '%g' /var/run/docker.sock`.
 
 Read the current [Let's Encrypt agreements](https://letsencrypt.org/repository/).
@@ -57,6 +73,27 @@ and certificate private keys. Back it up as a secret and reuse it across image
 updates. Starting another empty state volume with the same account can require an
 operator identity reset and can consume Let's Encrypt issuance limits.
 
+`site` selects the configured `public` account with
+`tech.blindport.mapping.site.account`. Version 3 requires this `.account` label
+on every Docker mapping, including existing subscriptions. To add an account,
+mount another owner-only token file and add an account with a distinct state path
+to `config/accounts.json`:
+
+```json
+{
+  "name": "private",
+  "token_file": "/run/secrets/blindport-private",
+  "state_dir": "/var/lib/blindport/accounts/private",
+  "mappings": []
+}
+```
+
+Add `./secrets/private-token:/run/secrets/blindport-private:ro` to the agent
+volumes after creating it with the same `10001:10001`, `0600` ownership and mode.
+Mappings for that account use labels such as
+`tech.blindport.mapping.api.account: "private"`. Each account needs its own
+non-overlapping state directory and token file.
+
 Access to the Docker socket is effectively root-equivalent even with a read-only
 mount. Prefer a narrowly authorized socket proxy where practical. Removing the
 container or labels stops local forwarding but does not cancel the paid service.
@@ -66,3 +103,66 @@ To stop the example without deleting private state:
 ```sh
 docker compose down
 ```
+
+## Declarative orders
+
+Replace `.subscription` with `.product` to create an idempotent Relay or Port
+order. The mapping name is the stable account-scoped order key, and every v3
+mapping selects `.account`:
+
+```yaml
+tech.blindport.mapping.web.account: "public"
+tech.blindport.mapping.web.product: "relay"
+tech.blindport.mapping.web.domain: "web.relay.blindport.com"
+tech.blindport.mapping.web.billing_term: "monthly"
+tech.blindport.mapping.web.upstream: "site:80"
+tech.blindport.mapping.web.tls_mode: "automatic"
+tech.blindport.mapping.web.acme_terms_accepted: "true"
+
+tech.blindport.mapping.game.account: "public"
+tech.blindport.mapping.game.product: "port"
+tech.blindport.mapping.game.transport: "udp"
+tech.blindport.mapping.game.billing_term: "yearly"
+tech.blindport.mapping.game.upstream: "game:27015"
+```
+
+With NWC configured, `payment_pending` means the initial payment is settling or
+being reconciled. Without NWC, `awaiting_payment` requires payment in the
+dashboard. Customer-owned Relay domains remain `awaiting_domain` until their
+exact DNS-only CNAME verifies. Removing labels stops forwarding but does not
+cancel, refund, or end a paid subscription. Docker labels cannot order routed IP.
+
+## Containerized routed WireGuard
+
+Run an annual WireGuard IP subscription in a separate agent process from Docker
+discovery. It uses the host network namespace so `bpwg0` and its source policy
+rules apply to the host:
+
+```yaml
+services:
+  blindport-wireguard:
+    image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    user: "0:0"
+    network_mode: host
+    init: true
+    restart: unless-stopped
+    command: ["--wireguard", "--token-file=/run/blindport/token", "--state-dir=/var/lib/blindport"]
+    environment:
+      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
+    volumes:
+      - ./secrets/wireguard-token:/run/blindport/token:ro
+      - blindport-wireguard-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+volumes:
+  blindport-wireguard-state:
+```
+
+Create `secrets/wireguard-token` as a root-owned regular file with mode `0600`.
+Preserve the root-owned state volume as a secret. `NET_ADMIN` is the only added
+capability required. Do not give this process the Docker socket or combine it
+with `--docker`.

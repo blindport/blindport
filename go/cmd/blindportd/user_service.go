@@ -53,26 +53,34 @@ func installUserService(options userServiceOptions) error {
 	if err != nil {
 		return err
 	}
-	tokenPath, err := canonicalAbsolutePath(options.tokenPath, "token file")
+	config, err := loadOwnerOnlyStaticConfigDocument(configPath)
 	if err != nil {
-		return err
-	}
-	stateDir, err := canonicalAbsolutePath(options.stateDir, "state directory")
-	if err != nil {
-		return err
-	}
-
-	if err := ensureServiceToken(tokenPath, options.input, options.output); err != nil {
-		return err
-	}
-	if _, err := loadOwnerOnlyStaticConfig(configPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("static config not found at %s; create an owner-only versioned config first", configPath)
 		}
 		return fmt.Errorf("validate static config: %w", err)
 	}
-	if err := prepareCredentialStateDir(stateDir); err != nil {
-		return fmt.Errorf("validate identity state directory: %w", err)
+
+	tokenPath, stateDir := "", ""
+	if config.IsMultiAccount() {
+		if err := prepareUserServiceAccounts(config.Accounts, options.input, options.output); err != nil {
+			return err
+		}
+	} else {
+		tokenPath, err = canonicalAbsolutePath(options.tokenPath, "token file")
+		if err != nil {
+			return err
+		}
+		stateDir, err = canonicalAbsolutePath(options.stateDir, "state directory")
+		if err != nil {
+			return err
+		}
+		if err := ensureServiceToken(tokenPath, options.input, options.output); err != nil {
+			return err
+		}
+		if err := prepareCredentialStateDir(stateDir); err != nil {
+			return fmt.Errorf("validate identity state directory: %w", err)
+		}
 	}
 
 	executable := options.executable
@@ -167,6 +175,46 @@ func ensureServiceToken(path string, input *os.File, output io.Writer) error {
 	return nil
 }
 
+func prepareUserServiceAccounts(accounts []staticAccount, input *os.File, output io.Writer) error {
+	for _, account := range accounts {
+		tokenPath, err := canonicalAbsolutePath(account.TokenFile, "account token file")
+		if err != nil {
+			return fmt.Errorf("prepare account %q: %w", account.Name, err)
+		}
+		if err := ensureServiceAccountToken(tokenPath, input, output); err != nil {
+			return fmt.Errorf("prepare account %q token: %w", account.Name, err)
+		}
+		stateDir, err := canonicalAbsolutePath(account.StateDir, "account state directory")
+		if err != nil {
+			return fmt.Errorf("prepare account %q: %w", account.Name, err)
+		}
+		if err := prepareCredentialStateDir(stateDir); err != nil {
+			return fmt.Errorf("prepare account %q state directory: %w", account.Name, err)
+		}
+	}
+	return nil
+}
+
+func ensureServiceAccountToken(path string, input *os.File, output io.Writer) error {
+	if _, err := loadStaticAccountToken(path); err == nil {
+		return nil
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		return errors.New("account token file is invalid or unsafe")
+	}
+	token, err := promptAndStoreToken(path, input, output)
+	if err != nil {
+		return fmt.Errorf("store account token: %w", err)
+	}
+	if token == "" {
+		return fmt.Errorf("token file not found at %s; rerun -install-user-service from an interactive terminal", path)
+	}
+	if _, err := loadStaticAccountToken(path); err != nil {
+		return errors.New("stored account token file is invalid or unsafe")
+	}
+	return nil
+}
+
 func canonicalAbsolutePath(path, name string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("%s path is unavailable", name)
@@ -238,7 +286,13 @@ func flagArgument(name, value string) string {
 }
 
 func renderUserService(executable, configPath, tokenPath, stateDir string, runtimeArguments ...string) (string, error) {
-	arguments := []string{executable, "-config=" + configPath, "-token-file=" + tokenPath, "-state-dir=" + stateDir}
+	arguments := []string{executable, "-config=" + configPath}
+	if tokenPath != "" {
+		arguments = append(arguments, "-token-file="+tokenPath)
+	}
+	if stateDir != "" {
+		arguments = append(arguments, "-state-dir="+stateDir)
+	}
 	arguments = append(arguments, runtimeArguments...)
 	quoted := make([]string, len(arguments))
 	for i, argument := range arguments {

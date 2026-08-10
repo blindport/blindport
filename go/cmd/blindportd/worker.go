@@ -173,17 +173,43 @@ func runWorker(ctx context.Context, log *slog.Logger, plan workerPlan, token str
 // runWorkerWithEntitlement reads a proof immediately before each HELLO. This
 // preserves the established worker while a refreshed entitlement is installed.
 func runWorkerWithEntitlement(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config, automatic *acmeDomainManager, entitlement func(workerKey) (string, bool)) {
+	runWorkerWithEntitlementAndDNS(ctx, log, plan, token, dialer, tlsConfig, automatic, entitlement, nil, 0)
+}
+
+func runWorkerWithEntitlementAndDNS(ctx context.Context, log *slog.Logger, plan workerPlan, token string, dialer contextDialer, tlsConfig *tls.Config, automatic *acmeDomainManager, entitlement func(workerKey) (string, bool), resolver hostnameResolver, dnsInterval time.Duration) {
 	if plan.TLSMode == tlsModeAutomatic && automatic == nil {
 		log.Error("automatic TLS manager unavailable", "account", plan.AccountName, "subscription_id", plan.SubscriptionID, "relay", plan.RelayAddr)
 		return
 	}
+	dnsChanged := watchRelayDNS(ctx, plan.RelayAddr, resolver, dnsInterval)
 	backoff := time.Second
 	for ctx.Err() == nil {
 		proof := ""
 		if entitlement != nil {
 			proof, _ = entitlement(workerKey{accountName: plan.AccountName, subscriptionID: plan.SubscriptionID, relayAddr: plan.RelayAddr})
 		}
-		sessionDuration, err := runOnceManagedWithEntitlement(ctx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic, proof)
+		sessionCtx, cancelSession := context.WithCancel(ctx)
+		sessionDone := make(chan struct{})
+		watchDone := make(chan struct{})
+		dnsRestart := false
+		if dnsChanged == nil {
+			close(watchDone)
+		} else {
+			go func() {
+				defer close(watchDone)
+				select {
+				case <-ctx.Done():
+				case <-sessionDone:
+				case <-dnsChanged:
+					dnsRestart = true
+					cancelSession()
+				}
+			}()
+		}
+		sessionDuration, err := runOnceManagedWithEntitlement(sessionCtx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic, proof)
+		close(sessionDone)
+		cancelSession()
+		<-watchDone
 		if ctx.Err() != nil {
 			return
 		}
@@ -192,6 +218,10 @@ func runWorkerWithEntitlement(ctx context.Context, log *slog.Logger, plan worker
 		}
 		if sessionDuration >= stableSessionDuration {
 			backoff = time.Second
+		}
+		if dnsRestart {
+			dnsChanged = watchRelayDNS(ctx, plan.RelayAddr, resolver, dnsInterval)
+			continue
 		}
 		delay := jitter(backoff)
 		timer := time.NewTimer(delay)
