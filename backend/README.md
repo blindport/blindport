@@ -83,7 +83,10 @@ receive each recipient and generated message in plaintext.
 
 Direct-client limits use FastAPI's trusted `Request.client` value and never parse forwarded headers.
 The production ASGI server and any serving proxy must therefore be configured with an explicit
-trusted-proxy policy. Source-derived identifiers are HMACed in process-local memory and expire at
+trusted-proxy policy. The shipped image trusts forwarded headers only from loopback. Keep the
+backend private, and require the immediate proxy to replace client-supplied forwarded headers.
+Alternate proxy topologies must replace the image policy with only the exact proxy addresses,
+never `*`. Source-derived identifiers are HMACed in process-local memory and expire at
 the end of the fixed window using an ephemeral per-process key; they are never inserted into
 PostgreSQL. Durable rate-limit rows use account-derived identifiers only. Both stores are capped by
 `RATE_LIMIT_MAX_BUCKETS`.

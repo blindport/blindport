@@ -11,6 +11,8 @@ from sqlmodel import Session
 import blindport
 from blindport.core.models import DeliveryMode, ProductType, Transport
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
@@ -36,6 +38,14 @@ def _configure_wireguard(monkeypatch) -> None:
         monkeypatch.setattr(module.settings, "WIREGUARD_PUBLIC_IPS", "198.51.100.20")
         monkeypatch.setattr(module.settings, "WIREGUARD_RELAY_PUBLIC_KEY", "A" * 44)
         monkeypatch.setattr(module.settings, "WIREGUARD_ENDPOINT", "relay:51820")
+
+
+def test_backend_image_never_trusts_forwarded_headers_from_arbitrary_peers() -> None:
+    dockerfile = (ROOT / "docker" / "backend.Dockerfile").read_text(encoding="utf-8")
+
+    assert '"--proxy-headers"' in dockerfile
+    assert '"--forwarded-allow-ips=127.0.0.1,::1"' in dockerfile
+    assert "--forwarded-allow-ips=*" not in dockerfile
 
 
 def test_catalog_reports_transport_capacity_and_conservative_holds(app_client) -> None:

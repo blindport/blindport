@@ -580,8 +580,11 @@ trust the ASGI client address and HMAC it with a per-process key. Buckets stop
 enforcing at the end of the window and are removed on a subsequent direct-limit
 check; they are never written to the database.
 Expose the backend only through a proxy whose forwarded-address handling is
-explicitly trusted. The application never parses arbitrary forwarded headers
-itself. Payment creation, domain verification, and client certificate enrollment
+explicitly trusted. The image trusts forwarded headers from loopback only. The
+immediate proxy must replace client-supplied forwarded headers; alternate topologies
+must trust only exact proxy addresses and must never use wildcard trust. The
+application never parses arbitrary forwarded headers itself. Payment creation,
+domain verification, and client certificate enrollment
 use durable account-derived limits. Per-account subscription and open payment
 limits remain authoritative across source addresses.
 

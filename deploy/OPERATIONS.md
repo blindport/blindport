@@ -312,6 +312,11 @@ and `PUBLIC_IP:443`; the relay owns the configured TCP/UDP Blindport Port range 
 admin `:9090` bind loopback only. Firewall all loopback-only surfaces from the public
 interface.
 
+Keep backend port `8000` bound to loopback. The backend image accepts forwarded
+addresses only from loopback, and Caddy must replace client-supplied forwarded
+headers before proxying. Never use wildcard Uvicorn forwarded-header trust. Any
+alternate proxy topology must explicitly trust only its immediate proxy addresses.
+
 HAProxy runs as UID/GID 99. Because host networking does not receive Docker's usual
 low-port network-namespace setting, set `net.ipv4.ip_unprivileged_port_start=0` on this
 single-purpose host so the non-root proxy can bind `:80` and `:443`. Do not use this

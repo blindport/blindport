@@ -96,6 +96,12 @@ network policy are configured and tested.
      -f deploy/production/compose.yaml config --quiet
    ```
 
+   Do not publish backend port `8000`. The image honors forwarded addresses only
+   from loopback for the checked-in single-host Caddy path. An alternate proxy
+   topology must constrain Uvicorn's `--forwarded-allow-ips` to the exact immediate
+   proxy addresses and must replace, not append, client-supplied forwarded headers.
+   Never configure wildcard forwarded-header trust.
+
 7. For CI-built images, pull the digest-pinned references before starting the
    selected stack. Skip this command when using the locally built image tags:
 
