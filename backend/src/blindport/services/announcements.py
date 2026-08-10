@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, update
+from sqlalchemy import func, insert, literal, union, update
 from sqlmodel import Session, select
 
 from .. import config
@@ -20,7 +20,11 @@ from ..core.models import (
     Announcement,
     AnnouncementDelivery,
     AnnouncementDeliveryState,
+    AnnouncementRecipientSnapshot,
     AnnouncementState,
+    NotificationCategory,
+    NotificationDelivery,
+    NotificationDeliveryState,
     User,
 )
 from .reminders import ReminderEmailError, normalize_reminder_email
@@ -181,31 +185,34 @@ def queue_announcement(
     if announcement.state != AnnouncementState.DRAFT:
         raise AnnouncementError("announcement cannot be queued")
     queued_at = _aware(now or datetime.now(UTC))
-    recipients = session.exec(
-        select(User)
-        .where(
-            User.has_service_email,
-            User.service_email_generation >= 1,
-            User.is_admin.is_(False),  # type: ignore[union-attr]
-            User.is_suspended.is_(False),  # type: ignore[union-attr]
+    assert announcement.id is not None
+    eligible_recipients = select(
+        literal(announcement.id), User.id, User.service_email_generation
+    ).where(
+        User.has_service_email,
+        User.service_email_generation >= 1,
+        User.is_admin.is_(False),  # type: ignore[union-attr]
+        User.is_suspended.is_(False),  # type: ignore[union-attr]
+    )
+    session.exec(
+        insert(AnnouncementRecipientSnapshot).from_select(
+            ["announcement_id", "user_id", "recipient_generation"], eligible_recipients
         )
-        .order_by(User.id)
-        .with_for_update()
-    ).all()
+    )
+    recipient_count, recipient_max_user_id = session.exec(
+        select(
+            func.count(),
+            func.max(AnnouncementRecipientSnapshot.user_id),
+        ).where(AnnouncementRecipientSnapshot.announcement_id == announcement.id)
+    ).one()
     announcement.state = AnnouncementState.QUEUED
     announcement.queued_at = queued_at
-    announcement.recipient_count = len(recipients)
+    announcement.recipient_count = int(recipient_count or 0)
+    announcement.recipient_cursor = 0
+    announcement.recipient_max_user_id = recipient_max_user_id
+    announcement.expansion_complete = announcement.recipient_count == 0
     session.add(announcement)
-    session.flush()
-    session.add_all(
-        AnnouncementDelivery(
-            announcement_id=announcement.id or 0,
-            user_id=user.id or 0,
-            recipient_generation=user.service_email_generation,
-        )
-        for user in recipients
-    )
-    if not recipients:
+    if announcement.expansion_complete:
         announcement.state = AnnouncementState.COMPLETED
         announcement.completed_at = queued_at
         session.add(announcement)
@@ -217,6 +224,8 @@ def queue_announcement(
 def cancel_announcement(
     session: Session, announcement_id: int, *, now: datetime | None = None
 ) -> Announcement:
+    from .notifications import cancel_pending_announcement_notifications
+
     announcement = session.exec(
         select(Announcement)
         .where(Announcement.id == announcement_id)
@@ -247,6 +256,7 @@ def cancel_announcement(
             lease_until=None,
         )
     )
+    cancel_pending_announcement_notifications(session, announcement.id or 0, now=cancelled_at)
     session.commit()
     session.refresh(announcement)
     return announcement
@@ -255,6 +265,8 @@ def cancel_announcement(
 def cancel_pending_announcements(
     session: Session, user: User, *, now: datetime | None = None
 ) -> None:
+    from .notifications import cancel_pending_notifications
+
     if user.id is None:
         return
     cancelled_at = _aware(now or datetime.now(UTC))
@@ -273,6 +285,13 @@ def cancel_pending_announcements(
             lease_token=None,
             lease_until=None,
         )
+    )
+    cancel_pending_notifications(
+        session,
+        user,
+        NotificationCategory.SERVICE,
+        code="announcement_preference_changed",
+        now=cancelled_at,
     )
 
 
@@ -404,13 +423,68 @@ def mark_announcement_completed_if_done(session: Session, announcement_id: int) 
     announcement = session.get(Announcement, announcement_id)
     if announcement is None or announcement.state != AnnouncementState.QUEUED:
         return
+    if not announcement.expansion_complete:
+        return
+    snapshot_exists = (
+        session.exec(
+            select(AnnouncementRecipientSnapshot.announcement_id)
+            .where(AnnouncementRecipientSnapshot.announcement_id == announcement_id)
+            .limit(1)
+        ).first()
+        is not None
+    )
+    if snapshot_exists:
+        snapshot_count = int(
+            session.exec(
+                select(func.count()).where(
+                    AnnouncementRecipientSnapshot.announcement_id == announcement_id
+                )
+            ).one()
+            or 0
+        )
+        delivery_users = union(
+            select(AnnouncementDelivery.user_id).where(
+                AnnouncementDelivery.announcement_id == announcement_id
+            ),
+            select(NotificationDelivery.user_id).where(
+                NotificationDelivery.announcement_id == announcement_id
+            ),
+        ).subquery()
+        accounted_count = int(
+            session.exec(
+                select(func.count())
+                .select_from(AnnouncementRecipientSnapshot)
+                .join(
+                    delivery_users,
+                    AnnouncementRecipientSnapshot.user_id == delivery_users.c.user_id,
+                )
+                .where(AnnouncementRecipientSnapshot.announcement_id == announcement_id)
+            ).one()
+            or 0
+        )
+        if snapshot_count != announcement.recipient_count or accounted_count != snapshot_count:
+            return
     unfinished = session.exec(
         select(AnnouncementDelivery.id).where(
             AnnouncementDelivery.announcement_id == announcement_id,
             AnnouncementDelivery.state.not_in(_TERMINAL_DELIVERY_STATES),  # type: ignore[union-attr]
         )
     ).first()
-    if unfinished is None:
+    unified_unfinished = session.exec(
+        select(NotificationDelivery.id).where(
+            NotificationDelivery.announcement_id == announcement_id,
+            NotificationDelivery.state.not_in(
+                (
+                    NotificationDeliveryState.SENT,
+                    NotificationDeliveryState.DELIVERY_AMBIGUOUS,
+                    NotificationDeliveryState.CANCELLED,
+                    NotificationDeliveryState.FAILED,
+                    NotificationDeliveryState.EXPIRED,
+                )
+            ),  # type: ignore[union-attr]
+        )
+    ).first()
+    if unfinished is None and unified_unfinished is None:
         announcement.state = AnnouncementState.COMPLETED
         announcement.completed_at = datetime.now(UTC)
         session.add(announcement)

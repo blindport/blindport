@@ -25,7 +25,10 @@ from ..core.models import (
     Announcement,
     AnnouncementDelivery,
     AnnouncementDeliveryState,
+    AnnouncementState,
     DeliveryMode,
+    NotificationCategory,
+    NotificationDelivery,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -91,6 +94,7 @@ from ..services.domain_verification import (
     get_domain_verifier,
 )
 from ..services.health import readiness_status
+from ..services.notifications import cancel_pending_notifications
 from ..services.nwc_credentials import (
     clear_nwc_credential,
     decrypt_nwc_credential,
@@ -589,6 +593,7 @@ async def set_reminder_email(
     user = _locked_reminder_user(session, user)
     try:
         cancel_pending_reminders(session, user)
+        cancel_pending_notifications(session, user, NotificationCategory.ACCOUNT)
         store_reminder_email(user, validated.email)
     except ReminderEmailError as error:
         raise HTTPException(
@@ -625,6 +630,7 @@ def delete_reminder_email(
     user = _locked_reminder_user(session, user)
     clear_reminder_email(user)
     cancel_pending_reminders(session, user)
+    cancel_pending_notifications(session, user, NotificationCategory.ACCOUNT)
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -686,6 +692,7 @@ async def set_service_email(
     user = _locked_reminder_user(session, user)
     try:
         cancel_pending_announcements(session, user)
+        cancel_pending_notifications(session, user, NotificationCategory.SERVICE)
         store_service_announcement_email(user, validated.email)
     except AnnouncementEmailError as error:
         raise HTTPException(
@@ -725,6 +732,7 @@ def delete_service_email(
     user = _locked_reminder_user(session, user)
     clear_service_announcement_email(user)
     cancel_pending_announcements(session, user)
+    cancel_pending_notifications(session, user, NotificationCategory.SERVICE)
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -1067,9 +1075,10 @@ def _require_announcement_email_enabled() -> None:
 
 
 def _announcement_delivery_counts(
-    session: Session, announcement_id: int
+    session: Session, announcement: Announcement
 ) -> dict[AnnouncementDeliveryState, int]:
-    return {
+    announcement_id = announcement.id or 0
+    counts = {
         delivery_state: int(count)
         for delivery_state, count in session.exec(
             select(AnnouncementDelivery.state, func.count())
@@ -1077,6 +1086,18 @@ def _announcement_delivery_counts(
             .group_by(AnnouncementDelivery.state)
         ).all()
     }
+    for delivery_state, count in session.exec(
+        select(NotificationDelivery.state, func.count())
+        .where(NotificationDelivery.announcement_id == announcement_id)
+        .group_by(NotificationDelivery.state)
+    ).all():
+        counts[delivery_state] = counts.get(delivery_state, 0) + int(count)
+    if announcement.state == AnnouncementState.QUEUED and not announcement.expansion_complete:
+        unexpanded = max(0, announcement.recipient_count - sum(counts.values()))
+        counts[AnnouncementDeliveryState.QUEUED] = (
+            counts.get(AnnouncementDeliveryState.QUEUED, 0) + unexpanded
+        )
+    return counts
 
 
 def _announcement_summary(
@@ -1092,7 +1113,7 @@ def _announcement_summary(
         queued_at=announcement.queued_at,
         completed_at=announcement.completed_at,
         cancelled_at=announcement.cancelled_at,
-        delivery_counts=_announcement_delivery_counts(session, announcement.id or 0),
+        delivery_counts=_announcement_delivery_counts(session, announcement),
     )
 
 

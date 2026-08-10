@@ -20,6 +20,10 @@ from .db import prepare_database
 from .services.bandwidth import run_bandwidth_cleanup
 from .services.btc_usd_price import run_btc_usd_price_refresh
 from .services.dns_supervision import run_dns_supervisor
+from .services.notification_reconciliation import (
+    notification_reconciler_health,
+    run_notification_reconciler,
+)
 from .services.payment_reconciliation import reconciler_health, run_payment_reconciler
 from .services.rate_limits import DirectRateLimiter
 from .services.reminder_reconciliation import get_smtp_adapter
@@ -28,7 +32,10 @@ from .services.reminder_reconciliation import get_smtp_adapter
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     get_lightning_adapter()
-    if settings.REMINDER_EMAIL_ENABLED or settings.ANNOUNCEMENT_EMAIL_ENABLED:
+    notifications_enabled = settings.NOTIFICATION_RECONCILIATION_ENABLED and (
+        settings.REMINDER_EMAIL_ENABLED or settings.ANNOUNCEMENT_EMAIL_ENABLED
+    )
+    if notifications_enabled:
         get_smtp_adapter()
     if settings.is_payment_method_enabled(PaymentMethod.NWC):
         get_nwc_adapter()
@@ -38,6 +45,11 @@ async def lifespan(app: FastAPI):
         startup_grace_seconds=settings.PAYMENT_RECONCILIATION_STARTUP_GRACE_SECONDS,
         stale_after_seconds=settings.PAYMENT_RECONCILIATION_STALE_AFTER_SECONDS,
     )
+    notification_reconciler_health.configure(
+        enabled=notifications_enabled,
+        startup_grace_seconds=settings.NOTIFICATION_RECONCILIATION_STARTUP_GRACE_SECONDS,
+        stale_after_seconds=settings.NOTIFICATION_RECONCILIATION_STALE_AFTER_SECONDS,
+    )
     stop_reconciler = asyncio.Event()
     reconciler_task: asyncio.Task[None] | None = None
     if settings.PAYMENT_RECONCILIATION_ENABLED:
@@ -46,6 +58,14 @@ async def lifespan(app: FastAPI):
             name="payment-reconciler",
         )
     app.state.payment_reconciler_task = reconciler_task
+    notification_stop_event = asyncio.Event()
+    notification_task: asyncio.Task[None] | None = None
+    if notifications_enabled:
+        notification_task = asyncio.create_task(
+            run_notification_reconciler(notification_stop_event),
+            name="notification-reconciler",
+        )
+    app.state.notification_reconciler_task = notification_task
     price_stop_event = asyncio.Event()
     price_task: asyncio.Task[None] | None = None
     if settings.BTC_USD_PRICE_ENABLED:
@@ -70,6 +90,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if notification_task is not None:
+            notification_stop_event.set()
+            try:
+                await notification_task
+            except asyncio.CancelledError:
+                notification_task.cancel()
+                raise
         if dns_task is not None:
             dns_stop_event.set()
             await dns_task

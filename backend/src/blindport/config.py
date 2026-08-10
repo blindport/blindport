@@ -613,6 +613,11 @@ class Settings(BaseSettings):
     # Optional expiration reminders delivered through generic SMTP.
     REMINDER_EMAIL_ENABLED: bool = False
     ANNOUNCEMENT_EMAIL_ENABLED: bool = False
+    NOTIFICATION_RECONCILIATION_ENABLED: bool = True
+    NOTIFICATION_RECONCILIATION_INTERVAL_SECONDS: float = Field(default=10.0, ge=0.1, le=300)
+    NOTIFICATION_RECONCILIATION_BATCH_SIZE: int = Field(default=100, ge=1, le=1000)
+    NOTIFICATION_RECONCILIATION_STARTUP_GRACE_SECONDS: float = Field(default=30.0, ge=1, le=600)
+    NOTIFICATION_RECONCILIATION_STALE_AFTER_SECONDS: float = Field(default=60.0, ge=1, le=3600)
     SMTP_HOST: str = ""
     SMTP_PORT: int = Field(default=587, ge=1, le=65535)
     SMTP_SECURITY: str = "starttls"
@@ -621,6 +626,7 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     SMTP_TIMEOUT_SECONDS: float = Field(default=10.0, ge=1, le=60)
     REMINDER_DELIVERY_LEASE_SECONDS: int = Field(default=45, ge=10, le=300)
+    NOTIFICATION_DELIVERY_LEASE_SECONDS: int = Field(default=45, ge=10, le=300)
 
     # Optional payment integrations
     CASHU_MINTS: str = ""  # comma-separated mint URLs
@@ -1244,6 +1250,14 @@ class Settings(BaseSettings):
                 "BTC_USD_PRICE_MAX_STALE_SECONDS must be at least twice "
                 "BTC_USD_PRICE_REFRESH_SECONDS"
             )
+        if (
+            self.NOTIFICATION_RECONCILIATION_STALE_AFTER_SECONDS
+            < self.NOTIFICATION_RECONCILIATION_INTERVAL_SECONDS * 2
+        ):
+            raise ValueError(
+                "NOTIFICATION_RECONCILIATION_STALE_AFTER_SECONDS must be at least twice "
+                "NOTIFICATION_RECONCILIATION_INTERVAL_SECONDS"
+            )
         if self.STABLECOIN_PAYMENTS_ENABLED:
             if PaymentMethod.STABLECOIN_SWAP not in self.enabled_payment_methods:
                 raise ValueError(
@@ -1288,12 +1302,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REMINDER_DELIVERY_LEASE_SECONDS must exceed SMTP_TIMEOUT_SECONDS by at least 5"
             )
+        if self.SMTP_TIMEOUT_SECONDS + 5 > self.NOTIFICATION_DELIVERY_LEASE_SECONDS:
+            raise ValueError(
+                "NOTIFICATION_DELIVERY_LEASE_SECONDS must exceed SMTP_TIMEOUT_SECONDS by at least 5"
+            )
         if bool(self.SMTP_USERNAME) != bool(self.SMTP_PASSWORD):
             raise ValueError("SMTP_USERNAME and SMTP_PASSWORD must be configured together")
         if self.REMINDER_EMAIL_ENABLED or self.ANNOUNCEMENT_EMAIL_ENABLED:
-            if not self.PAYMENT_RECONCILIATION_ENABLED:
+            if not self.NOTIFICATION_RECONCILIATION_ENABLED:
                 raise ValueError(
-                    "PAYMENT_RECONCILIATION_ENABLED is required when email delivery is enabled"
+                    "NOTIFICATION_RECONCILIATION_ENABLED is required when email delivery is enabled"
                 )
             if not self.CREDENTIAL_ENCRYPTION_KEY:
                 raise ValueError(

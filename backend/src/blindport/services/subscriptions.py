@@ -17,6 +17,8 @@ from ..core.hostnames import canonicalize_hostname
 from ..core.models import (
     BillingTerm,
     DeliveryMode,
+    NotificationCategory,
+    NotificationKind,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -31,6 +33,7 @@ from . import ip_leases
 from .allocator import NoCapacityError, ResourceAllocator
 from .catalog import require_product_available
 from .domain_verification import DomainVerificationResult, DomainVerifier
+from .notifications import queue_notification
 
 MONTHLY_PERIOD_DAYS = 30
 YEARLY_PERIOD_DAYS = 365
@@ -558,6 +561,23 @@ def expire_elapsed_subscriptions(
         if result.rowcount == 1:
             if sub.product == ProductType.IP:
                 ip_leases.quarantine(session, sub, quarantine_until)
+            user = session.get(User, sub.user_id)
+            if (
+                settings.REMINDER_EMAIL_ENABLED
+                and user is not None
+                and not user.is_suspended
+                and user.has_reminder_email
+                and period_end is not None
+            ):
+                queue_notification(
+                    session,
+                    user,
+                    NotificationCategory.ACCOUNT,
+                    NotificationKind.SUBSCRIPTION_EXPIRED,
+                    f"subscription:{sub.id}:expired:{period_end.isoformat()}",
+                    subscription=sub,
+                    event_at=period_end,
+                )
             changed = True
     if changed:
         session.commit()

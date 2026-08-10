@@ -27,10 +27,8 @@ from ..core.models import (
     User,
 )
 from ..db import engine
-from .announcement_reconciliation import reconcile_announcements_once
 from .domain_verification import get_domain_verifier
 from .payments import check_and_settle_payment, create_payment
-from .reminder_reconciliation import reconcile_reminders_once
 from .subscriptions import (
     reap_expired_domain_claims,
     requires_domain_renewal_verification,
@@ -49,9 +47,6 @@ class ReconciliationSummary:
     skipped: int = 0
     failed: int = 0
     auto_renewed: int = 0
-    reminders_queued: int = 0
-    reminders_sent: int = 0
-    announcements_sent: int = 0
 
 
 def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
@@ -246,11 +241,7 @@ def reconcile_pending_payments_once(batch_size: int | None = None) -> Reconcilia
         )
         if method == PaymentMethod.STABLECOIN_SWAP or settings.is_payment_method_enabled(method)
     )
-    if (
-        not reconcilable_methods
-        and not settings.REMINDER_EMAIL_ENABLED
-        and not settings.ANNOUNCEMENT_EMAIL_ENABLED
-    ):
+    if not reconcilable_methods:
         return ReconciliationSummary()
 
     now = datetime.now(UTC)
@@ -321,19 +312,9 @@ def reconcile_pending_payments_once(batch_size: int | None = None) -> Reconcilia
 
     auto_renewed, auto_failed = _create_due_auto_renewals(effective_batch_size)
     counts["failed"] += auto_failed
-    reminders = reconcile_reminders_once(effective_batch_size)
-    counts["failed"] += reminders.failed
-    announcements_sent = 0
-    try:
-        announcements_sent = reconcile_announcements_once(effective_batch_size).sent
-    except Exception as error:
-        logger.opt(exception=error).error("announcement reconciliation cycle failed")
     return ReconciliationSummary(
         scanned=len(payment_ids),
         auto_renewed=auto_renewed,
-        reminders_queued=reminders.queued,
-        reminders_sent=reminders.sent,
-        announcements_sent=announcements_sent,
         **counts,
     )
 
@@ -362,8 +343,7 @@ async def run_payment_reconciler(
             reconciler_health.record_completed_cycle()
             logger.debug(
                 "payment reconciliation cycle complete: scanned={}, paid={}, expired={}, "
-                "pending={}, skipped={}, failed={}, auto_renewed={}, reminders_queued={}, "
-                "reminders_sent={}, announcements_sent={}",
+                "pending={}, skipped={}, failed={}, auto_renewed={}",
                 summary.scanned,
                 summary.paid,
                 summary.expired,
@@ -371,9 +351,6 @@ async def run_payment_reconciler(
                 summary.skipped,
                 summary.failed,
                 summary.auto_renewed,
-                summary.reminders_queued,
-                summary.reminders_sent,
-                summary.announcements_sent,
             )
 
         next_cycle_at += interval

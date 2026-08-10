@@ -112,6 +112,30 @@ class ReminderDeliveryState(StrEnum):
     EXPIRED = "expired"
 
 
+class NotificationCategory(StrEnum):
+    ACCOUNT = "account"
+    SERVICE = "service"
+
+
+class NotificationKind(StrEnum):
+    EXPIRATION_7_DAY = "expiration_7_day"
+    EXPIRATION_1_DAY = "expiration_1_day"
+    SUBSCRIPTION_ACTIVATED = "subscription_activated"
+    SUBSCRIPTION_RENEWED = "subscription_renewed"
+    SUBSCRIPTION_EXPIRED = "subscription_expired"
+    SERVICE_ANNOUNCEMENT = "service_announcement"
+
+
+class NotificationDeliveryState(StrEnum):
+    QUEUED = "queued"
+    SENDING = "sending"
+    SENT = "sent"
+    DELIVERY_AMBIGUOUS = "delivery_ambiguous"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
 class AnnouncementState(StrEnum):
     DRAFT = "draft"
     QUEUED = "queued"
@@ -477,10 +501,23 @@ class Announcement(SQLModel, table=True):
     body: str = Field(max_length=10_000, sa_type=Text)
     author_marker: str = Field(max_length=100)
     recipient_count: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    recipient_cursor: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    recipient_max_user_id: int | None = Field(default=None)
+    expansion_complete: bool = Field(
+        default=False, sa_column_kwargs={"server_default": text("false")}
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     queued_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     completed_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     cancelled_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class AnnouncementRecipientSnapshot(SQLModel, table=True):
+    """Recipient identity and generation captured when an announcement is queued."""
+
+    announcement_id: int = Field(foreign_key="announcement.id", primary_key=True)
+    user_id: int = Field(foreign_key="user.id", primary_key=True)
+    recipient_generation: int
 
 
 class AnnouncementDelivery(SQLModel, table=True):
@@ -505,6 +542,55 @@ class AnnouncementDelivery(SQLModel, table=True):
             AnnouncementDeliveryState,
             values_callable=_enum_values,
             name="announcementdeliverystate",
+        ),
+        sa_column_kwargs={"server_default": text("'queued'")},
+    )
+    attempt_count: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    error_code: str | None = Field(default=None, max_length=64)
+    created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
+    last_attempt_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    next_attempt_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    sent_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    terminal_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    lease_token: str | None = Field(default=None, max_length=32)
+    lease_until: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+
+
+class NotificationDelivery(SQLModel, table=True):
+    """Privacy-preserving unified SMTP outbox metadata."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "attempt_count >= 0 AND attempt_count <= 20",
+            name="ck_notificationdelivery_attempt_count",
+        ),
+        Index("ix_notificationdelivery_due", "state", "next_attempt_at", "id"),
+        Index("ix_notificationdelivery_announcement_state", "announcement_id", "state"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    subscription_id: int | None = Field(default=None, foreign_key="subscription.id", index=True)
+    payment_id: int | None = Field(default=None, foreign_key="payment.id", index=True)
+    announcement_id: int | None = Field(default=None, foreign_key="announcement.id", index=True)
+    category: NotificationCategory = Field(
+        sa_type=Enum(
+            NotificationCategory, values_callable=_enum_values, name="notificationcategory"
+        )
+    )
+    kind: NotificationKind = Field(
+        sa_type=Enum(NotificationKind, values_callable=_enum_values, name="notificationkind")
+    )
+    idempotency_key: str = Field(max_length=255, unique=True)
+    recipient_generation: int
+    event_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    state: NotificationDeliveryState = Field(
+        default=NotificationDeliveryState.QUEUED,
+        sa_type=Enum(
+            NotificationDeliveryState,
+            values_callable=_enum_values,
+            name="notificationdeliverystate",
         ),
         sa_column_kwargs={"server_default": text("'queued'")},
     )

@@ -222,6 +222,7 @@ def _process_claimed_delivery(delivery_id: int, token: str, now: datetime) -> Re
 
 
 def reconcile_reminders_once(batch_size: int | None = None) -> ReminderReconciliationSummary:
+    """Drain existing legacy delivery rows without discovering new reminders."""
     if not config.settings.REMINDER_EMAIL_ENABLED:
         return ReminderReconciliationSummary()
     effective_batch_size = (
@@ -229,8 +230,6 @@ def reconcile_reminders_once(batch_size: int | None = None) -> ReminderReconcili
     )
     if not 1 <= effective_batch_size <= 1000:
         raise ValueError("reminder reconciliation batch size must be within 1-1000")
-    now = datetime.now(UTC)
-    queued = _queue_due_reminders(now, effective_batch_size)
     counts = {"scanned": 0, "sent": 0, "pending": 0, "failed": 0}
     for _ in range(effective_batch_size):
         attempted_at = datetime.now(UTC)
@@ -254,7 +253,7 @@ def reconcile_reminders_once(batch_size: int | None = None) -> ReminderReconcili
             )
         finally:
             _release_lease(delivery_id, token)
-    return ReminderReconciliationSummary(queued=queued, **counts)
+    return ReminderReconciliationSummary(**counts)
 
 
 def _aware(value: datetime) -> datetime:

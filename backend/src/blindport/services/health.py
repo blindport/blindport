@@ -9,6 +9,7 @@ from ..config import EnvironmentMode, settings
 from ..core.models import PaymentMethod
 from ..db import engine
 from ..migrations import database_revisions
+from .notification_reconciliation import notification_reconciler_health
 from .payment_reconciliation import reconciler_health
 
 _OK = "ok"
@@ -49,6 +50,11 @@ def readiness_status() -> tuple[bool, dict[str, str]]:
         or settings.PAYMENT_RECONCILIATION_ENABLED
     ):
         components["reconciler"] = reconciler_health.status()
+
+    if settings.NOTIFICATION_RECONCILIATION_ENABLED and (
+        settings.REMINDER_EMAIL_ENABLED or settings.ANNOUNCEMENT_EMAIL_ENABLED
+    ):
+        components["notifications"] = notification_reconciler_health.status()
 
     ready = all(status != _UNAVAILABLE for status in components.values())
     return ready, components

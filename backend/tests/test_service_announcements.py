@@ -17,8 +17,9 @@ def _admin_auth() -> dict[str, str]:
 
 def test_service_email_api_encrypts_and_cancels_queued_deliveries(app_client, monkeypatch) -> None:
     from blindport import config
-    from blindport.core.models import AnnouncementDelivery, AnnouncementDeliveryState, User
+    from blindport.core.models import NotificationDelivery, NotificationDeliveryState, User
     from blindport.db import engine
+    from blindport.services import notification_reconciliation
     from blindport.services.announcements import create_announcement, queue_announcement
 
     client, _ = app_client
@@ -40,18 +41,25 @@ def test_service_email_api_encrypts_and_cancels_queued_deliveries(app_client, mo
         assert "Person@example.com" not in (user.service_email_ciphertext or "")
         announcement = create_announcement(session, "Maintenance", "Service work tonight.", "test")
         queued = queue_announcement(session, announcement.id or 0)
-        delivery = session.exec(select(AnnouncementDelivery)).one()
+        user_id = user.id
+        user_generation = user.service_email_generation
         assert queued.recipient_count == 1
-        assert delivery.recipient_generation == user.service_email_generation
+        assert session.exec(select(NotificationDelivery)).all() == []
+
+    monkeypatch.setattr(notification_reconciliation.db, "engine", engine)
+    assert notification_reconciliation._expand_queued_announcements(1) == 1
+    with Session(engine) as session:
+        delivery = session.exec(select(NotificationDelivery)).one()
+        assert delivery.recipient_generation == user_generation
 
     deleted = client.delete("/api/v1/me/service-email", headers=_auth(token))
     assert deleted.status_code == 200
     assert deleted.json() == {"configured": False}
     with Session(engine) as session:
-        user = session.exec(select(User).where(User.id == user.id)).one()
-        delivery = session.exec(select(AnnouncementDelivery)).one()
+        user = session.exec(select(User).where(User.id == user_id)).one()
+        delivery = session.exec(select(NotificationDelivery)).one()
         assert user.service_email_ciphertext is None
-        assert delivery.state == AnnouncementDeliveryState.CANCELLED
+        assert delivery.state == NotificationDeliveryState.CANCELLED
         assert delivery.lease_token is None
 
 
@@ -129,10 +137,12 @@ def test_browser_admin_announcements_require_session_and_separate_draft_queue_ca
     from blindport.core.models import (
         Announcement,
         AnnouncementDelivery,
-        AnnouncementDeliveryState,
+        NotificationDelivery,
+        NotificationDeliveryState,
         User,
     )
     from blindport.db import engine
+    from blindport.services import notification_reconciliation
     from blindport.services.announcements import store_service_announcement_email
 
     client, _ = app_client
@@ -186,7 +196,12 @@ def test_browser_admin_announcements_require_session_and_separate_draft_queue_ca
         assert queued_campaign is not None
         assert queued_campaign.state.value == "queued"
         assert queued_campaign.recipient_count == 1
-        assert len(deliveries) == 1
+        assert deliveries == []
+
+    monkeypatch.setattr(notification_reconciliation.db, "engine", engine)
+    assert notification_reconciliation._expand_queued_announcements(1) == 1
+    with Session(engine) as session:
+        assert len(session.exec(select(NotificationDelivery)).all()) == 1
 
     for _ in range(2):
         cancelled = client.post(
@@ -195,10 +210,10 @@ def test_browser_admin_announcements_require_session_and_separate_draft_queue_ca
         assert cancelled.status_code == 303
     with Session(engine) as session:
         cancelled_campaign = session.get(Announcement, campaign.id)
-        delivery = session.exec(select(AnnouncementDelivery)).one()
+        delivery = session.exec(select(NotificationDelivery)).one()
         assert cancelled_campaign is not None
         assert cancelled_campaign.state.value == "cancelled"
-        assert delivery.state == AnnouncementDeliveryState.CANCELLED
+        assert delivery.state == NotificationDeliveryState.CANCELLED
 
     monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", False)
     assert "announcementEmailForm" not in client.get("/dashboard").text
@@ -208,14 +223,13 @@ def test_browser_admin_announcements_require_session_and_separate_draft_queue_ca
     assert rejected.status_code == 404
 
 
-def test_announcement_service_validates_content_and_deterministic_delivery() -> None:
+def test_legacy_announcement_delivery_send_and_validation() -> None:
     from blindport.core.credentials import CredentialCipher
     from blindport.core.models import AnnouncementDelivery, AnnouncementDeliveryState, User
     from blindport.services.announcements import (
         AnnouncementError,
         announcement_message_id,
         create_announcement,
-        queue_announcement,
         send_announcement,
         store_service_announcement_email,
     )
@@ -236,8 +250,13 @@ def test_announcement_service_validates_content_and_deterministic_delivery() -> 
         session.add(user)
         session.commit()
         campaign = create_announcement(session, "Notice", "Plain text only.\n", "test")
-        campaign = queue_announcement(session, campaign.id or 0)
-        delivery = session.exec(select(AnnouncementDelivery)).one()
+        delivery = AnnouncementDelivery(
+            announcement_id=campaign.id or 0,
+            user_id=user.id or 0,
+            recipient_generation=user.service_email_generation,
+        )
+        session.add(delivery)
+        session.commit()
         message_id = announcement_message_id(delivery)
         sent = send_announcement(session, delivery, user, campaign, Smtp(), cipher=cipher)
         assert sent.state == AnnouncementDeliveryState.SENT
@@ -270,8 +289,14 @@ def test_announcement_reconciliation_is_bounded_and_recovers_sending(monkeypatch
         session.add(user)
         session.commit()
         announcement = create_announcement(session, "Notice", "Maintenance", "test")
-        queue_announcement(session, announcement.id or 0)
-        delivery = session.exec(select(AnnouncementDelivery)).one()
+        announcement = queue_announcement(session, announcement.id or 0)
+        delivery = AnnouncementDelivery(
+            announcement_id=announcement.id or 0,
+            user_id=user.id or 0,
+            recipient_generation=user.service_email_generation,
+        )
+        session.add(delivery)
+        session.commit()
         delivery.state = AnnouncementDeliveryState.SENDING
         delivery.attempt_count = 1
         session.add(delivery)
@@ -285,20 +310,22 @@ def test_announcement_reconciliation_is_bounded_and_recovers_sending(monkeypatch
         assert delivery.error_code == "worker_interrupted"
 
 
-def test_announcement_reconciliation_failure_does_not_fail_payment_reconciliation(
+def test_notification_worker_failure_isolated_from_payment_reconciliation(
     app_client, monkeypatch
 ) -> None:
     del app_client
-    from blindport.services import payment_reconciliation
+    from blindport.services import notification_reconciliation, payment_reconciliation
 
     monkeypatch.setattr(payment_reconciliation.settings, "PAYMENT_ENABLED_METHODS", "cashu")
-    monkeypatch.setattr(payment_reconciliation.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
+    monkeypatch.setattr(notification_reconciliation.config.settings, "REMINDER_EMAIL_ENABLED", True)
+    monkeypatch.setattr(notification_reconciliation, "_queue_due_expirations", lambda now, size: 0)
+    monkeypatch.setattr(
+        notification_reconciliation,
+        "reconcile_reminders_once",
+        lambda batch_size: (_ for _ in ()).throw(RuntimeError("legacy drain failed")),
+    )
 
-    def fail_announcements(batch_size: int):
-        raise RuntimeError(f"unexpected announcement delivery failure for {batch_size}")
-
-    monkeypatch.setattr(payment_reconciliation, "reconcile_announcements_once", fail_announcements)
+    with pytest.raises(RuntimeError, match="legacy drain failed"):
+        notification_reconciliation.reconcile_notifications_once(batch_size=1)
     summary = payment_reconciliation.reconcile_pending_payments_once(batch_size=3)
-
-    assert summary.failed == 0
-    assert summary.announcements_sent == 0
+    assert (summary.scanned, summary.failed) == (0, 0)

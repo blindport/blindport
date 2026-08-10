@@ -21,12 +21,17 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from blindport.core.auth import _touch_last_seen
 from blindport.core.models import (
     AgentOrder,
+    Announcement,
+    AnnouncementRecipientSnapshot,
     BillingTerm,
     ClientCredential,
     DeliveryMode,
     IPLease,
     IPLeaseDelivery,
     IPLeaseState,
+    NotificationCategory,
+    NotificationDelivery,
+    NotificationKind,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -44,6 +49,7 @@ from blindport.core.models import (
 )
 from blindport.migrations import database_revisions, downgrade_database, upgrade_database
 from blindport.services.agent_orders import AgentOrderSpec, put_agent_order
+from blindport.services.announcements import create_announcement, queue_announcement
 from blindport.services.bandwidth import BandwidthReport, ingest_daily_bandwidth
 from blindport.services.catalog import ProductUnavailableError
 from blindport.services.client_enrollment import enroll_client_certificate
@@ -368,6 +374,137 @@ def test_postgres_reminder_lease_allows_one_concurrent_worker(monkeypatch) -> No
             connection.execute(delete(User).where(User.id == user_id))
 
 
+def test_postgres_notification_lease_allows_one_concurrent_worker(monkeypatch) -> None:
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    marker = uuid4().hex
+    with Session(engine) as session:
+        user = User(
+            hashed_token=f"notification-lease-{marker}",
+            has_reminder_email=True,
+            reminder_email_generation=1,
+        )
+        session.add(user)
+        session.flush()
+        period_end = datetime.now(UTC) + timedelta(days=6)
+        subscription = Subscription(
+            user_id=user.id,
+            product=ProductType.PORT,
+            status=SubscriptionStatus.ACTIVE,
+            monthly_price_sats=1000,
+            current_period_end=period_end,
+        )
+        session.add(subscription)
+        session.flush()
+        delivery = NotificationDelivery(
+            user_id=user.id,
+            subscription_id=subscription.id,
+            category=NotificationCategory.ACCOUNT,
+            kind=NotificationKind.EXPIRATION_7_DAY,
+            idempotency_key=f"postgres-notification-lease:{marker}",
+            recipient_generation=1,
+            event_at=period_end,
+        )
+        session.add(delivery)
+        session.commit()
+        user_id = user.id
+        subscription_id = subscription.id
+        delivery_id = delivery.id
+
+    from blindport.services import notification_reconciliation
+
+    monkeypatch.setattr(notification_reconciliation.db, "engine", engine)
+    barrier = threading.Barrier(2)
+
+    def claim() -> tuple[int, str] | None:
+        barrier.wait(timeout=5)
+        return notification_reconciliation._claim_due_delivery(datetime.now(UTC))
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            claimed = list(executor.map(lambda _: claim(), range(2)))
+        matching = [claim for claim in claimed if claim is not None and claim[0] == delivery_id]
+        assert len(matching) == 1
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                delete(NotificationDelivery).where(NotificationDelivery.id == delivery_id)
+            )
+            connection.execute(delete(Subscription).where(Subscription.id == subscription_id))
+            connection.execute(delete(User).where(User.id == user_id))
+
+
+def test_postgres_campaign_snapshot_expansion_is_serialized(monkeypatch) -> None:
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    marker = uuid4().hex
+    with Session(engine) as session:
+        users = [
+            User(
+                hashed_token=f"notification-campaign-{marker}-{index}",
+                has_service_email=True,
+                service_email_generation=index + 1,
+            )
+            for index in range(2)
+        ]
+        session.add_all(users)
+        session.commit()
+        announcement = queue_announcement(
+            session,
+            create_announcement(session, "PostgreSQL notice", "Body", "test").id or 0,
+        )
+        announcement_id = announcement.id
+        user_ids = [user.id for user in users]
+        assert announcement.recipient_count == 2
+
+    from blindport.services import notification_reconciliation
+
+    monkeypatch.setattr(notification_reconciliation.db, "engine", engine)
+    barrier = threading.Barrier(2)
+
+    def expand() -> int:
+        barrier.wait(timeout=5)
+        return notification_reconciliation._expand_queued_announcements(1)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            expanded = list(executor.map(lambda _: expand(), range(2)))
+        assert expanded == [1, 1]
+        assert notification_reconciliation._expand_queued_announcements(1) == 0
+        with Session(engine) as session:
+            snapshots = session.exec(
+                select(AnnouncementRecipientSnapshot).where(
+                    AnnouncementRecipientSnapshot.announcement_id == announcement_id
+                )
+            ).all()
+            deliveries = session.exec(
+                select(NotificationDelivery).where(
+                    NotificationDelivery.announcement_id == announcement_id
+                )
+            ).all()
+            assert {snapshot.user_id for snapshot in snapshots} == set(user_ids)
+            assert {delivery.user_id for delivery in deliveries} == set(user_ids)
+            assert {delivery.user_id: delivery.recipient_generation for delivery in deliveries} == {
+                user.id: user.service_email_generation for user in users
+            }
+    finally:
+        with engine.begin() as connection:
+            connection.execute(
+                delete(NotificationDelivery).where(
+                    NotificationDelivery.announcement_id == announcement_id
+                )
+            )
+            connection.execute(
+                delete(AnnouncementRecipientSnapshot).where(
+                    AnnouncementRecipientSnapshot.announcement_id == announcement_id
+                )
+            )
+            connection.execute(delete(Announcement).where(Announcement.id == announcement_id))
+            connection.execute(delete(User).where(User.id.in_(user_ids)))
+
+
 def test_postgres_migration_and_database_lifecycle() -> None:
     assert POSTGRES_URL is not None
     engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
@@ -386,7 +523,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0021")
+    assert database_revisions(engine) == ("0008", "0022")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -439,7 +576,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0021", "0021")
+    assert database_revisions(engine) == ("0022", "0022")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -1170,7 +1307,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0021", "0021")
+        assert database_revisions(engine) == ("0022", "0022")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

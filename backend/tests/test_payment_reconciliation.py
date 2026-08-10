@@ -314,26 +314,17 @@ def test_reconciler_uses_bounded_id_order(app_client, monkeypatch) -> None:
     assert visited == expected_ids
 
 
-def test_operator_reminders_run_without_customer_lightning_or_nwc_enabled(
+def test_payment_reconciliation_does_not_depend_on_notification_worker(
     app_client, monkeypatch
 ) -> None:
     del app_client
     from blindport.services import payment_reconciliation
-    from blindport.services.reminder_reconciliation import ReminderReconciliationSummary
 
     monkeypatch.setattr(payment_reconciliation.settings, "PAYMENT_ENABLED_METHODS", "cashu")
-    monkeypatch.setattr(payment_reconciliation.settings, "REMINDER_EMAIL_ENABLED", True)
-    monkeypatch.setattr(
-        payment_reconciliation,
-        "reconcile_reminders_once",
-        lambda batch_size: ReminderReconciliationSummary(queued=2, sent=1),
-    )
 
     summary = payment_reconciliation.reconcile_pending_payments_once(batch_size=10)
 
     assert summary.scanned == 0
-    assert summary.reminders_queued == 2
-    assert summary.reminders_sent == 1
 
 
 def test_repeated_reconciliation_does_not_double_renew(app_client) -> None:

@@ -16,7 +16,7 @@ from blindport.core.models import (
     SubscriptionStatus,
     User,
 )
-from blindport.services.reminders import store_reminder_email
+from blindport.services.reminders import queue_reminder, store_reminder_email
 
 
 class _Smtp:
@@ -60,10 +60,14 @@ def _setup(monkeypatch, tmp_path, *, period_delta: timedelta):
     return reminder_reconciliation, local_engine, smtp
 
 
-def test_reconciler_queues_and_sends_once(monkeypatch, tmp_path) -> None:
+def test_reconciler_drains_existing_legacy_delivery_once(monkeypatch, tmp_path) -> None:
     worker, local_engine, smtp = _setup(monkeypatch, tmp_path, period_delta=timedelta(days=6))
+    with Session(local_engine) as session:
+        subscription = session.exec(select(Subscription)).one()
+        queue_reminder(session, subscription, ReminderKind.SEVEN_DAY)
+        session.commit()
     summary = worker.reconcile_reminders_once(batch_size=10)
-    assert (summary.queued, summary.sent, smtp.calls) == (1, 1, 1)
+    assert (summary.queued, summary.sent, smtp.calls) == (0, 1, 1)
     with Session(local_engine) as session:
         delivery = session.exec(select(ReminderDelivery)).one()
         assert delivery.kind == ReminderKind.SEVEN_DAY
@@ -73,23 +77,14 @@ def test_reconciler_queues_and_sends_once(monkeypatch, tmp_path) -> None:
     assert smtp.calls == 1
 
 
-def test_same_period_queues_seven_and_one_day_notices(monkeypatch, tmp_path) -> None:
-    worker, local_engine, _ = _setup(monkeypatch, tmp_path, period_delta=timedelta(days=6))
-    with Session(local_engine) as session:
-        period_end = session.exec(select(Subscription)).one().current_period_end
-    assert period_end is not None
-    period_end = period_end.replace(tzinfo=UTC) if period_end.tzinfo is None else period_end
-    assert worker._queue_due_reminders(datetime.now(UTC), 10) == 1
-    assert worker._queue_due_reminders(period_end - timedelta(hours=12), 10) == 1
-
-
 def test_recovered_sending_boundary_is_terminal_without_duplicate_send(
     monkeypatch, tmp_path
 ) -> None:
     worker, local_engine, smtp = _setup(monkeypatch, tmp_path, period_delta=timedelta(days=6))
-    now = datetime.now(UTC)
-    assert worker._queue_due_reminders(now, 10) == 1
     with Session(local_engine) as session:
+        subscription = session.exec(select(Subscription)).one()
+        queue_reminder(session, subscription, ReminderKind.SEVEN_DAY)
+        session.commit()
         delivery = session.exec(select(ReminderDelivery)).one()
         delivery.state = ReminderDeliveryState.SENDING
         delivery.attempt_count = 1

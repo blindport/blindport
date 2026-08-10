@@ -25,9 +25,12 @@ from ..core.auth import (
 from ..core.models import (
     Announcement,
     AnnouncementDelivery,
+    AnnouncementDeliveryState,
+    AnnouncementState,
     DeliveryMode,
     IPLease,
     IPLeaseState,
+    NotificationDelivery,
     Payment,
     PaymentMethod,
     ProductType,
@@ -551,6 +554,19 @@ def admin_panel(
         }
         for announcement in announcements
     }
+    for announcement in announcements:
+        counts = announcement_delivery_counts.setdefault(announcement.id, {})
+        for state, count in session.exec(
+            select(NotificationDelivery.state, func.count())
+            .where(NotificationDelivery.announcement_id == announcement.id)
+            .group_by(NotificationDelivery.state)
+        ).all():
+            counts[state.value] = counts.get(state.value, 0) + count
+        if announcement.state == AnnouncementState.QUEUED and not announcement.expansion_complete:
+            unexpanded = max(0, announcement.recipient_count - sum(counts.values()))
+            counts[AnnouncementDeliveryState.QUEUED.value] = (
+                counts.get(AnnouncementDeliveryState.QUEUED.value, 0) + unexpanded
+            )
     lease_total = int(
         session.exec(
             select(func.count()).select_from(IPLease).join(Subscription).join(User).where(customer)

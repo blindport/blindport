@@ -31,6 +31,8 @@ from ..core.models import (
     AgentOrder,
     BillingTerm,
     DeliveryMode,
+    NotificationCategory,
+    NotificationKind,
     Payment,
     PaymentMethod,
     PaymentStatus,
@@ -40,6 +42,7 @@ from ..core.models import (
     User,
 )
 from . import subscriptions as subs
+from .notifications import queue_notification
 from .nwc_credentials import decrypt_nwc_credential
 
 _TERMINAL_STATUSES = (
@@ -885,18 +888,39 @@ def _finalize_payment(
         session.rollback()
         raise
     subscription.billing_term = payment.billing_term
-    if subscription.status == SubscriptionStatus.ACTIVE:
-        subs.renew_subscription(session, subscription, payment.period_days)
-    elif (
+    is_renewal = subscription.status == SubscriptionStatus.ACTIVE or (
         subscription.product in (ProductType.IP, ProductType.PORT)
         and subscription.resource_quarantined_until is not None
         and subscription.reservation_payment_id is None
         and _payment_started_before_expiry(payment, subscription)
-    ):
-        # A renewal request created while active may settle just after lazy expiry.
+    )
+    if is_renewal:
         subs.renew_subscription(session, subscription, payment.period_days)
     else:
         subs.activate_subscription(session, subscription, payment_id, payment.period_days)
+    user = session.get(User, subscription.user_id)
+    if (
+        settings.REMINDER_EMAIL_ENABLED
+        and user is not None
+        and not user.is_suspended
+        and user.has_reminder_email
+        and subscription.current_period_end is not None
+    ):
+        kind = (
+            NotificationKind.SUBSCRIPTION_RENEWED
+            if is_renewal
+            else NotificationKind.SUBSCRIPTION_ACTIVATED
+        )
+        queue_notification(
+            session,
+            user,
+            NotificationCategory.ACCOUNT,
+            kind,
+            f"payment:{payment_id}:{kind.value}",
+            subscription=subscription,
+            payment=payment,
+            event_at=subscription.current_period_end,
+        )
     session.commit()
     return _reload_payment(session, payment_id)
 

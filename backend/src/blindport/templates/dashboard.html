@@ -302,7 +302,7 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
       {% if nwc_enabled %}<details class="sidebar-section"><summary>Wallet connection</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% else %}Not connected{% endif %}</p>{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
       {% if reminder_email_enabled %}
       <details class="sidebar-section">
-        <summary>Expiration reminders</summary>
+        <summary>Account notifications</summary>
         <p id="reminderStatus" role="status" aria-live="polite">{% if user.has_reminder_email %}Enabled{% else %}Disabled{% endif %}</p>
         <form id="reminderForm">
           <label for="reminderEmail">Email address</label>
@@ -321,7 +321,6 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
         <form id="announcementEmailForm">
           <label for="announcementEmail">Email address</label>
           <input id="announcementEmail" type="email" autocomplete="email" maxlength="254" required>
-          <p class="field-help">Receive important service announcements. This is separate from expiration reminders.</p>
           <div class="button-row">
             <button id="saveAnnouncementEmailBtn" type="submit">Enable</button>
             {% if user.has_service_email %}<button id="deleteAnnouncementEmailBtn" type="button" class="button-secondary">Disable</button>{% endif %}

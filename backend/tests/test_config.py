@@ -408,11 +408,11 @@ def test_smtp_security_and_from_address_are_strict() -> None:
 
 
 def test_email_reminders_require_reconciliation_worker() -> None:
-    with pytest.raises(ValidationError, match="PAYMENT_RECONCILIATION_ENABLED"):
+    with pytest.raises(ValidationError, match="NOTIFICATION_RECONCILIATION_ENABLED"):
         Settings(
             _env_file=None,
             REMINDER_EMAIL_ENABLED=True,
-            PAYMENT_RECONCILIATION_ENABLED=False,
+            NOTIFICATION_RECONCILIATION_ENABLED=False,
             CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
             SMTP_HOST="mail.example.com",
             SMTP_FROM_EMAIL="notices@example.com",
