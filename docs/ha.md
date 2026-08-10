@@ -143,8 +143,8 @@ continue returning a failed edge and established streams are not resumed. The cu
 model intentionally supports one canonical shared address pool; multiple pools need
 the future site-aware inventory model to prevent mirrored socket collisions.
 
-Framed and routed Blindport IP remain address products rather than portable DNS
-identities. Honest HA choices are two separately assigned provider-specific addresses,
+Current routed Blindport IP and historical framed IP remain address products
+rather than portable DNS identities. Honest HA choices are two separately assigned provider-specific addresses,
 a provider-local floating IP with only provider-local HA, or portable BGP space. One
 provider-assigned `/32` routed to one VPS does not provide cross-provider HA, and this
 documentation does not claim that it does. Routed WireGuard failover additionally

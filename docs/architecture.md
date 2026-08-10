@@ -18,21 +18,22 @@ routed plane and does not use the framed tunnel protocol.
 
 | Product | Leased identity | Delivery |
 | --- | --- | --- |
-| Blindport IP | one dedicated public IP | framed TCP listeners or routed WireGuard `/32` |
+| Blindport IP | one dedicated public IP | annual routed WireGuard `/32` |
 | Blindport Port | one shared public IP, one port, and TCP or UDP | exact destination socket |
 | Blindport Relay | one hostname | TLS ClientHello SNI on a shared listener |
 
-`RELAY_PUBLIC_IPS` is framed Blindport IP inventory. `WIREGUARD_PUBLIC_IPS` is
-provider-routed IPv4 inventory that must not be bound as relay listener
-addresses. `RELAY_SHARED_IPS` is shared Blindport Port and SNI ingress inventory. All
-three lists must be disjoint. A Blindport Port lease
+`WIREGUARD_PUBLIC_IPS` is the current Blindport IP sale inventory and must not be
+bound as relay listener addresses. `RELAY_PUBLIC_IPS` is retained only for
+already-active historical framed IP records. `RELAY_SHARED_IPS` is shared
+Blindport Port and SNI ingress inventory. All three lists must be disjoint. A
+Blindport Port lease
 also comes from the bounded inclusive `RELAY_SHARED_TCP_PORTS` or
 `RELAY_SHARED_UDP_PORTS` range. TCP and UDP on the same numeric IP/port are
 distinct lease identities and may belong to different subscriptions.
 
 ## Reservation and payment lifecycle
 
-Docker agents may declare an order through idempotent
+Docker agents may declare a Relay or Port order through idempotent
 `PUT /api/v1/client/orders/{order_key}`. Revision `0012` stores the immutable,
 account-scoped declaration and its subscription. Replaying the same key returns
 the original subscription; changing its product, term, transport, delivery, or
@@ -48,12 +49,14 @@ the backend reserves capacity on the subscription for one payment ID. If no
 capacity exists, the payment endpoint returns `409` without calling the payment
 adapter.
 
-Subscriptions snapshot monthly and yearly prices at creation and keep a preferred
-billing term. A payment independently snapshots the selected term, charged amount,
-markup, and fixed period length (30 service days monthly or 365 service days yearly). The
+Port and Relay subscriptions snapshot monthly and yearly prices at creation and
+keep a preferred billing term. New IP subscriptions always select yearly
+WireGuard delivery. A payment independently snapshots the selected term, charged
+amount, markup, and fixed period length (30 service days monthly or 365 service days yearly). The
 payment snapshot is authoritative at settlement, including after configuration,
 price, or preference changes.
-Yearly issuance is feature-gated during rollout. The gate remains disabled while
+Historical framed or monthly IP records cannot create new payments or automatic
+renewals. Yearly issuance is feature-gated during rollout. The gate remains disabled while
 old replicas are present because those replicas do not understand a payment's
 snapshotted day count; already-issued payments remain settleable when the gate is
 later disabled.
@@ -142,11 +145,12 @@ as manual `method=nwc` requests.
 
 Active expiration changes authorization to `EXPIRED` immediately but retains a
 dedicated Blindport IP or Blindport Port tuple until `RESOURCE_REUSE_QUARANTINE_SECONDS` elapses.
-The expired subscription cannot open a new payment during its quarantine. At
+The expired subscription cannot open a new payment during its quarantine. A
+historical framed IP cannot open another payment at all. At
 release, an open renewal payment is reconciled first; settlement reactivates the
 same assignment, while pending or uncertain provider state retains it until the
-payment can be resolved safely. Once released, a later payment reserves current
-capacity and may receive a different assignment.
+payment can be resolved safely. For renewable products, a later payment after
+release reserves current capacity and may receive a different assignment.
 
 Database uniqueness constraints protect dedicated IPs, shared
 `(IP, port, transport)` tuples, and one open (`PENDING` or `PROCESSING`) payment
@@ -192,7 +196,8 @@ dependency and never participates in pricing snapshots, invoices, or settlement.
 
 ## Data paths
 
-Framed Blindport IP and Blindport Port dispatch do not inspect payloads:
+Historical framed Blindport IP and current Blindport Port dispatch do not inspect
+payloads:
 
 ```text
 external TCP client -> relay dedicated IP or exact shared socket
@@ -338,8 +343,8 @@ to maintain a tunnel there. Workers reconnect independently, so one unavailable
 edge does not stop the other mappings or edges. DNS does not preserve, migrate,
 or resume established TCP sessions when answers or edge health change.
 
-Framed Blindport IP and Blindport Port provisioning contains only `RELAY_CONTROL_URL`.
-Their failover requires the leased IPs to be announced or moved between relay
-nodes because DNS does not move those socket identities. Routed Blindport IP failover
+Historical framed Blindport IP and current Blindport Port provisioning contains
+only `RELAY_CONTROL_URL`. Their failover requires the leased IPs to be announced
+or moved between relay nodes because DNS does not move those socket identities. Routed Blindport IP failover
 likewise requires the provider route to move to a relay with the same backend
 state and WireGuard key; BGP and multi-relay key rotation are not implemented.

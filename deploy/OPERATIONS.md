@@ -7,9 +7,9 @@ availability.
 
 Provider-edge Relay deployments may use `deploy/split/relay` independently of the
 control stack. Keep one provider-specific control hostname per edge. Before enabling
-backend mappings, deploy and verify every relay with only that site's shared and framed
-addresses bound. Keep `PORT_HA_EDGES`, `PORT_HOSTNAME_SUFFIX`, and
-`FRAMED_IP_ENDPOINTS` only on the control backend. Roll out the current agent before
+backend mappings, deploy and verify every relay with only that site's shared and
+historical framed addresses bound. Keep `PORT_HA_EDGES`, `PORT_HOSTNAME_SUFFIX`,
+and `FRAMED_IP_ENDPOINTS` only on the control backend. Roll out the current agent before
 representing Port service as redundant, and treat `PORT_HOSTNAME_SUFFIX` as immutable
 after publishing customer hostnames.
 
@@ -77,8 +77,11 @@ The checked-in policy cannot control independent hosting, DNS, payment, email, o
 customer systems; review those providers separately.
 Set all monthly and yearly price variables to positive satoshi amounts; the checked-in
 defaults are 7,500/75,000 for IP, 1,500/15,000 for Port, and 3,000/30,000 for Relay.
+The IP monthly value is retained for historical snapshots and validation; new IP
+subscriptions use the yearly price only.
 Keep `BILLING_YEARLY_ENABLED=false` until migration `0009` is applied and all old
 backend and reconciliation replicas are drained, then enable it on every replica.
+Blindport IP has no sellable capacity while yearly billing is disabled.
 Keep NWC disabled until migration `0010` is applied, all old replicas are drained,
 a dedicated credential keyring is mounted, and each user has validated a wallet
 connection. The checked-in Compose environments remain Lightning-only.

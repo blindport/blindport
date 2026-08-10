@@ -228,9 +228,10 @@ WireGuard or legacy single-subscription flags.
 
 Every configured subscription must appear in the backend's active provisioning
 response. Blindport Relay mappings create one independent tunnel worker for every
-provisioned relay endpoint. Framed Blindport IP and Blindport Port provisioning contains
-only the primary relay because those products are tied to provider-specific
-IP/socket inventory. `--relay` or `BLINDPORT_RELAY_CONTROL` replaces provisioning
+provisioned relay endpoint. Blindport Port and already-active historical framed
+IP provisioning contains only the primary relay because those identities are
+tied to provider-specific IP/socket inventory. New WireGuard IP subscriptions do
+not appear in framed provisioning. `--relay` or `BLINDPORT_RELAY_CONTROL` replaces provisioning
 with one endpoint and is primarily retained for the legacy single-claim mode.
 TLS ServerName is derived independently from each endpoint. `--server-name` or
 `BLINDPORT_SERVER_NAME` sets one explicit override for every endpoint.
@@ -311,11 +312,12 @@ volumes:
 Mapping names contain lowercase ASCII letters, digits, underscores, or hyphens,
 start with a letter or digit, and are at most 63 characters. One container may
 define several mappings. Containers without Blindport labels are ignored. New
-orders use `.product` with `relay`, `port`, or `ip`, an optional
+orders use `.product` with `relay` or `port`, an optional
 `.billing_term` of `monthly` or `yearly`, and a required `.upstream`. Relay also
 requires `.domain`. Port accepts `.transport` as `tcp` (the default) or `udp`.
-Docker IP orders always use framed delivery. Existing mappings keep using
-`.subscription` and `.upstream`; `.subscription` and `.product` are mutually
+Blindport IP orders are rejected because routed mode has no upstream mapping.
+Existing historical framed IP mappings keep using `.subscription` and
+`.upstream`; `.subscription` and `.product` are mutually
 exclusive. Relay mappings may add `.tls_mode` as `automatic` or `passthrough`.
 Automatic mode also requires `.acme_terms_accepted: "true"`; omitted mode keeps
 legacy Docker mappings in passthrough mode. All provisioned relay-edge workers
@@ -386,7 +388,7 @@ remain supported for deployments with a different threat model.
 ## Routed WireGuard mode
 
 Run `blindportd --wireguard` or set `BLINDPORT_WIREGUARD=1` for active Blindport IP
-subscriptions created with `delivery=wireguard`. This mode is separate from
+subscriptions. New IP subscriptions always use yearly WireGuard delivery. This mode is separate from
 static mappings, Docker discovery, and the legacy claim flags. The application
 must listen on the assigned address or a wildcard socket itself; routed mode
 does not dial an `--upstream`.
@@ -429,9 +431,9 @@ requires that identity.
 - Continuous discovery uses bounded polling rather than Docker events, so changes
   can take up to one configured poll interval to apply.
 - Static configuration is still read once at startup. Docker and active framed
-  provisioning are reconciled in-process; routed WireGuard changes still require
-  a restart. Client and automatic Relay certificates renew in-process without a
-  daemon restart.
+  provisioning, including historical framed IP compatibility, are reconciled
+  in-process; routed WireGuard changes still require a restart. Client and
+  automatic Relay certificates renew in-process without a daemon restart.
 - Backend bootstrap requests and the relay protocol HELLO exchange are limited
   to 10 seconds. Bootstrap response bodies are size-limited and strictly parsed.
 - Declared Docker orders can register and make one initial NWC payment. Label
@@ -446,4 +448,5 @@ requires that identity.
   rotation.
 
 Legacy mode remains available with `--kind`, `--ip`, `--port`, `--transport`,
-`--domain`, and `--upstream`. It selects one active subscription as before.
+`--domain`, and `--upstream`. It selects one active framed subscription as before;
+new Blindport IP subscriptions use the separate routed mode.

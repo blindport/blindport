@@ -18,8 +18,9 @@ before exposing a deployment to untrusted traffic.
   secret become cross-host dependencies.
 
 Neither topology provides high availability. The supplied manifests expose
-Blindport Port and Relay inventory. Dedicated framed Blindport IP requires bound
-listener addresses. Routed WireGuard Blindport IP requires provider-routed `/32`
+Blindport Port and Relay inventory. `RELAY_PUBLIC_IPS` listener addresses are
+needed only while serving historical framed IP records. Current Blindport IP
+sales require provider-routed WireGuard `/32`
 inventory, a persistent relay key, IPv4 forwarding, `NET_ADMIN`, and nftables as
 described in the operational reference. It provides a bidirectional static public
 interface without NAT. Disable IP sales until the corresponding inventory and

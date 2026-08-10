@@ -8,6 +8,9 @@ version is declared.
 This protocol applies only to `framed` delivery. Routed WireGuard Blindport IP uses
 standard WireGuard transport and the HTTP enrollment and desired-state APIs; it
 does not encapsulate packets in these JSON frames.
+The `ip` claim below is retained only for already-active historical framed IP
+subscriptions. New Blindport IP subscriptions are not provisioned through this
+protocol.
 
 The routed relay requests `/internal/v3/wireguard/peers`, which extends the v2
 peer snapshot with subscription prefix bindings used for daily bandwidth accounting.
@@ -79,7 +82,7 @@ Claims are strict tagged objects:
 
 | `kind` | Required fields | Meaning |
 | --- | --- | --- |
-| `ip` | `ip` | Blindport IP, all configured TCP listeners on one dedicated IP |
+| `ip` | `ip` | historical framed Blindport IP, with all configured TCP listeners on one dedicated IP |
 | `port` | `ip`, `port`, `transport: "tcp"` or `"udp"` | Blindport Port, exactly one shared transport socket |
 | `relay` | lowercase `domain` | Blindport Relay, one valid DNS hostname on the SNI listener |
 
@@ -122,7 +125,8 @@ queue, but sustained legacy senders can still have only their offending stream
 closed when they exceed that limit. Negotiated flow control is therefore required
 for indefinite backpressure without stream abort.
 
-The backend resolution response contains dedicated IP strings, relay domain
+For compatibility with historical framed IP records, the backend resolution
+response contains dedicated IP strings alongside relay domain
 strings, and structured Blindport Port leases. Authorization compares the complete
 claim. A different shared port, IP, or transport is a different identity.
 
@@ -213,7 +217,7 @@ The provisioning response retains v0 `relay_endpoint` and returns
 that strictly reject unknown response fields. The singular endpoint is the first list
 entry. Blindport Relay receives all configured edges. Each assignment pairs a control
 endpoint with the provider-local claim IP. Blindport Port uses one assignment per
-provider; framed Blindport IP uses the edge that owns its address. Older agents
+provider; historical framed Blindport IP uses the edge that owns its address. Older agents
 continue using the primary Port edge. A multi-edge agent derives TLS ServerName
 independently from each endpoint unless configured with one explicit override.
 
@@ -225,7 +229,7 @@ backend resource reuse quarantine must be greater than the maximum plus one
 interval.
 The relay can observe endpoints, timing, byte counts, and Blindport Relay SNI. It does
 not terminate user TLS. An automatic-TLS agent terminates Relay TLS locally,
-while passthrough remains end to end to the origin. Framed Blindport IP and
+while passthrough remains end to end to the origin. Historical framed Blindport IP and
 Blindport Port can carry plaintext protocols if the user chooses them. This protocol provides no traffic padding,
 anonymity, end-to-end payload encryption of its own, routed packets, stream
 priority, resume, or session migration between relays. UDP is carried over the

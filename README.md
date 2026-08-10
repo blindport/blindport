@@ -28,12 +28,12 @@ placements, and `brand-social.png` for 1200 by 630 link previews.
 
 The three products use distinct ingress identities:
 
-- **Blindport IP** leases one dedicated public IP. `framed` delivery forwards
-  selected TCP listeners without host network privileges; `wireguard` delivery
-  is an annual-only lease that routes the full IPv4 `/32`, including TCP, UDP,
-  ICMP, arbitrary ports, and outbound traffic, to a privileged Linux customer
-  host. New outbound TCP connections to port 25 are blocked unless the operator
-  approves a paid exception for the current lease.
+- **Blindport IP** leases one dedicated public IP as an annual-only WireGuard
+  `/32`. It routes TCP, UDP, ICMP, arbitrary ports, and outbound traffic to a
+  privileged Linux customer host. New outbound TCP connections to port 25 are
+  blocked unless the operator approves a paid exception for the current lease.
+  Historical framed IP records remain readable and can operate only through
+  their existing paid period; they cannot receive new payments or renewals.
 - **Blindport Port** leases one canonical `(shared public IP, port, TCP or UDP)`
   socket. An optional provider-edge topology mirrors that port through distinct
   provider-local public IPs and advertises one stable hostname. Shared addresses
@@ -44,9 +44,9 @@ The three products use distinct ingress identities:
   termination and certificate management in an existing origin server.
 
 Automatic Relay TLS terminates in the customer agent, not at the Blindport edge.
-Blindport Port supports TCP or UDP. WireGuard Blindport IP is the only routed
-interface mode; framed Blindport IP, Blindport Port, and Blindport Relay remain
-application forwarding products.
+Blindport Port supports TCP or UDP. WireGuard is the only currently issued
+Blindport IP delivery mode. Blindport Port and Blindport Relay remain application
+forwarding products; framed Blindport IP is retained only for historical service.
 
 Blindport Relay supports provider-managed names strictly below configured wildcard
 suffixes and customer-owned names proven by pointing one exact DNS CNAME record
@@ -69,12 +69,12 @@ Blindport receives Lightning bitcoin and activates service only after LND report
 settlement. Cashu and Nostr Wallet Connect adapters remain experimental. Cashu
 quote recovery and reconciliation are not production-ready.
 
-Subscriptions support fixed monthly (30 service days) and yearly (365 service
-days) terms. Prices are snapshotted when a subscription is created, and each
-payment snapshots its amount, any stablecoin surcharge, and exact service period
-before settlement.
-Yearly issuance is controlled by `BILLING_YEARLY_ENABLED` so operators can enable
-it only after completing the migration-first rolling deployment.
+Blindport Port and Relay support fixed monthly (30 service days) and yearly (365
+service days) terms. New Blindport IP subscriptions use 365 service days only.
+Prices are snapshotted when a subscription is created, and each payment snapshots
+its amount, any stablecoin surcharge, and exact service period before settlement.
+Yearly issuance is controlled by `BILLING_YEARLY_ENABLED`; Blindport IP sales have
+no capacity while that gate is disabled.
 Accounts can optionally store an encrypted email address for seven-day and one-day
 expiration reminders. Delivery is disabled by default and uses a generic SMTP relay
 with STARTTLS or implicit TLS. SMTP delivery is independent of customer NWC payments
@@ -202,8 +202,9 @@ The backend reserves scarce capacity before creating an external payment
 request. Payment settlement commits that reservation into an active lease.
 Unpaid reservation timeouts release only the owning payment's hold. Active
 expiration removes authorization immediately, then quarantines dedicated Blindport IP and
-Blindport Port assignments before reuse. Expired subscriptions can be paid again
-after quarantine, but may receive a different resource.
+Blindport Port assignments before reuse. Expired Port and Relay subscriptions can
+be paid again after quarantine or renewal grace as applicable. Historical framed
+IP subscriptions cannot be paid again.
 
 Direct LND invoices use a durable, deterministic outbox. Provider timeouts or a
 process failure after invoice creation can be recovered by payment hash without
@@ -230,10 +231,10 @@ multi-mapping and Docker label configuration is documented in
 
 Blindport Relay can use DNS active-active ingress when every advertised relay edge is
 included in backend provisioning. The agent maintains an independent tunnel to
-each provisioned edge. DNS does not preserve established TCP sessions. Framed
-Blindport IP and Blindport Port remain pinned to their assigned primary relay socket
-inventory; routed Blindport IP remains pinned to its configured WireGuard endpoint
-and provider route.
+each provisioned edge. DNS does not preserve established TCP sessions. Historical
+framed Blindport IP and current Blindport Port remain pinned to their assigned
+primary relay socket inventory; routed Blindport IP remains pinned to its
+configured WireGuard endpoint and provider route.
 
 ## Contact
 

@@ -38,7 +38,7 @@ PORT_MONTHLY_SATS=1500
 PORT_YEARLY_SATS=15000
 RELAY_MONTHLY_SATS=3000
 RELAY_YEARLY_SATS=30000
-BILLING_YEARLY_ENABLED=false
+BILLING_YEARLY_ENABLED=true
 IP_ENABLED=true
 IP_SALES_PAUSED=false
 PORT_ENABLED=true
@@ -85,8 +85,9 @@ blindport-migrate current --check
 Do not enable `DATABASE_MIGRATE_ON_STARTUP` in production. Every API replica
 verifies the migration revision during startup and readiness.
 
-Monthly terms grant exactly 30 service days and yearly terms grant exactly 365
-service days. A subscription snapshots both configured prices when it is created.
+Monthly terms for Port and Relay grant exactly 30 service days, and yearly terms
+grant exactly 365 service days. New Blindport IP subscriptions are WireGuard-only
+and yearly-only. A subscription snapshots both configured prices when it is created.
 Each payment then snapshots its selected term, amount, and period length, and
 settlement uses only that payment snapshot. Changing prices or the subscription's
 preferred term cannot alter an already-created invoice. Revision `0009` backfills
@@ -170,7 +171,7 @@ typed infrastructure failure only while a valid signed artifact remains within
 its grace period, and remove workers on an online denial or malformed
 authoritative response.
 
-Revision `0012` adds idempotent Docker agent orders and uniquely links their
+Revision `0012` adds idempotent Docker agent Relay and Port orders and uniquely links their
 optional initial NWC payment before wallet access. Deploy the migration before
 the backend, then deploy continuously reconciling agents. Older agents continue
 to use existing subscriptions. Treat authority to deploy labeled containers as
@@ -179,7 +180,8 @@ prefer a narrowly authorized Docker socket proxy.
 
 ## Inventory
 
-Configure dedicated and shared inventory consistently on the backend and relay:
+Configure shared inventory consistently on the backend and relay. Configure the
+dedicated listener list only while historical framed IP records remain active:
 
 ```text
 backend: RELAY_PUBLIC_IPS=203.0.113.11,203.0.113.12
@@ -196,8 +198,9 @@ relay:   BLINDPORT_RELAY_SHARED_UDP_PORTS=10000-10007
 relay:   BLINDPORT_RELAY_HTTP_CHALLENGE=:80
 ```
 
-The dedicated and shared lists must be disjoint. Bind all addresses on the
-relay host before starting the process. The relay validates lists and ranges,
+`RELAY_PUBLIC_IPS` and `BLINDPORT_RELAY_IPS` are legacy framed-service settings,
+not current sale inventory. The dedicated and shared lists must be disjoint. Bind
+all addresses on the relay host before starting the process. The relay validates lists and ranges,
 requests certificate SANs for both IP sets, and pre-binds every control,
 dedicated, shared-port, and SNI listener. Any bind failure aborts startup and
 closes listeners already opened during that attempt.
@@ -206,8 +209,8 @@ Relay control endpoints use strict `host:port` syntax without a URL scheme or
 path. DNS names and IP literals are canonicalized, IPv6 uses `[address]:port`,
 scoped IPv6 addresses are rejected, and canonical duplicates in
 `RELAY_CONTROL_URLS` are removed. An empty `RELAY_CONTROL_URLS` uses the
-primary `RELAY_CONTROL_URL` value. Framed Blindport IP and Blindport Port retain
-that primary endpoint for older agents. Current agents also consume provider-edge
+primary `RELAY_CONTROL_URL` value. Historical framed Blindport IP and current
+Blindport Port retain that primary endpoint for older agents. Current agents also consume provider-edge
 assignments when configured as described below.
 
 The default control endpoint is now `relay:5443`. Existing settings using URL
@@ -216,9 +219,9 @@ URL-scheme compatibility is intentionally not provided.
 
 ### Routed WireGuard inventory
 
-Routed Blindport IP is optional. Allocate IPv4 addresses that the hosting provider
-routes to the relay host, then configure a pool disjoint from every framed and
-shared listener address:
+WireGuard is required whenever Blindport IP sales are enabled. Allocate IPv4
+addresses that the hosting provider routes to the relay host, then configure a
+pool disjoint from every historical framed and shared listener address:
 
 ```text
 backend: WIREGUARD_PUBLIC_IPS=198.51.100.20,198.51.100.21
@@ -248,9 +251,10 @@ relay installs active `/32` link routes and blackholes all other managed
 inventory. Do not add SNAT or DNAT; preserving both endpoint addresses is part
 of the routed product contract.
 
-Routed Blindport IP is annual-only. Keep `BILLING_YEARLY_ENABLED=true` whenever
-new routed inventory is offered. Existing monthly payment snapshots remain
-settleable during rollout, but all new orders and renewals use 365 service days.
+Blindport IP is WireGuard-only and annual-only. Keep
+`BILLING_YEARLY_ENABLED=true` whenever IP sales are offered. Existing issued
+payment snapshots remain settleable, but historical framed or monthly IP
+subscriptions cannot create another payment or renewal.
 
 The relay image includes nftables and owns only the `inet blindport` table. It
 atomically replaces that table during desired-state reconciliation. Do not create
@@ -309,9 +313,9 @@ each port is a separate listener.
 
 ### Provider edge assignments
 
-Use `FRAMED_IP_ENDPOINTS` when framed dedicated IP inventory belongs to more than
-one relay host. It is a JSON object containing every `RELAY_PUBLIC_IPS` address
-exactly once. Each value is the owning relay control endpoint:
+Use `FRAMED_IP_ENDPOINTS` only while historical framed dedicated IP addresses
+belong to more than one relay host. It is a JSON object containing every
+`RELAY_PUBLIC_IPS` address exactly once. Each value is the owning relay control endpoint:
 
 ```text
 RELAY_PUBLIC_IPS=198.51.100.20,203.0.113.20
@@ -453,7 +457,7 @@ movement outside Blindport.
 | backend API (8000 or reverse-proxied 443) | TCP | users and relays |
 | Blindport Relay HTTP redirect and HTTP-01 listener | TCP 80 | public HTTP clients and ACME validators |
 | relay control (default 5443) | TCP with mutual TLS | blindportd clients |
-| dedicated Blindport IP listener ports | TCP | public clients |
+| historical framed Blindport IP listener ports | TCP | public clients with unexpired service |
 | shared Blindport Port TCP range | TCP | public clients |
 | shared Blindport Port UDP range | UDP | public clients |
 | Blindport Relay SNI listener | TCP/TLS passthrough | public clients |
@@ -530,8 +534,8 @@ server. Set the container stop grace period above the relay timeout.
 ## Certificates and secrets
 
 Terminate public HTTPS for the backend with a conventional reverse proxy. User
-traffic through framed Blindport IP, TCP Blindport Port, or Blindport Relay is raw TCP; any
-user-facing TLS certificate belongs on the user's upstream. UDP Blindport Port
+traffic through historical framed Blindport IP, TCP Blindport Port, or Blindport
+Relay is raw TCP; any user-facing TLS certificate belongs on the user's upstream. UDP Blindport Port
 forwards complete datagrams without terminating an application protocol.
 Routed Blindport IP forwards IP packets without terminating or inspecting application
 protocols.
