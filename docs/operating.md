@@ -127,6 +127,16 @@ Campaign content is plain text, recipients are snapshotted by account and addres
 generation only, and the outbox stores no plaintext addresses. The SMTP safety boundary
 matches expiration reminders: a send-side disconnect is terminal `delivery_ambiguous`.
 
+Revision `0022` introduces the unified privacy-preserving notification outbox. ACCOUNT
+consent covers activation, renewal, seven-day, one-day, and actual-expiry lifecycle
+events; SERVICE consent covers announcements only. `notification_reconciliation` is
+independent of payment reconciliation and exposes its own readiness component. It
+discovers lifecycle events, drains legacy reminder and announcement rows, expands each
+queued campaign in bounded snapshot pages, and delivers unified rows. SMTP acceptance
+is terminal; retryable failures retry before the SMTP boundary, while interrupted or
+ambiguous sends are terminal `delivery_ambiguous`. Existing legacy outboxes remain
+drain-only during migration.
+
 Offline entitlement provisioning is disabled by default. The v2 endpoint returns an
 edge-specific signed artifact and an identical explicit claim object, so agents can build
 plans without decoding the artifact. Enable it only after all relays and agents support the

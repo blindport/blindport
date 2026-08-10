@@ -240,6 +240,17 @@ contain only campaign, account, and recipient-generation references; no addresse
 displayed or exported. Cancellation reaches queued rows only and cannot retract a
 delivery that has entered `sending`.
 
+After migration `0022`, set `NOTIFICATION_RECONCILIATION_ENABLED=true` on control-plane
+backends and tune its interval, batch, startup grace, staleness, and delivery lease only
+through the `NOTIFICATION_RECONCILIATION_*` and `NOTIFICATION_DELIVERY_LEASE_SECONDS`
+settings. This worker is independent from payment reconciliation and reports the
+`notifications` readiness component. It uses one privacy-preserving outbox for ACCOUNT
+lifecycle mail (activation, renewal, seven-day, one-day, and actual expiry) and SERVICE
+announcements. Queue-time announcement snapshots are expanded in bounded pages; legacy
+reminder and announcement outboxes are retained only for draining. SMTP acceptance is
+terminal, retryable pre-boundary failures back off, and interrupted or ambiguous sends
+become terminal `delivery_ambiguous` records.
+
 Offline entitlements remain disabled by default. Do not set
 `OFFLINE_ENTITLEMENTS_ENABLED=true` until every serving relay and agent accepts the signed
 v2 claim format. Mount the dedicated unencrypted Ed25519 PKCS#8 PEM only on `backend`, set

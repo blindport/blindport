@@ -75,10 +75,12 @@ Prices are snapshotted when a subscription is created, and each payment snapshot
 its amount, any stablecoin surcharge, and exact service period before settlement.
 Yearly issuance is controlled by `BILLING_YEARLY_ENABLED`; Blindport IP sales have
 no capacity while that gate is disabled.
-Accounts can optionally store an encrypted email address for seven-day and one-day
-expiration reminders. Delivery is disabled by default and uses a generic SMTP relay
-with STARTTLS or implicit TLS. SMTP delivery is independent of customer NWC payments
-and automatic renewals.
+Accounts can optionally store an encrypted address for ACCOUNT lifecycle mail,
+including activation, renewal, seven-day and one-day expiration notices, and actual
+expiry. SERVICE announcements use separate consent. A privacy-preserving unified
+outbox stores references and recipient generations, not message material. Its worker
+is independent of payment reconciliation; it drains legacy outboxes, expands queue-time
+campaign snapshots in bounded pages, and retries only before an ambiguous SMTP boundary.
 
 ## Repository layout
 

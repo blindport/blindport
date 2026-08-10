@@ -68,14 +68,18 @@ The optional Bitcoin/USD display cache reads the fixed mempool.space price endpo
 background. It never changes invoices or settlement amounts, retains a last-good value for 30
 minutes, and omits USD estimates when no sufficiently fresh value exists.
 
-Expiration reminders are separately gated by `REMINDER_EMAIL_ENABLED`. When enabled,
-recipient addresses are encrypted with purpose-specific AES-GCM associated data and
-never returned after submission. Configure `SMTP_HOST`, `SMTP_PORT`,
+ACCOUNT lifecycle mail is gated by `REMINDER_EMAIL_ENABLED`; SERVICE announcements
+are separately gated by `ANNOUNCEMENT_EMAIL_ENABLED`. When enabled, recipient
+addresses are encrypted with purpose-specific AES-GCM associated data and never
+returned after submission. Configure `SMTP_HOST`, `SMTP_PORT`,
 `SMTP_SECURITY=starttls|tls`, `SMTP_FROM_EMAIL`, and `SMTP_TIMEOUT_SECONDS`.
 `SMTP_USERNAME` and the file-backed `SMTP_PASSWORD_FILE` input must be configured together, or
 both omitted for a trusted local relay. Production requires TLS. The durable outbox
 stores no recipient, subject, or body plaintext and uses a deterministic Message-ID.
-SMTP servers necessarily receive each recipient and generated reminder in plaintext.
+The unified notification worker is independent of payment reconciliation, handles
+activation, renewal, seven-day, one-day, and actual-expiry events, expands campaign
+snapshots in bounded pages, and drains legacy outboxes. SMTP servers necessarily
+receive each recipient and generated message in plaintext.
 
 Direct-client limits use FastAPI's trusted `Request.client` value and never parse forwarded headers.
 The production ASGI server and any serving proxy must therefore be configured with an explicit
