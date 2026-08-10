@@ -336,7 +336,7 @@ def test_admin_panel_paginates_combined_account_rows(app_client) -> None:
     assert "Showing 26 to 30 of 30" in second_page.text
     assert expanded_page.text.count("data-admin-row") == 30
     assert "Accounts and subscriptions" in expanded_page.text
-    assert "Subscription progress" in expanded_page.text
+    assert "Subscription summary" in expanded_page.text
 
 
 def test_admin_panel_mutation_requires_browser_session(app_client) -> None:

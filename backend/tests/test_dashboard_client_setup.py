@@ -107,6 +107,10 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert "BLINDPORT_INSTALL_DIR" not in dashboard
     assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
     assert 'acmeTermsAccepted" type="checkbox" checked' not in dashboard
+    assert (
+        "For Blindport Relay, your agent terminates TLS and retains automatic certificate "
+        "private keys while Blindport routes the connection." in dashboard
+    )
     assert run_command == (
         'export PATH="$HOME/.local/bin:$PATH" && '
         "blindportd -backend=http://testserver "
@@ -226,6 +230,9 @@ def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_clie
     assert "journalctl --user -u blindportd.service -f" in dashboard
     assert "systemctl --user restart blindportd.service" in dashboard
     assert 'id="acmeTermsAccepted"' not in dashboard
+    assert (
+        "your agent terminates TLS and retains automatic certificate private keys" not in dashboard
+    )
     assert f"<code>{port_id}</code>" in dashboard
     assert f"<code>{ip_id}</code>" in dashboard
 

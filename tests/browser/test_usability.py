@@ -67,6 +67,7 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "PAYMENT_NWC_ADAPTER": "mock",
             "CREDENTIAL_ENCRYPTION_KEY": "cd" * 32,
             "PAYMENT_RECONCILIATION_ENABLED": "true",
+            "REMINDER_EMAIL_ENABLED": "true",
             "ANNOUNCEMENT_EMAIL_ENABLED": "true",
             "SMTP_HOST": "smtp.example.test",
             "SMTP_FROM_EMAIL": "notices@example.test",
@@ -239,12 +240,18 @@ def test_landing_ip_order_is_wireguard_and_annual_only(
     page = context.new_page()
     try:
         page.goto(browser_server.base_url, wait_until="networkidle")
-        page.locator('input[name="orderProduct"][value="ip"]').check()
+        page.get_by_role("link", name="Choose IP").click()
+        assert page.locator('input[name="orderProduct"][value="ip"]').is_checked()
         assert page.locator(
             'input[name="orderBillingTerm"][value="yearly"]'
         ).is_checked()
         assert page.locator("#orderTermControl").is_hidden()
         assert page.locator("#ipAnnualOnlyHint").is_visible()
+        assert "annual-only" in page.locator("#ipAnnualOnlyHint").inner_text()
+        assert (
+            "routed dedicated /32 over WireGuard"
+            in page.locator('.plan-option:has(input[value="ip"])').inner_text()
+        )
         assert page.locator('input[name="orderDelivery"]').count() == 0
         assert (
             "365"
@@ -285,6 +292,7 @@ def test_landing_ip_order_is_wireguard_and_annual_only(
             "transport": "tcp",
             "domain": None,
         }
+        _assert_layout(page)
     finally:
         context.close()
 
@@ -313,6 +321,11 @@ def test_dashboard_ip_order_is_wireguard_and_annual_only(
         assert page.locator('input[name="newBillingTerm"][value="yearly"]').is_checked()
         assert page.locator("#newOrderTerm").is_hidden()
         assert page.locator("#dashboardIpAnnualOnlyHint").is_visible()
+        assert "annual-only" in page.locator("#dashboardIpAnnualOnlyHint").inner_text()
+        assert (
+            "routed dedicated /32 over WireGuard"
+            in page.locator('#product option[value="ip"]').inner_text()
+        )
         assert page.locator("#deliveryField, #delivery").count() == 0
         assert page.locator("#selectedPrice").text_content() == "75000 sats / 365 days"
 
@@ -343,6 +356,7 @@ def test_dashboard_ip_order_is_wireguard_and_annual_only(
             "transport": "tcp",
             "delivery": "wireguard",
         }
+        _assert_layout(page)
     finally:
         context.close()
 
@@ -582,9 +596,11 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
         assert page.get_by_role("heading", name="Relay edges", exact=True).is_visible()
         assert page.get_by_role("heading", name="DNS targets", exact=True).is_visible()
         assert page.get_by_text("Ever paying customers", exact=True).is_visible()
-        assert page.get_by_role(
-            "heading", name="Subscription progress", exact=True
-        ).is_visible()
+        assert (
+            page.locator("#charts-title")
+            .get_by_text("Subscription summary", exact=True)
+            .is_visible()
+        )
         assert page.get_by_role(
             "heading", name="Accounts and subscriptions", exact=True
         ).is_visible()
@@ -630,12 +646,13 @@ def test_customer_browser_login_rejects_admin_token_and_admin_uses_dedicated_log
         context.close()
 
 
-def test_dashboard_service_announcement_opt_in_uses_service_email_endpoint(
+def test_dashboard_service_notifications_use_independent_endpoints(
     browser: Browser,
     browser_server: BrowserServer,
     playwright_runtime: Playwright,
 ) -> None:
     account = _signup(playwright_runtime, browser_server.base_url)
+    reminder_address = "playwright-account-update@example.com"
     address = "playwright-announcement@example.com"
     context = browser.new_context(viewport={"width": 390, "height": 844})
     context.add_cookies(
@@ -653,7 +670,24 @@ def test_dashboard_service_announcement_opt_in_uses_service_email_endpoint(
     page.on("pageerror", lambda error: errors.append(str(error)))
     try:
         page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
-        page.get_by_text("Service announcements", exact=True).click()
+        page.locator("summary", has_text="Service notifications").click()
+        assert page.get_by_role("heading", name="Account updates").is_visible()
+        assert page.get_by_role("heading", name="Service announcements").is_visible()
+        _assert_layout(page)
+
+        assert page.locator("#reminderStatus").inner_text() == "Disabled"
+        page.locator("#reminderEmail").fill(reminder_address)
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v1/me/reminder-email")
+                and response.request.method == "POST"
+            )
+        ) as reminder_response:
+            page.locator("#reminderForm").get_by_role("button", name="Enable").click()
+        assert reminder_response.value.status == 200
+        page.locator("#deleteReminderBtn").wait_for(state="attached")
+
+        page.locator("summary", has_text="Service notifications").click()
         assert page.locator("#announcementStatus").inner_text() == "Disabled"
         assert page.locator("#deleteAnnouncementEmailBtn").count() == 0
         page.locator("#announcementEmail").fill(address)
@@ -668,9 +702,10 @@ def test_dashboard_service_announcement_opt_in_uses_service_email_endpoint(
             ).click()
         assert saved_response.value.status == 200
         page.locator("#deleteAnnouncementEmailBtn").wait_for(state="attached")
-        page.get_by_text("Service announcements", exact=True).click()
+        page.locator("summary", has_text="Service notifications").click()
         page.locator("#deleteAnnouncementEmailBtn").wait_for(state="visible")
         assert address not in page.content()
+        assert reminder_address not in page.content()
 
         with page.expect_response(
             lambda response: (

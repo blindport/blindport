@@ -365,7 +365,7 @@ def test_dashboard_renders_catalog_controls_and_external_scripts(app_client) -> 
     response = client.get("/dashboard")
 
     assert response.status_code == 200, response.text
-    assert "Dedicated public IP" in response.text
+    assert "One routed dedicated /32 over WireGuard (annual-only)" in response.text
     assert "One public port" in response.text
     assert "Public hostname" in response.text
     assert client.cookies.get("blindport_token") is None

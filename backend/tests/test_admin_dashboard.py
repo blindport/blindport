@@ -34,6 +34,8 @@ def test_operations_summary_is_zero_for_an_empty_customer_database(app_client) -
     assert summary.accounts_without_subscriptions == 0
     assert summary.settled_gross_sats_30d == 0
     assert summary.active_subscription_accounts_7d == 0
+    assert summary.reported_public_ingress_bytes_30d is None
+    assert summary.reported_public_egress_bytes_30d is None
     assert [(row.key, row.value, row.percent) for row in summary.status_breakdown] == [
         ("active", 0, 0),
         ("pending", 0, 0),
@@ -270,7 +272,7 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
         "Dec 15",
         "Dec 22",
         "Dec 29",
-        "Jan 5",
+        "Week to date",
     ]
     assert [row.new_subscriptions for row in summary.weekly_activity] == [0, 0, 0, 0, 0, 1, 1, 2]
     assert [row.paid_sats for row in summary.weekly_activity] == [0, 0, 200, 0, 0, 0, 100, 0]
@@ -292,6 +294,106 @@ def test_operations_summary_uses_customer_aggregates_and_catalog_capacity(
     assert capacities["port"].availability == "3 of 4 mappings available"
     assert capacities["relay"].availability == "1 of 2 managed names available"
     assert capacities["relay"].detail == "Customer domains available"
+
+
+def test_operations_summary_reports_recent_customer_public_bandwidth_only_when_enabled(
+    app_client, monkeypatch
+) -> None:
+    from blindport.core.models import (
+        ProductType,
+        Subscription,
+        SubscriptionDailyBandwidth,
+        User,
+    )
+    from blindport.db import engine
+    from blindport.services import admin_dashboard
+
+    _client, _ = app_client
+    now = datetime(2026, 1, 31, 12, tzinfo=UTC)
+    monkeypatch.setattr(admin_dashboard.settings, "BANDWIDTH_METRICS_ENABLED", True)
+    with Session(engine) as session:
+        customer = User(hashed_token="bandwidth-customer")
+        admin = User(hashed_token="bandwidth-admin", is_admin=True)
+        session.add_all([customer, admin])
+        session.flush()
+        customer_subscription = Subscription(
+            user_id=customer.id,
+            product=ProductType.IP,
+            monthly_price_sats=1,
+        )
+        admin_subscription = Subscription(
+            user_id=admin.id,
+            product=ProductType.IP,
+            monthly_price_sats=1,
+        )
+        session.add_all([customer_subscription, admin_subscription])
+        session.flush()
+        session.add_all(
+            [
+                SubscriptionDailyBandwidth(
+                    subscription_id=customer_subscription.id,
+                    day=now.date() - timedelta(days=29),
+                    ingress_bytes=100,
+                    egress_bytes=10,
+                ),
+                SubscriptionDailyBandwidth(
+                    subscription_id=customer_subscription.id,
+                    day=now.date(),
+                    ingress_bytes=200,
+                    egress_bytes=20,
+                ),
+                SubscriptionDailyBandwidth(
+                    subscription_id=customer_subscription.id,
+                    day=now.date() - timedelta(days=30),
+                    ingress_bytes=1_000,
+                    egress_bytes=100,
+                ),
+                SubscriptionDailyBandwidth(
+                    subscription_id=customer_subscription.id,
+                    day=now.date() + timedelta(days=1),
+                    ingress_bytes=2_000,
+                    egress_bytes=200,
+                ),
+                SubscriptionDailyBandwidth(
+                    subscription_id=admin_subscription.id,
+                    day=now.date(),
+                    ingress_bytes=3_000,
+                    egress_bytes=300,
+                ),
+            ]
+        )
+        session.commit()
+
+        summary = admin_dashboard.build_operations_summary(session, now=now)
+
+    assert summary.reported_public_ingress_bytes_30d == 300
+    assert summary.reported_public_egress_bytes_30d == 30
+
+
+def test_admin_panel_renders_monitoring_labels_and_hides_disabled_bandwidth(
+    app_client, monkeypatch
+) -> None:
+    from blindport.services import admin_dashboard
+
+    client, _ = app_client
+    client.post("/admin/login", data={"token": "TESTADMIN0000"})
+
+    disabled = client.get("/admin")
+
+    assert "Gross payments settled, 30d" in disabled.text
+    assert "Active-subscription accounts seen, 7d" in disabled.text
+    assert "Weekly subscriptions and settled payments (UTC)" in disabled.text
+    assert "Week to date" in disabled.text
+    assert "Totals from current heartbeats" in disabled.text
+    assert "Reported public traffic, 30d" not in disabled.text
+    assert "acquisition" not in disabled.text
+    assert "Subscription progress" not in disabled.text
+
+    monkeypatch.setattr(admin_dashboard.settings, "BANDWIDTH_METRICS_ENABLED", True)
+    enabled = client.get("/admin")
+
+    assert "Reported public traffic, 30d" in enabled.text
+    assert "Ingress 0 bytes, egress 0 bytes" in enabled.text
 
 
 def test_subscription_rows_combine_customer_account_and_payment_state() -> None:

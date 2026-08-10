@@ -17,7 +17,7 @@
       <p class="eyebrow">Next action</p>
       {% if not subscriptions %}
         <h2 id="next-action-title">Create one public endpoint</h2>
-        <p>Choose a hostname, one shared port, or a dedicated IP.</p>
+        <p>Choose a hostname, one shared port, or a routed dedicated /32.</p>
       {% elif pending_subscriptions %}
         <h2 id="next-action-title">Finish your pending endpoint</h2>
         <p>Complete DNS when requested, then pay the Lightning invoice.</p>
@@ -48,7 +48,7 @@
             <article class="subscription-card" data-sub-id="{{ s.public_id }}" data-sub-status="{{ s.status.value }}" data-delivery="{{ s.delivery.value }}" data-monthly-price="{{ s.monthly_price_sats }}" data-yearly-price="{{ s.yearly_price_sats }}">
               <header>
                 <div>
-                  <p class="endpoint-kind">{% if s.product.value == "ip" %}Dedicated IP{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
+                  <p class="endpoint-kind">{% if s.product.value == "ip" %}{{ "Historical framed IP" if legacy_ip else "Routed dedicated /32" }}{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
                   <h3>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
                 </div>
                 <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
@@ -78,7 +78,7 @@
                 {% elif s.delivery.value == "wireguard" and not yearly_billing_enabled and s.status.value in ("pending", "expired", "active") %}
                   <p class="warning">Annual routed-IP payments are currently unavailable.</p>
                 {% elif s.delivery.value == "wireguard" and s.status.value in ("pending", "expired", "active") %}
-                  <p class="payment-term-summary">Routed Blindport IP renews for 365 service days at {{ s.yearly_price_sats }} sats.</p>
+                  <p class="payment-term-summary">One routed dedicated /32 over WireGuard renews annual-only for 365 service days at {{ s.yearly_price_sats }} sats.</p>
                 {% elif s.status.value in ("pending", "expired", "active") and (lightning_enabled or stablecoin_enabled or (nwc_enabled and user.has_nwc)) and yearly_billing_enabled %}
                   <fieldset class="payment-term-control">
                     <legend>Service term</legend>
@@ -144,7 +144,7 @@
                 <summary>Endpoint details</summary>
                 <dl class="sub-details">
                   <div><dt>Subscription ID</dt><dd><code>{{ s.public_id }}</code></dd></div>
-                  <div><dt>Delivery</dt><dd>{{ "Framed tunnel" if s.delivery.value == "framed" else "Routed WireGuard /32" }}</dd></div>
+                  <div><dt>Delivery</dt><dd>{{ "Framed tunnel" if s.delivery.value == "framed" else "One routed dedicated /32 over WireGuard, annual-only" }}</dd></div>
                   <div><dt>Billing</dt><dd class="cardTermLabel">{{ s.billing_term.value | capitalize }}</dd></div>
                   {% if s.relay_pool_domain %}<div><dt>DNS target</dt><dd><code>{{ s.relay_pool_domain }}</code></dd></div>{% endif %}
                   {% if nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{% if legacy_ip %}Unavailable for historical endpoint{% else %}{{ "On" if s.auto_renew else "Off" }}{% endif %}</dd></div>{% endif %}
@@ -177,14 +177,14 @@
       <details id="new-subscription" class="order-drawer"{% if not subscriptions %} open{% endif %}>
         <summary>
           <span class="drawer-symbol" aria-hidden="true">+</span>
-          <span><strong>Add public endpoint</strong><small>Hostname, shared port, or dedicated IP</small></span>
+          <span><strong>Add public endpoint</strong><small>Hostname, shared port, or routed dedicated /32</small></span>
         </summary>
         <form id="newSubForm" class="subscription-form">
           <div class="form-grid">
             <div class="field-group">
               <label for="product">Endpoint type</label>
               <select id="product">
-                {% for item in catalog.products %}<option value="{{ item.product.value }}"{% if item.product.value != "ip" %} data-monthly-price="{{ item.monthly_price_sats }}"{% endif %} data-yearly-price="{{ item.yearly_price_sats }}"{% if not item.available or (item.product.value == "ip" and not item.capacity.wireguard_available) %} disabled{% endif %}>{% if item.product.value == "ip" %}Dedicated public IP (WireGuard, annual){% elif item.product.value == "port" %}One public port{% else %}Public hostname{% endif %}{% if item.sales_paused %} (sales paused){% elif not item.available or (item.product.value == "ip" and not item.capacity.wireguard_available) %} (unavailable){% endif %}</option>{% endfor %}
+                {% for item in catalog.products %}<option value="{{ item.product.value }}"{% if item.product.value != "ip" %} data-monthly-price="{{ item.monthly_price_sats }}"{% endif %} data-yearly-price="{{ item.yearly_price_sats }}"{% if not item.available or (item.product.value == "ip" and not item.capacity.wireguard_available) %} disabled{% endif %}>{% if item.product.value == "ip" %}One routed dedicated /32 over WireGuard (annual-only){% elif item.product.value == "port" %}One public port{% else %}Public hostname{% endif %}{% if item.product.value == "ip" and not item.available %}{% if item.sales_paused %} (sales paused){% elif not yearly_billing_enabled %} (annual billing disabled){% elif not item.enabled %} (unavailable){% else %} (no free WireGuard inventory){% endif %}{% elif item.sales_paused %} (sales paused){% elif not item.available %} (unavailable){% endif %}</option>{% endfor %}
               </select>
               <p class="field-help">Most web services need a public hostname. Choose a port for raw TCP or UDP.</p>
             </div>
@@ -194,7 +194,7 @@
             </div>
           </div>
           {% if yearly_billing_enabled %}<fieldset id="newOrderTerm" class="new-order-term"><legend>Service term</legend><div class="segmented"><label><input type="radio" name="newBillingTerm" value="monthly" checked><span>30 days</span></label><label><input type="radio" name="newBillingTerm" value="yearly"><span>365 days</span></label></div></fieldset>{% endif %}
-          <p id="dashboardIpAnnualOnlyHint" class="field-help" hidden>Blindport IP is a routed WireGuard /32 and is billed annually for 365 days.</p>
+          <p id="dashboardIpAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days.</p>
           <div id="domainField" class="domain-order-fields" hidden>
             <fieldset>
               <legend>Hostname source</legend>
@@ -245,6 +245,7 @@
                 {% endfor %}
               </div>
               {% if client_subscriptions | selectattr('product.value', 'equalto', 'relay') | list %}
+              <p class="field-help">For Blindport Relay, your agent terminates TLS and retains automatic certificate private keys while Blindport routes the connection.</p>
               <label class="terms-consent"><input id="acmeTermsAccepted" type="checkbox"> <span>I agree to the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> for automatic HTTPS.</span></label>
               {% endif %}
               <details class="advanced-config" open>
@@ -282,7 +283,7 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
           <p class="muted">Create and activate an endpoint first.</p>
         {% endif %}
         {% if active_wireguard_subscriptions %}
-          <details class="advanced-config"><summary>Routed WireGuard setup</summary><p>The assigned static public IPv4 is installed directly on <code>bpwg0</code>. Applications can listen on any port and send traffic with the same public source address. Outbound TCP port 25 is blocked by default; contact support for a reviewed, paid exception.</p><code id="wireGuardRunCommand">curl -fsSL {{ install_script_url_shell }} | sh &amp;&amp; sudo blindportd -wireguard{{ backend_flag_shell }}</code><button type="button" class="copyCommandBtn button-secondary" data-copy-target="wireGuardRunCommand">Copy WireGuard command</button></details>
+          <details class="advanced-config"><summary>Routed WireGuard setup</summary><p>Your one routed dedicated /32 is installed directly on <code>bpwg0</code>. Applications can listen on any port and send traffic with the same public source address. Outbound TCP port 25 is blocked by default; contact support for a reviewed, paid exception.</p><code id="wireGuardRunCommand">curl -fsSL {{ install_script_url_shell }} | sh &amp;&amp; sudo blindportd -wireguard{{ backend_flag_shell }}</code><button type="button" class="copyCommandBtn button-secondary" data-copy-target="wireGuardRunCommand">Copy WireGuard command</button></details>
         {% endif %}
       </section>
     </main>
@@ -313,35 +314,39 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
       </details>
       {% endif %}
       {% if nwc_enabled %}<details class="sidebar-section"><summary>Wallet connection</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% else %}Not connected{% endif %}</p>{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
-      {% if reminder_email_enabled %}
+      {% if reminder_email_enabled or announcement_email_enabled %}
       <details class="sidebar-section">
-        <summary>Account notifications</summary>
-        <p id="reminderStatus" role="status" aria-live="polite">{% if user.has_reminder_email %}Enabled{% else %}Disabled{% endif %}</p>
-        <form id="reminderForm">
-          <label for="reminderEmail">Email address</label>
-          <input id="reminderEmail" type="email" autocomplete="email" maxlength="254" required>
-          <div class="button-row">
-            <button id="saveReminderBtn" type="submit">Enable</button>
-            {% if user.has_reminder_email %}<button id="deleteReminderBtn" type="button" class="button-secondary">Disable</button>{% endif %}
-          </div>
-        </form>
+        <summary>Service notifications</summary>
+        {% if reminder_email_enabled %}
+        <section aria-labelledby="account-updates-title">
+          <h3 id="account-updates-title">Account updates</h3>
+          <p id="reminderStatus" role="status" aria-live="polite">{% if user.has_reminder_email %}Enabled{% else %}Disabled{% endif %}</p>
+          <form id="reminderForm">
+            <label for="reminderEmail">Email address</label>
+            <input id="reminderEmail" type="email" autocomplete="email" maxlength="254" required>
+            <div class="button-row">
+              <button id="saveReminderBtn" type="submit">Enable</button>
+              {% if user.has_reminder_email %}<button id="deleteReminderBtn" type="button" class="button-secondary">Disable</button>{% endif %}
+            </div>
+          </form>
+        </section>
+        {% endif %}
+        {% if announcement_email_enabled %}
+        <section aria-labelledby="service-announcements-title">
+          <h3 id="service-announcements-title">Service announcements</h3>
+          <p id="announcementStatus" role="status" aria-live="polite">{% if user.has_service_email %}Enabled{% else %}Disabled{% endif %}</p>
+          <form id="announcementEmailForm">
+            <label for="announcementEmail">Email address</label>
+            <input id="announcementEmail" type="email" autocomplete="email" maxlength="254" required>
+            <div class="button-row">
+              <button id="saveAnnouncementEmailBtn" type="submit">Enable</button>
+              {% if user.has_service_email %}<button id="deleteAnnouncementEmailBtn" type="button" class="button-secondary">Disable</button>{% endif %}
+            </div>
+          </form>
+        </section>
+        {% endif %}
       </details>
       {% endif %}
-      {% if announcement_email_enabled %}
-      <details class="sidebar-section">
-        <summary>Service announcements</summary>
-        <p id="announcementStatus" role="status" aria-live="polite">{% if user.has_service_email %}Enabled{% else %}Disabled{% endif %}</p>
-        <form id="announcementEmailForm">
-          <label for="announcementEmail">Email address</label>
-          <input id="announcementEmail" type="email" autocomplete="email" maxlength="254" required>
-          <div class="button-row">
-            <button id="saveAnnouncementEmailBtn" type="submit">Enable</button>
-            {% if user.has_service_email %}<button id="deleteAnnouncementEmailBtn" type="button" class="button-secondary">Disable</button>{% endif %}
-          </div>
-        </form>
-      </details>
-      {% endif %}
-       <div class="sidebar-section sidebar-note"><strong>Relay HTTPS stays on your host</strong><p>The agent holds automatic HTTPS keys locally. Blindport routes the connection.</p></div>
     </aside>
   </div>
 </div>

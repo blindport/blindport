@@ -13,9 +13,9 @@
     </div>
   </div>
   <dl class="intro-facts" aria-label="Service summary">
-    <div><dt>Leased identity</dt><dd>TLS hostname, exact socket, or dedicated IPv4</dd></div>
+    <div><dt>Leased identity</dt><dd>TLS hostname, exact socket, or a routed dedicated /32</dd></div>
     <div><dt>Account</dt><dd>One bearer token; no email, name, or profile required</dd></div>
-    <div><dt>Service term</dt><dd>Relay and Port: {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}. Blindport IP: WireGuard-only, 365 days; Bitcoin via {% if stablecoin_enabled %}Lightning or stablecoin checkout{% else %}direct Lightning payment{% endif %}</dd></div>
+    <div><dt>Service term</dt><dd>Relay and Port: {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}. Blindport IP: one routed dedicated /32 over WireGuard, annual-only for 365 days; Bitcoin via {% if stablecoin_enabled %}Lightning or stablecoin checkout{% else %}direct Lightning payment{% endif %}</dd></div>
   </dl>
 </section>
 
@@ -57,14 +57,14 @@
     </article>
     <article{% if not ip_wireguard_available %} class="is-unavailable"{% endif %}>
       <h3>Blindport IP</h3>
-      <p class="product-purpose">One dedicated public IPv4</p>
-      <p class="price-line">{{ ip.yearly_price_sats }} <span>sats / 365 days via WireGuard{% set ip_usd = approximate_usd(ip.yearly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
+      <p class="product-purpose">One routed dedicated /32 over WireGuard</p>
+      <p class="price-line">{{ ip.yearly_price_sats }} <span>sats / 365 days, annual-only over WireGuard{% set ip_usd = approximate_usd(ip.yearly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
-        <li>WireGuard routes the complete static /32 in both directions</li>
-        <li>Annual service preserves native TCP, UDP, ICMP, and peer IPs</li>
+        <li>One routed dedicated /32 is carried over WireGuard in both directions</li>
+        <li>Annual-only service preserves native TCP, UDP, ICMP, and peer IPs</li>
         <li>Requires Linux kernel WireGuard and network administration privileges</li>
       </ul>
-      <p class="product-state{% if not ip_wireguard_available %} is-unavailable{% endif %}">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not ip.enabled %}Unavailable{% else %}WireGuard capacity unavailable{% endif %}</p>
+      <p class="product-state{% if not ip_wireguard_available %} is-unavailable{% endif %}">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not yearly_billing_enabled %}Annual billing disabled{% elif not ip.enabled %}Unavailable{% else %}No free WireGuard inventory{% endif %}</p>
       {% if ip_wireguard_available %}<a class="text-link product-jump" href="#order" data-order-product="ip">Choose IP</a>{% endif %}
     </article>
   </div>
@@ -79,7 +79,7 @@
       <p>One daemon can keep every framed mapping in an account connected. The paid endpoint remains assigned while the tunnel reconnects.</p>
     </header>
     <ol class="workflow-steps">
-      <li><span>1</span><div><strong>Choose</strong><p>Pick a hostname, exact socket, or dedicated IPv4.</p></div></li>
+      <li><span>1</span><div><strong>Choose</strong><p>Pick a hostname, exact socket, or routed dedicated /32.</p></div></li>
       <li><span>2</span><div><strong>Pay</strong><p>Settle one invoice for the fixed service term{% if stablecoin_enabled %}, directly or through stablecoin checkout{% endif %}.</p></div></li>
       <li><span>3</span><div><strong>Connect</strong><p>Run <code>blindportd</code> beside the service; it dials outward.</p></div></li>
     </ol>
@@ -182,11 +182,11 @@
                 <input type="radio" name="orderProduct" value="ip" data-yearly-price="{{ ip.yearly_price_sats }}" data-name="Blindport IP"{% if not ip_wireguard_available %} disabled{% endif %}>
                 <span class="plan-title">Blindport IP</span>
                 <span class="plan-price" data-yearly-price="{{ ip.yearly_price_sats }}"><strong>{{ ip.yearly_price_sats }}</strong> sats / <span>365</span> days</span>
-                <span>One dedicated public IPv4, routed through WireGuard.</span>
-                <span class="availability">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not ip.enabled %}Unavailable{% else %}WireGuard capacity unavailable{% endif %}</span>
+                <span>One routed dedicated /32 over WireGuard, annual-only.</span>
+                <span class="availability">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not yearly_billing_enabled %}Annual billing disabled{% elif not ip.enabled %}Unavailable{% else %}No free WireGuard inventory{% endif %}</span>
               </label>
             </div>
-            <p id="ipAnnualOnlyHint" class="field-help" hidden>Blindport IP is delivered as a routed WireGuard /32 and is billed annually for 365 days.</p>
+            <p id="ipAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days.</p>
           </fieldset>
           <div class="form-actions form-actions-end">
             <button type="button" id="toConfigBtn" disabled>Configure plan</button>
@@ -195,7 +195,7 @@
 
         <section id="configPanel" class="order-panel" aria-labelledby="config-heading" hidden>
           <h3 id="config-heading">Configure <span id="configProductName"></span></h3>
-          <div id="ipConfig" class="notice" hidden>Blindport IP is delivered as a routed WireGuard /32. It is billed annually for 365 days and requires Linux kernel WireGuard with <code>CAP_NET_ADMIN</code> or equivalent root privileges.</div>
+          <div id="ipConfig" class="notice" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days. It requires Linux kernel WireGuard with <code>CAP_NET_ADMIN</code> or equivalent root privileges.</div>
           <fieldset id="portConfig" hidden>
             <legend>Transport</legend>
             <div class="segmented">

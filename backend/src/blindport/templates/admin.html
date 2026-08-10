@@ -18,7 +18,7 @@
     <div>
       <p class="eyebrow">Operations</p>
       <h1>Admin</h1>
-      <p>Subscription health, customer activity, and service operations.</p>
+      <p>Subscription health, account access, and service operations.</p>
     </div>
     <form method="post" action="/admin/logout"><button type="submit" class="button-secondary">Sign out</button></form>
   </header>
@@ -29,16 +29,16 @@
       <div><span>Active subscriptions</span><strong>{{ operations.active_subscriptions }}</strong><small>{{ operations.active_customers }} customers</small></div>
       <div class="metric-attention"><span>Pending subscriptions</span><strong>{{ operations.pending_subscriptions }}</strong><small>{{ operations.open_payments }} open payments</small></div>
       <div class="metric-danger"><span>Expired subscriptions</span><strong>{{ operations.expired_subscriptions }}</strong><small>Need renewal</small></div>
-      <div><span>Active accounts seen 7d</span><strong>{{ operations.active_subscription_accounts_7d }}</strong><small>of {{ operations.active_customers }} active customers</small></div>
-      <div><span>Settled in 30d</span><strong>{{ operations.settled_gross_sats_30d }}</strong><small>sats</small></div>
+      <div><span>Active-subscription accounts seen, 7d</span><strong>{{ operations.active_subscription_accounts_7d }}</strong><small>of {{ operations.active_customers }} active customers</small></div>
+      <div><span>Gross payments settled, 30d</span><strong>{{ operations.settled_gross_sats_30d }}</strong><small>sats</small></div>
       <div><span>Without subscriptions</span><strong>{{ operations.accounts_without_subscriptions }}</strong><small>accounts</small></div>
     </div>
   </section>
 
   <section class="admin-charts" aria-labelledby="charts-title">
     <div class="section-heading">
-      <div><p class="eyebrow">At a glance</p><h2 id="charts-title">Subscription progress</h2></div>
-      <p class="muted">Eight-week acquisition and settled payment history.</p>
+      <div><p class="eyebrow">At a glance</p><h2 id="charts-title">Subscription summary</h2></div>
+      <p class="muted">Eight weekly buckets, Monday through Sunday in UTC.</p>
     </div>
     <div class="chart-grid">
       <figure class="admin-chart status-chart">
@@ -66,10 +66,10 @@
 
       <figure class="admin-chart trend-chart">
         <figcaption>
-          <strong>Weekly progress</strong>
-          <span class="trend-legend"><i class="chart-swatch chart-tone-new"></i>New subscriptions <i class="chart-swatch chart-tone-revenue"></i>Settled sats</span>
+          <strong>Weekly subscriptions and settled payments (UTC)</strong>
+          <span class="trend-legend"><i class="chart-swatch chart-tone-new"></i>Subscriptions <i class="chart-swatch chart-tone-revenue"></i>Settled payments</span>
         </figcaption>
-        <div class="trend-plot" role="img" aria-label="New subscriptions and settled satoshis by week">
+        <div class="trend-plot" role="img" aria-label="Subscriptions and settled payments by UTC week">
           {% for point in operations.weekly_activity %}
           <div class="trend-week">
             <div class="trend-bars">
@@ -102,7 +102,7 @@
       <label for="adminActivityFilter">Activity<select id="adminActivityFilter"><option value="">All activity</option><option value="recent">Recent account activity</option><option value="idle">Idle 7d+</option><option value="never">Never seen</option></select></label>
       <button id="clearAdminFilters" type="button" class="button-secondary">Clear filters</button>
     </div>
-    <p class="workspace-note"><strong id="adminVisibleCount">{{ subscription_rows | length }}</strong> rows on this page. Activity is based on account API access, not per-subscription traffic.</p>
+    <p class="workspace-note"><strong id="adminVisibleCount">{{ subscription_rows | length }}</strong> rows on this page. Account seen time is based on authenticated API access.</p>
     <div class="table-wrap admin-subscription-table-wrap">
       <table class="responsive-table admin-subscription-table">
         <caption>Account and subscription status in one operational view</caption>
@@ -138,7 +138,7 @@
       <h2>Relay edges</h2>
       <dl class="operations-list">
         {% for edge in operations.relay_edges %}<div><dt>{{ edge.edge_id }} <span>{{ edge.state | capitalize }}</span></dt><dd><code>{{ edge.endpoint }}</code><br><span class="muted">Age {{ edge.age or "Never" }}, tunnels {{ edge.active_tunnels if edge.active_tunnels is not none else "" }}, streams {{ edge.active_streams if edge.active_streams is not none else "" }}</span></dd></div>{% endfor %}
-        <div><dt>Fresh totals</dt><dd>{{ operations.active_relay_tunnels }} tunnels, {{ operations.active_relay_streams }} streams</dd></div>
+        <div><dt>Totals from current heartbeats</dt><dd>{{ operations.active_relay_tunnels }} tunnels, {{ operations.active_relay_streams }} streams</dd></div>
       </dl>
     </div>
     <div>
@@ -154,8 +154,9 @@
       <dl class="operations-list">
         <div><dt>Ever paying customers</dt><dd>{{ operations.ever_paying_customers }}</dd></div>
         <div><dt>Paying customers</dt><dd>{{ operations.active_paying_customers }} active, {{ operations.lapsed_paying_customers }} lapsed</dd></div>
-        <div><dt>New paying, 30d</dt><dd>{{ operations.new_paying_customers_30d }}</dd></div>
+        <div><dt>Accounts with first settled payment, 30d</dt><dd>{{ operations.new_paying_customers_30d }}</dd></div>
         <div><dt>Oldest open payment</dt><dd>{{ operations.oldest_open_payment_age or "None" }}</dd></div>
+        {% if operations.reported_public_ingress_bytes_30d is not none %}<div><dt>Reported public traffic, 30d</dt><dd>Ingress {{ operations.reported_public_ingress_bytes_30d }} bytes, egress {{ operations.reported_public_egress_bytes_30d }} bytes</dd></div>{% endif %}
       </dl>
     </div>
   </section>

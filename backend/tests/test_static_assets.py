@@ -115,6 +115,11 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "billing_term: term" in dashboard
     assert 'delivery: product === "ip" ? "wireguard" : "framed"' in dashboard
     assert 'if (document.getElementById("product")?.value === "ip") return "yearly"' in dashboard
+    assert (
+        'document.getElementById("newOrderTerm")?.toggleAttribute("hidden", ipSelected)'
+        in dashboard
+    )
+    assert "if (ipSelected && yearlyTerm) yearlyTerm.checked = true;" in dashboard
     assert "payment.period_days" in dashboard
     assert 'name="orderBillingTerm"' in _asset("templates/landing.html")
     assert 'name="newBillingTerm"' in _asset("templates/dashboard.html")
@@ -152,8 +157,11 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "`${body.domain} (CNAME)`" in landing
     assert 'if (product === "ip") body.delivery = "wireguard"' in landing
     assert 'if (selectedProduct()?.value === "ip") return "yearly"' in landing
+    assert "if (termControl) termControl.hidden = ipSelected;" in landing
+    assert "if (ipSelected && yearly) yearly.checked = true;" in landing
     assert "monthly.disabled" not in landing
     assert "monthlyTerm.disabled" not in dashboard
+    assert 'jsonFetch("/api/v1/me/reminder-email"' in dashboard
     assert 'jsonFetch("/api/v1/me/service-email"' in dashboard
     assert "/api/v1/me/service-announcement-email" not in dashboard
 
@@ -242,10 +250,17 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert "user.has_service_email" in dashboard
     assert "has_service_announcement_email" not in dashboard
     assert "Most web services need a public hostname" in dashboard
-    assert "Routed WireGuard /32" in dashboard
+    assert "One routed dedicated /32 over WireGuard, annual-only" in dashboard
     assert 'id="newOrderTerm"' in dashboard
     assert 'id="dashboardIpAnnualOnlyHint"' in dashboard
-    assert "Relay HTTPS stays on your host" in dashboard
+    assert "Service notifications" in dashboard
+    assert 'id="account-updates-title">Account updates</h3>' in dashboard
+    assert 'id="service-announcements-title">Service announcements</h3>' in dashboard
+    assert "Relay HTTPS stays on your host" not in dashboard
+    assert (
+        "your agent terminates TLS and retains automatic certificate private keys while "
+        "Blindport routes the connection." in dashboard
+    )
     assert '<script src="/static/account-storage.js"></script>' in dashboard
     assert 'agree to the <a href="/terms">service terms</a>' in dashboard
 
@@ -300,7 +315,7 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "best effort",
         "not an anonymity network",
         "Tor SOCKS5",
-        "One dedicated public IPv4",
+        "One routed dedicated /32 over WireGuard",
         "One TCP or UDP socket",
         "Managed subdomain",
         "Bring your own subdomain",
@@ -338,6 +353,14 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "does not authenticate the CI-built binary",
         "build the checked-out source locally",
         "GPG signature authenticates the source history, not GitHub-built artifacts",
+        "Relay requires <code>.domain</code>",
+        "<code>tcp</code> and <code>udp</code>",
+        "Omit <code>.transport</code> for TCP and <code>.billing_term</code> for monthly billing",
+        "Docker labels cannot order Blindport IP",
+        "<code>payment_pending</code> means that payment is awaiting settlement or reconciliation",
+        "<code>awaiting_payment</code>",
+        "<code>awaiting_domain</code>",
+        "exact DNS-only CNAME",
     ):
         assert term in guide
     run_section = guide.split('<section id="run">', 1)[1].split("</section>", 1)[0]
@@ -526,7 +549,7 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
     assert "Best-effort beta" in terms.text
     assert "does not persist visitor or request source IP addresses" in terms.text
     assert "deleted within 30 days" in terms.text
-    assert "Blindport IP: WireGuard-only, 365 days" in landing.text
+    assert "one routed dedicated /32 over WireGuard, annual-only for 365 days" in landing.text
     assert "reasonable traffic, bandwidth, connection, or rate limits" in terms.text
     assert "application behavior, DNS history, headers" in terms.text
     assert "not eligible for a refund" in terms.text
@@ -586,6 +609,92 @@ def test_dashboard_service_announcement_control_follows_feature_gate_and_hides_a
     assert 'id="announcementStatus" role="status" aria-live="polite">Enabled' in rendered.text
     assert "deleteAnnouncementEmailBtn" in rendered.text
     assert address not in rendered.text
+
+
+def test_dashboard_service_notifications_render_independent_feature_gated_forms(
+    app_client, monkeypatch
+) -> None:
+    from blindport import config
+
+    client, _ = app_client
+    signup = client.post("/api/v2/signup").json()
+    client.cookies.set("blindport_token", signup["token"])
+
+    disabled = client.get("/dashboard")
+    assert "Service notifications" not in disabled.text
+    assert "reminderForm" not in disabled.text
+    assert "announcementEmailForm" not in disabled.text
+
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    updates_only = client.get("/dashboard")
+    assert "Service notifications" in updates_only.text
+    assert 'id="account-updates-title">Account updates</h3>' in updates_only.text
+    assert "reminderForm" in updates_only.text
+    assert "announcementEmailForm" not in updates_only.text
+    assert "/api/v1/me/reminder-email" in _asset("static/dashboard.js")
+
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", False)
+    monkeypatch.setattr(config.settings, "ANNOUNCEMENT_EMAIL_ENABLED", True)
+    announcements_only = client.get("/dashboard")
+    assert "Service notifications" in announcements_only.text
+    assert "reminderForm" not in announcements_only.text
+    assert 'id="service-announcements-title">Service announcements</h3>' in announcements_only.text
+    assert "announcementEmailForm" in announcements_only.text
+    assert "/api/v1/me/service-email" in _asset("static/dashboard.js")
+
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    both_enabled = client.get("/dashboard")
+    assert both_enabled.text.count("<summary>Service notifications</summary>") == 1
+    assert both_enabled.text.index('id="account-updates-title"') < both_enabled.text.index(
+        'id="service-announcements-title"'
+    )
+    assert "reminderForm" in both_enabled.text
+    assert "announcementEmailForm" in both_enabled.text
+
+
+def test_landing_distinguishes_routed_ip_sale_states(app_client, monkeypatch) -> None:
+    from blindport import config
+
+    client, _ = app_client
+    monkeypatch.setattr(config.settings, "IP_ENABLED", True)
+    monkeypatch.setattr(config.settings, "IP_SALES_PAUSED", False)
+    monkeypatch.setattr(config.settings, "WIREGUARD_PUBLIC_IPS", "198.51.100.20")
+    monkeypatch.setattr(config.settings, "BILLING_YEARLY_ENABLED", False)
+    annual_disabled = client.get("/")
+    assert "Annual billing disabled" in annual_disabled.text
+    assert "No free WireGuard inventory" not in annual_disabled.text
+
+    monkeypatch.setattr(config.settings, "BILLING_YEARLY_ENABLED", True)
+    monkeypatch.setattr(config.settings, "IP_SALES_PAUSED", True)
+    sales_paused = client.get("/")
+    assert "Sales paused" in sales_paused.text
+
+    monkeypatch.setattr(config.settings, "IP_SALES_PAUSED", False)
+    monkeypatch.setattr(config.settings, "WIREGUARD_PUBLIC_IPS", "")
+    no_inventory = client.get("/")
+    assert "No free WireGuard inventory" in no_inventory.text
+
+
+def test_landing_ip_order_uses_annual_wireguard_only_metadata(app_client, monkeypatch) -> None:
+    from blindport import config
+
+    client, _ = app_client
+    monkeypatch.setattr(config.settings, "IP_ENABLED", True)
+    monkeypatch.setattr(config.settings, "IP_SALES_PAUSED", False)
+    monkeypatch.setattr(config.settings, "WIREGUARD_PUBLIC_IPS", "198.51.100.20")
+    monkeypatch.setattr(config.settings, "BILLING_YEARLY_ENABLED", True)
+
+    landing = client.get("/")
+
+    assert 'data-order-product="ip">Choose IP</a>' in landing.text
+    assert 'name="orderProduct" value="ip" data-yearly-price=' in landing.text
+    assert 'name="orderProduct" value="ip" data-monthly-price=' not in landing.text
+    assert 'id="orderTermControl"' in landing.text
+    assert 'id="ipAnnualOnlyHint" class="field-help" hidden' in landing.text
+    assert (
+        "one routed dedicated /32 over WireGuard, available annual-only for 365 days"
+        in landing.text
+    )
 
 
 def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monkeypatch) -> None:

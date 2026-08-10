@@ -18,6 +18,7 @@ from ..core.models import (
     RelayHeartbeat,
     RelayHostnameScope,
     Subscription,
+    SubscriptionDailyBandwidth,
     SubscriptionStatus,
     User,
 )
@@ -124,6 +125,8 @@ class OperationsSummary:
     accounts_without_subscriptions: int
     settled_gross_sats_30d: int
     active_subscription_accounts_7d: int
+    reported_public_ingress_bytes_30d: int | None
+    reported_public_egress_bytes_30d: int | None
     status_breakdown: tuple[StatusBreakdownEntry, ...]
     active_product_breakdown: tuple[ActiveProductBreakdownEntry, ...]
     weekly_activity: tuple[WeeklyActivity, ...]
@@ -199,8 +202,12 @@ def _weekly_activity(session: Session, current: datetime) -> tuple[WeeklyActivit
     max_revenue = max(paid_sats, default=0)
     return tuple(
         WeeklyActivity(
-            label=f"{(first_week + timedelta(weeks=index)).strftime('%b')} "
-            f"{(first_week + timedelta(weeks=index)).day}",
+            label=(
+                "Week to date"
+                if index == len(new_subscriptions) - 1
+                else f"{(first_week + timedelta(weeks=index)).strftime('%b')} "
+                f"{(first_week + timedelta(weeks=index)).day}"
+            ),
             new_subscriptions=count,
             paid_sats=revenue,
             subscription_percent=_percentage(count, max_subscriptions),
@@ -593,6 +600,26 @@ def build_operations_summary(
             User.last_seen_at >= current - timedelta(days=7),  # type: ignore[operator]
         ),
     )
+    reported_public_ingress_bytes_30d: int | None = None
+    reported_public_egress_bytes_30d: int | None = None
+    if settings.BANDWIDTH_METRICS_ENABLED:
+        reported_public_ingress_bytes_30d, reported_public_egress_bytes_30d = (
+            int(value or 0)
+            for value in session.exec(
+                select(
+                    func.coalesce(func.sum(SubscriptionDailyBandwidth.ingress_bytes), 0),
+                    func.coalesce(func.sum(SubscriptionDailyBandwidth.egress_bytes), 0),
+                )
+                .select_from(SubscriptionDailyBandwidth)
+                .join(Subscription)
+                .join(User)
+                .where(
+                    customer,
+                    SubscriptionDailyBandwidth.day >= current.date() - timedelta(days=29),
+                    SubscriptionDailyBandwidth.day <= current.date(),
+                )
+            ).one()
+        )
     active_customers = _scalar_count(
         session,
         select(func.count(func.distinct(Subscription.user_id)))
@@ -695,6 +722,8 @@ def build_operations_summary(
         accounts_without_subscriptions=accounts_without_subscriptions,
         settled_gross_sats_30d=settled_gross_sats_30d,
         active_subscription_accounts_7d=active_subscription_accounts_7d,
+        reported_public_ingress_bytes_30d=reported_public_ingress_bytes_30d,
+        reported_public_egress_bytes_30d=reported_public_egress_bytes_30d,
         status_breakdown=status_breakdown,
         active_product_breakdown=active_product_breakdown,
         weekly_activity=_weekly_activity(session, current),
