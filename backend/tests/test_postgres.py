@@ -632,6 +632,21 @@ def test_postgres_migration_and_database_lifecycle() -> None:
     with engine.begin() as connection:
         connection.execute(text("DROP INDEX ix_subscription_public_id"))
         connection.execute(text("ALTER TABLE subscription DROP COLUMN public_id"))
+    upgrade_database(engine, "0025")
+    pre_snapshot_payment = Table("payment", MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        legacy_stablecoin_payment_id = connection.execute(
+            pre_snapshot_payment.insert().values(
+                subscription_id=legacy_subscription_id,
+                method="STABLECOIN_SWAP",
+                status="PAID",
+                billing_term="monthly",
+                period_days=30,
+                amount_sats=1358,
+                markup_sats=124,
+                created_at=datetime.now(UTC),
+            )
+        ).inserted_primary_key[0]
     upgrade_database(engine)
     assert database_revisions(engine) == ("0026", "0026")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
@@ -665,10 +680,21 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         billing_payment = connection.execute(
             select(upgraded_payment).where(upgraded_payment.c.id == legacy_payment_id)
         ).one()
+        legacy_stablecoin_payment = connection.execute(
+            select(upgraded_payment).where(upgraded_payment.c.id == legacy_stablecoin_payment_id)
+        ).one()
     assert (billing_sub.billing_term, billing_sub.yearly_price_sats) == ("monthly", 12340)
     assert UUID(str(billing_sub.public_id)).version == 4
     assert (billing_payment.billing_term, billing_payment.period_days) == ("monthly", 30)
     assert billing_payment.markup_sats == 0
+    assert (
+        legacy_stablecoin_payment.stablecoin_provider,
+        legacy_stablecoin_payment.stablecoin_checkout_origin,
+        legacy_stablecoin_payment.stablecoin_asset,
+    ) == ("boltz", None, None)
+    with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
+        downgrade_database(engine, "0025")
+    assert database_revisions(engine) == ("0026", "0026")
     with engine.connect() as connection:
         payment_methods = (
             connection.execute(
@@ -762,7 +788,9 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         connection.execute(text("DELETE FROM reminderdelivery"))
         connection.execute(
             delete(upgraded_payment).where(
-                upgraded_payment.c.id.in_([legacy_payment_id, rolling_payment_id])
+                upgraded_payment.c.id.in_(
+                    [legacy_payment_id, legacy_stablecoin_payment_id, rolling_payment_id]
+                )
             )
         )
         connection.execute(

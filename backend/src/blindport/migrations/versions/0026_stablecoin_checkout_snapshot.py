@@ -25,7 +25,8 @@ def upgrade() -> None:
     op.add_column("payment", sa.Column("stablecoin_asset", sa.String(length=64), nullable=True))
     op.execute(
         sa.text(
-            "UPDATE payment SET stablecoin_provider = :provider WHERE method = :method"
+            "UPDATE payment SET stablecoin_provider = :provider "
+            "WHERE CAST(method AS VARCHAR) = :method"
         ).bindparams(
             provider="boltz",
             method="STABLECOIN_SWAP",
@@ -36,7 +37,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     connection = op.get_bind()
     stablecoin_payment_count = connection.execute(
-        sa.text("SELECT COUNT(*) FROM payment WHERE method = :method").bindparams(
+        sa.text("SELECT COUNT(*) FROM payment WHERE CAST(method AS VARCHAR) = :method").bindparams(
             method="STABLECOIN_SWAP"
         )
     ).scalar_one()
