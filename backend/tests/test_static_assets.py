@@ -141,7 +141,8 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "payment.stablecoin_checkout_url" in dashboard
     assert "error.payload?.existing_payment" in dashboard
     assert "Continue with the existing checkout" in dashboard
-    assert 'window.open("about:blank", "_blank")' in dashboard
+    assert 'window.open("about:blank", "_blank")' not in dashboard
+    assert "then select Check DNS before paying" in dashboard
     assert 'payUri.rel = "noopener noreferrer external"' in dashboard
     assert "verify-domain" in dashboard
     assert "Check DNS" in _asset("templates/dashboard.html")

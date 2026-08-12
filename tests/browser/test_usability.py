@@ -1077,15 +1077,12 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
     page.on("pageerror", lambda error: errors.append(error.stack or str(error)))
     try:
         page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
-        with (
-            page.expect_popup() as popup_info,
-            page.expect_response(
-                lambda payment: (
-                    payment.url.endswith("/api/v1/payments")
-                    and payment.request.method == "POST"
-                )
-            ) as payment_response_info,
-        ):
+        with page.expect_response(
+            lambda payment: (
+                payment.url.endswith("/api/v1/payments")
+                and payment.request.method == "POST"
+            )
+        ) as payment_response_info:
             page.locator(
                 f'.stablecoinPayBtn[data-sub-id="{subscription["id"]}"]'
             ).click()
@@ -1093,14 +1090,10 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         payment_response = payment_response_info.value
         assert payment_response.ok, payment_response.text()
         payment = payment_response.json()
-        popup = popup_info.value
-        popup.wait_for_url("https://lightning-swap.example/**")
         assert payment["stablecoin_provider"] == "lightning_swap"
         assert payment["stablecoin_asset"] is None
         assert payment["stablecoin_checkout_url"] == "https://lightning-swap.example"
         assert payment["invoice"] not in payment["stablecoin_checkout_url"]
-        assert popup.url == "https://lightning-swap.example/"
-        assert payment["invoice"] not in popup.url
         assert payment["base_amount_sats"] == 75000
         assert payment["markup_sats"] == 7500
         assert payment["amount_sats"] == 82500
@@ -1119,6 +1112,12 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
             page.locator("#payUri").get_attribute("rel")
             == "noopener noreferrer external"
         )
+        with page.expect_popup() as popup_info:
+            page.locator("#payUri").click()
+        popup = popup_info.value
+        popup.wait_for_url("https://lightning-swap.example/**")
+        assert popup.url == "https://lightning-swap.example/"
+        assert payment["invoice"] not in popup.url
         assert page.locator("#stablecoinNotice").is_visible()
         assert page.locator("#stablecoinInstructions").text_content() == (
             "Paste this BOLT11 invoice into Lightning Swap, then choose the asset and network there."
@@ -1149,6 +1148,90 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         _assert_layout(page)
         assert errors == []
         popup.close()
+    finally:
+        context.close()
+
+
+def test_dashboard_stablecoin_dns_failure_does_not_open_blank_popup(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        response = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={
+                "product": "relay",
+                "domain": "payment-dns-failure.example",
+                "relay_hostname_scope": "wildcard",
+            },
+        )
+        assert response.ok, response.text()
+        subscription = response.json()
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    popups: list[Page] = []
+    page.on("popup", lambda popup: popups.append(popup))
+
+    def reject_payment(route) -> None:
+        if route.request.method != "POST":
+            route.continue_()
+            return
+        route.fulfill(
+            status=400,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "detail": (
+                        "domain ownership verification failed: "
+                        "challenge TXT value did not match"
+                    )
+                }
+            ),
+        )
+
+    context.route("**/api/v1/payments", reject_payment)
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        with page.expect_response(
+            lambda payment: (
+                payment.url.endswith("/api/v1/payments")
+                and payment.request.method == "POST"
+            )
+        ) as payment_response_info:
+            page.locator(
+                f'.stablecoinPayBtn[data-sub-id="{subscription["id"]}"]'
+            ).click()
+
+        assert payment_response_info.value.status == 400
+        expected = (
+            "Payment error: domain ownership verification failed: challenge TXT value "
+            "did not match. Correct the DNS records shown above, then select Check DNS "
+            "before paying."
+        )
+        assert page.locator("#payStatus").text_content() == expected
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        assert card.locator(".cardStatus").text_content() == expected
+        assert card.get_by_role("button", name="Check DNS").is_visible()
+        assert popups == []
+        assert len(context.pages) == 1
+        _assert_layout(page)
     finally:
         context.close()
 

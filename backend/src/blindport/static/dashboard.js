@@ -476,7 +476,7 @@ function setCardPaymentButtonsDisabled(card, disabled) {
   });
 }
 
-function renderManualPayment(payment, status, externalWindow = null) {
+function renderManualPayment(payment, status) {
   const stablecoin = payment.method === "stablecoin_swap";
   preparePaymentPanel(payment.method);
   document.getElementById("payBolt11").textContent = payment.invoice;
@@ -495,7 +495,6 @@ function renderManualPayment(payment, status, externalWindow = null) {
     payUri.href = payment.stablecoin_checkout_url;
     payUri.target = "_blank";
     payUri.rel = "noopener noreferrer external";
-    if (externalWindow) externalWindow.location.replace(payment.stablecoin_checkout_url);
     const lightningSwap = payment.stablecoin_provider === "lightning_swap";
     const providerName = lightningSwap ? "Lightning Swap" : "Boltz";
     payUri.textContent = `Continue with ${providerName}`;
@@ -529,10 +528,9 @@ function renderManualPayment(payment, status, externalWindow = null) {
 
 async function startPaymentFlow(subId, term, trigger, method) {
   const stablecoin = method === "stablecoin_swap";
-  const externalWindow = stablecoin ? window.open("about:blank", "_blank") : null;
-  if (externalWindow) externalWindow.opener = null;
   const status = document.getElementById("payStatus");
   const card = trigger.closest(".subscription-card");
+  const cardStatus = card.querySelector(".cardStatus");
   setCardPaymentButtonsDisabled(card, true);
   trigger.textContent = "Creating invoice...";
   preparePaymentPanel(method);
@@ -545,13 +543,12 @@ async function startPaymentFlow(subId, term, trigger, method) {
       headers: authHeaders(),
       body: JSON.stringify({ subscription_id: subId, method, billing_term: term }),
     });
-    renderManualPayment(payment, status, externalWindow);
+    renderManualPayment(payment, status);
     const paid = await pollPayment(payment, status);
     if (!paid) {
       setCardPaymentButtonsDisabled(card, false);
     }
   } catch (error) {
-    if (externalWindow) externalWindow.close();
     const existing = error.status === 409 ? error.payload?.existing_payment : null;
     if (existing && ["lightning", "stablecoin_swap"].includes(existing.method)) {
       try {
@@ -565,7 +562,15 @@ async function startPaymentFlow(subId, term, trigger, method) {
         status.textContent = `Payment error: ${renderError.message}`;
       }
     } else {
-      status.textContent = `Payment error: ${error.message}`;
+      const dnsFailure = card.querySelector(".verifyDomainBtn") &&
+        /domain|dns|txt|cname|challenge/i.test(error.message);
+      const guidance = dnsFailure
+        ? " Correct the DNS records shown above, then select Check DNS before paying."
+        : "";
+      const detail = /[.!?]$/.test(error.message) ? error.message : `${error.message}.`;
+      const message = `Payment error: ${detail}${guidance}`;
+      status.textContent = message;
+      cardStatus.textContent = message;
     }
     setCardPaymentButtonsDisabled(card, false);
   }
