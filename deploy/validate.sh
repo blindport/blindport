@@ -449,7 +449,10 @@ assert all(not service.get("ports") for service in services.values())
 assert all(set(service["networks"]) == {"default"} for service in services.values())
 assert "user" not in services["blindportd"]
 assert services["blindportd"]["depends_on"]["site"]["condition"] == "service_started"
-assert services["blindportd"]["command"] == ["--docker"]
+assert services["blindportd"]["command"] == [
+    "--docker",
+    "--config=/etc/blindport/accounts.json",
+]
 assert services["blindportd"]["read_only"] is True
 assert services["blindportd"]["cap_drop"] == ["ALL"]
 assert services["blindportd"]["security_opt"] == ["no-new-privileges:true"]
@@ -476,9 +479,25 @@ state = next(
 assert state["type"] == "volume"
 assert state["source"] == "blindport-state"
 assert not state.get("read_only", False)
-assert services["blindportd"]["environment"]["BLINDPORT_TOKEN"] == "replace-with-your-account-token"
 assert services["blindportd"]["environment"]["BLINDPORT_ACME_EMAIL"] == ""
+assert "BLINDPORT_TOKEN" not in services["blindportd"]["environment"]
 assert "BLINDPORT_TOKEN_FILE" not in services["blindportd"]["environment"]
+
+account_config = next(
+    volume
+    for volume in services["blindportd"]["volumes"]
+    if volume["target"] == "/etc/blindport/accounts.json"
+)
+assert account_config["read_only"] is True
+assert account_config["source"].endswith("/examples/docker/config/accounts.json")
+
+token = next(
+    volume
+    for volume in services["blindportd"]["volumes"]
+    if volume["target"] == "/run/secrets/blindport-public"
+)
+assert token["read_only"] is True
+assert token["source"].endswith("/examples/docker/secrets/public-token")
 '
 
     DOCKER_SOCKET_PATH=/run/user/1234/docker.sock docker compose \
