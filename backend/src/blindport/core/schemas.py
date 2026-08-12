@@ -416,6 +416,7 @@ class PaymentResponse(BaseModel):
     payment_hash: str | None = None
     lightning_uri: str | None = None
     qr_svg: str | None = None
+    stablecoin_provider: str | None = None
     stablecoin_checkout_url: str | None = None
     stablecoin_asset: str | None = None
     nwc_state: str | None = None

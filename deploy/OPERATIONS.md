@@ -206,12 +206,17 @@ Node or Bun service runs in production. Each user should create a dedicated wall
 connection with a wallet-enforced budget and expiry that cover the selected renewal
 term plus fees.
 
-Optional stablecoin checkout requires no provider secret. Apply migration `0016`,
+Optional stablecoin checkout requires no provider secret. Apply migration `0026`,
 then roll out the new application code to every API and reconciler replica while
 keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.
+Before migrating an installation that previously enabled stablecoin checkout, let
+every open stablecoin invoice settle or expire. Legacy rows are identified as
+Boltz payments, but their historical custom origin and asset cannot be reconstructed,
+so the new UI does not offer a checkout link for them.
 After every old replica is drained, set
 `PAYMENT_ENABLED_METHODS=lightning,stablecoin_swap`, verify
-`BOLTZ_WEB_URL=https://boltz.exchange`, and set
+`STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and
+`LIGHTNING_SWAP_WEB_URL=https://lightning-swap.com`, and set
 `STABLECOIN_PAYMENTS_ENABLED=true` in a separate configuration rollout. The
 checked-in default remains false. The default `STABLECOIN_SWAP_MARKUP_BPS=1000`
 adds 10 percent to the LND invoice and
@@ -219,9 +224,16 @@ adds 10 percent to the LND invoice and
 within the 1,800-second reservation. Disable the feature flag first during a
 rollback. The flag blocks new checkout creation and removes the UI control;
 reconciliation still settles or expires invoices issued before disablement so
-customer payments and resource holds are not stranded. Do not deploy application code from before migration `0016` or
-downgrade the migration while stablecoin payment rows remain; older code cannot
-deserialize the new payment method.
+customer payments and resource holds are not stranded. Do not deploy application code from before migration `0026` or
+downgrade the migration while stablecoin payment rows remain; the downgrade rejects
+that unsafe state because older code cannot populate or honor the checkout snapshots.
+
+Megalithic's guide recommends Lightning Swap for this credential-free checkout.
+Blindport opens its external origin and the customer pastes the displayed BOLT11
+invoice there before choosing an asset and network. Confirm the exact network and
+amount after the provider quote. Blindport neither creates a provider swap nor
+accepts provider callbacks; only the LND payment hash settles service. A native
+provider API flow would require separate credentials and is not implemented.
 
 Managed names have a 30-minute unpaid hold, customer-owned names have a one-hour
 DNS and payment hold, and one account may retain at most two unpaid Relay claims.

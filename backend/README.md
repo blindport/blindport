@@ -59,10 +59,16 @@ must choose either globally routable user-selected `wss:443` relays or a strict 
 allowlist; the URI is encrypted after live capability validation and is never returned.
 
 Stablecoin checkout is separately gated by `STABLECOIN_PAYMENTS_ENABLED` and also requires
-`stablecoin_swap` in `PAYMENT_ENABLED_METHODS`. It creates a marked-up LND invoice, opens the
-external `BOLTZ_WEB_URL` with that BOLT11 destination, and relies only on LND settlement for
-activation. `STABLECOIN_SWAP_MARKUP_BPS=1000` applies a 10 percent satoshi surcharge with
-round-up, while Boltz determines the stablecoin amount and exchange rate.
+`stablecoin_swap` in `PAYMENT_ENABLED_METHODS`. New installs use
+`STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and
+`LIGHTNING_SWAP_WEB_URL=https://lightning-swap.com`; `boltz` remains available with
+`BOLTZ_WEB_URL`. Megalithic's guide recommends Lightning Swap. This credential-free
+flow opens the selected external provider and requires the customer to paste the displayed
+BOLT11 invoice into Lightning Swap before choosing an asset and network. Boltz retains its
+prefilled BOLT11 checkout. `STABLECOIN_SWAP_MARKUP_BPS=1000` applies a 10 percent satoshi
+surcharge with round-up. Blindport relies only on LND settlement for activation, does not
+create a provider swap or consume provider callbacks, and does not implement a native provider
+API flow because that requires separate credentials.
 
 The optional Bitcoin/USD display cache reads the fixed mempool.space price endpoint in the
 background. It never changes invoices or settlement amounts, retains a last-good value for 30

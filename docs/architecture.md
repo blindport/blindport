@@ -110,11 +110,17 @@ PostgreSQL row lock around issuance and expiry, and a conditional invoice-bindin
 update.
 
 Stablecoin checkout reuses this LND outbox without a second provider-side API
-transaction. The API derives a Boltz web URL from the bound BOLT11 invoice,
-configured default asset, and fixed Boltz origin. The customer completes the
-swap externally, and Blindport records no stablecoin address, wallet, or swap ID.
-Boltz quote state is advisory; LND invoice settlement is the only activation
-authority.
+transaction. Each payment snapshots its selected provider, checkout origin, and
+optional asset. Boltz receives a prefilled web URL from the bound BOLT11 invoice;
+Lightning Swap receives its exact origin only, and the customer pastes the visible
+BOLT11 invoice there before choosing asset and network. Blindport records no
+stablecoin address, wallet, or swap ID. Provider quote state is advisory; LND
+invoice settlement is the only activation authority. Megalithic's guide recommends
+Lightning Swap for this credential-free path. A native provider API path would need
+separate credentials and is not implemented.
+Migration `0026` marks legacy stablecoin rows as Boltz payments but leaves their
+origin and asset unset because historical custom configuration is not recoverable;
+those rows therefore cannot generate a new external checkout URL.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment

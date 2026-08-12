@@ -255,6 +255,8 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="copyInvoiceBtn"' in dashboard
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
     assert 'id="stablecoinNotice"' in dashboard
+    assert 'id="stablecoinInstructions"' in dashboard
+    assert 'id="payInvoiceDetails"' in dashboard
     assert 'class="stablecoinPayBtn button-secondary"' in dashboard
     assert "install_script_url_shell" in dashboard
     assert "BLINDPORT_DOWNLOAD_BASE_URL=" not in dashboard
@@ -284,6 +286,14 @@ def test_templates_have_accessible_external_only_structure() -> None:
     )
     assert '<script src="/static/account-storage.js"></script>' in dashboard
     assert 'agree to the <a href="/terms">service terms</a>' in dashboard
+
+    dashboard_script = _asset("static/dashboard.js")
+    assert 'payment.stablecoin_provider === "lightning_swap"' in dashboard_script
+    assert "invoiceDetails.hidden = !lightningSwap;" in dashboard_script
+    assert "invoiceDetails.open = lightningSwap;" in dashboard_script
+    assert 'document.getElementById("copyInvoiceBtn").hidden = !lightningSwap;' in dashboard_script
+    assert "Paste this BOLT11 invoice into Lightning Swap" in dashboard_script
+    assert "Continue with Boltz to review the prefilled checkout." in dashboard_script
 
     login = templates[5]
     assert 'id="savedAccountForm"' in login

@@ -883,12 +883,9 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         payment_hash=p.payment_hash,
         lightning_uri=lightning_uri,
         qr_svg=qr_svg,
+        stablecoin_provider=p.stablecoin_provider,
         stablecoin_checkout_url=payments_svc.stablecoin_checkout_url(p),
-        stablecoin_asset=(
-            settings.STABLECOIN_SWAP_DEFAULT_ASSET
-            if p.method == PaymentMethod.STABLECOIN_SWAP
-            else None
-        ),
+        stablecoin_asset=p.stablecoin_asset,
         nwc_state=p.nwc_state,
         nwc_attempt_count=p.nwc_attempt_count,
         nwc_error_code=p.nwc_error_code,

@@ -217,17 +217,39 @@ def stablecoin_markup_sats(base_amount_sats: int) -> int:
 
 
 def stablecoin_checkout_url(payment: Payment) -> str | None:
-    """Build a Boltz web URL that prefills this payment's BOLT11 destination."""
-    if payment.method != PaymentMethod.STABLECOIN_SWAP or not payment.invoice:
+    """Build the external checkout URL from the durable payment snapshot."""
+    if (
+        payment.method != PaymentMethod.STABLECOIN_SWAP
+        or not payment.stablecoin_provider
+        or not payment.stablecoin_checkout_origin
+    ):
+        return None
+    if payment.stablecoin_provider == "lightning_swap":
+        return payment.stablecoin_checkout_origin
+    if (
+        payment.stablecoin_provider != "boltz"
+        or not payment.invoice
+        or not payment.stablecoin_asset
+    ):
         return None
     query = urlencode(
         {
-            "sendAsset": settings.STABLECOIN_SWAP_DEFAULT_ASSET,
+            "sendAsset": payment.stablecoin_asset,
             "receiveAsset": "LN",
             "destination": payment.invoice,
         }
     )
-    return f"{settings.BOLTZ_WEB_URL}/?{query}"
+    return f"{payment.stablecoin_checkout_origin}/?{query}"
+
+
+def _stablecoin_checkout_snapshot() -> tuple[str, str, str | None]:
+    if settings.STABLECOIN_CHECKOUT_PROVIDER == "boltz":
+        return (
+            "boltz",
+            settings.BOLTZ_WEB_URL,
+            settings.STABLECOIN_SWAP_DEFAULT_ASSET,
+        )
+    return ("lightning_swap", settings.LIGHTNING_SWAP_WEB_URL, None)
 
 
 def _invoice_preimage(payment: Payment) -> bytes:
@@ -757,6 +779,15 @@ def create_payment(
     markup_sats = (
         stablecoin_markup_sats(base_amount_sats) if method == PaymentMethod.STABLECOIN_SWAP else 0
     )
+    stablecoin_provider = None
+    stablecoin_checkout_origin = None
+    stablecoin_asset = None
+    if method == PaymentMethod.STABLECOIN_SWAP:
+        (
+            stablecoin_provider,
+            stablecoin_checkout_origin,
+            stablecoin_asset,
+        ) = _stablecoin_checkout_snapshot()
     payment = Payment(
         subscription_id=subscription.id,  # type: ignore[arg-type]
         agent_order_id=agent_order_id,
@@ -765,6 +796,9 @@ def create_payment(
         period_days=subs.billing_period_days(selected_term),
         amount_sats=base_amount_sats + markup_sats,
         markup_sats=markup_sats,
+        stablecoin_provider=stablecoin_provider,
+        stablecoin_checkout_origin=stablecoin_checkout_origin,
+        stablecoin_asset=stablecoin_asset,
         status=PaymentStatus.PENDING,
     )
     session.add(payment)

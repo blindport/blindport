@@ -725,17 +725,28 @@ longer than the minimum payable duration plus this safety interval.
 Optional stablecoin checkout uses its own invoice expiry,
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS` (1,200 seconds by default), which plus
 the safety interval must remain shorter than the resource reservation. Apply
-migration `0016`, then deploy the new code to every API and reconciler replica
-with the kill switch still false. Only after old replicas are drained should a
+migration `0026`, then deploy the new code to every API and reconciler replica
+with the kill switch still false. If stablecoin checkout was previously enabled,
+first let every open stablecoin invoice settle or expire. Migration `0026` marks
+legacy rows as Boltz payments but cannot safely reconstruct a historical custom
+origin or asset, so those rows do not expose a checkout link after migration. Only
+after old replicas are drained should a
 separate configuration rollout add `stablecoin_swap` to
 `PAYMENT_ENABLED_METHODS` and set `STABLECOIN_PAYMENTS_ENABLED=true`.
 `STABLECOIN_SWAP_MARKUP_BPS=1000` charges a 10 percent satoshi markup, rounded
-up. `STABLECOIN_SWAP_DEFAULT_ASSET` selects the initial Boltz USDC or USDT0
-network, but customers may change it in Boltz. Keep `BOLTZ_WEB_URL` on an HTTPS
-origin. Blindport does not request a quote or enforce a fiat conversion rate;
-Boltz determines the stablecoin amount and its own fees. For rollback, disable
-the kill switch first and retain `0016`-compatible application code until no
-stablecoin payment rows remain; older code cannot deserialize that method.
+up. New installs use `STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and must keep
+`LIGHTNING_SWAP_WEB_URL` on an HTTPS origin. Megalithic's guide recommends this
+credential-free Lightning Swap flow: the external provider opens with no BOLT11 in
+the URL, and the customer pastes the displayed invoice before choosing asset and
+network. Confirm the exact network and amount after its provider quote. Set
+`STABLECOIN_CHECKOUT_PROVIDER=boltz` to retain the prefilled Boltz checkout; its
+`BOLTZ_WEB_URL` must also be an HTTPS origin and `STABLECOIN_SWAP_DEFAULT_ASSET`
+selects the initial USDC or USDT0 asset. Blindport does not request a quote, create
+a swap, consume provider callbacks, or implement the separate-credential native
+provider API flow. LND settlement remains the only authority. For rollback, disable
+the kill switch first and retain `0026`-compatible application code until no
+stablecoin payment rows remain. The downgrade rejects that unsafe state because
+older code cannot populate or honor the checkout snapshots.
 
 When `BTC_USD_PRICE_ENABLED=true`, each backend process requests
 `https://mempool.space/api/v1/prices` every five minutes. The cache accepts only

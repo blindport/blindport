@@ -69,10 +69,14 @@ The public browser UI can optionally enroll discoverable passkeys backed by revo
 opaque sessions; passkey authentication never reveals the bearer token. The primary
 payment path is direct Lightning through LND. Nostr Wallet Connect is optional
 wallet control over BOLT11 invoices. Operators may separately enable a stablecoin
-checkout that opens a surcharged LND invoice in the external Boltz web app;
-Blindport receives Lightning bitcoin and activates service only after LND reports
-settlement. Legacy persisted Cashu payment rows remain readable, but Cashu runtime
-support has been removed.
+checkout. New installs use Lightning Swap, as recommended by Megalithic's guide:
+the credential-free flow opens the external provider and requires the customer to
+paste the displayed surcharged LND invoice, then choose an asset and network.
+Boltz remains an optional prefilled checkout provider. Blindport receives Lightning
+bitcoin and activates service only after LND reports settlement; it neither creates
+provider swaps nor accepts provider callbacks. A native provider API flow requires
+separate credentials and is not implemented. Legacy persisted Cashu payment rows
+remain readable, but Cashu runtime support has been removed.
 
 Blindport Port and Relay support fixed monthly (30 service days) and yearly (365
 service days) terms. New Blindport IP subscriptions use 365 service days only.
@@ -217,8 +221,10 @@ issuing a second invoice. Production requires a dedicated invoice HMAC key share
 by all API replicas; see [`docs/operating.md`](docs/operating.md).
 
 Stablecoin checkout uses the same durable invoice and settlement path. Blindport
-only builds a prefilled external URL; Boltz selects the network quote and exchange
-rate, and customers can switch among supported USDC and USDT0 networks there.
+snapshots the selected provider and checkout origin on each payment. Boltz receives
+a prefilled external URL; Lightning Swap receives no invoice in its URL, so the
+customer pastes the visible BOLT11 there and selects the asset and network after its
+quote. The provider quote is advisory and LND settlement remains authoritative.
 The hosted UI may show a cached approximate USD value from mempool.space for
 orientation; satoshi prices remain authoritative when that optional feed is stale
 or unavailable.

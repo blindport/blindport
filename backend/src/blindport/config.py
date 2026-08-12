@@ -14,6 +14,7 @@ from email.headerregistry import Address
 from enum import StrEnum
 from ipaddress import ip_address
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives import serialization
@@ -605,6 +606,7 @@ class Settings(BaseSettings):
     STABLECOIN_SWAP_MARKUP_BPS: int = Field(default=1000, ge=1, le=10000)
     STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS: int = Field(default=1200, ge=60, le=3600)
     STABLECOIN_SWAP_DEFAULT_ASSET: str = "USDC-BASE"
+    STABLECOIN_CHECKOUT_PROVIDER: Literal["boltz", "lightning_swap"] = "lightning_swap"
 
     # Advisory Bitcoin/USD display pricing. This never affects payment amounts.
     BTC_USD_PRICE_ENABLED: bool = False
@@ -659,6 +661,7 @@ class Settings(BaseSettings):
     # Optional payment integrations
     BOLTZ_URL: str = "https://api.boltz.exchange"
     BOLTZ_WEB_URL: str = "https://boltz.exchange"
+    LIGHTNING_SWAP_WEB_URL: str = "https://lightning-swap.com"
 
     # Relay control plane
     RELAY_CONTROL_URL: str = "relay:5443"
@@ -923,11 +926,12 @@ class Settings(BaseSettings):
             raise ValueError("WEBAUTHN_ORIGIN must be an exact HTTP or HTTPS origin")
         return _canonical_http_origin(value)
 
-    @field_validator("BOLTZ_WEB_URL")
+    @field_validator("BOLTZ_WEB_URL", "LIGHTNING_SWAP_WEB_URL")
     @classmethod
-    def validate_boltz_web_url(cls, value: str) -> str:
+    def validate_stablecoin_checkout_origin(cls, value: str, info) -> str:
+        field_name = info.field_name
         if not value or value.strip() != value:
-            raise ValueError("BOLTZ_WEB_URL must be an absolute HTTP or HTTPS origin")
+            raise ValueError(f"{field_name} must be an absolute HTTP or HTTPS origin")
         parsed = urlsplit(value)
         try:
             _ = parsed.port
@@ -944,7 +948,7 @@ class Settings(BaseSettings):
             or parsed.path not in {"", "/"}
             or invalid_port
         ):
-            raise ValueError("BOLTZ_WEB_URL must be an absolute HTTP or HTTPS origin")
+            raise ValueError(f"{field_name} must be an absolute HTTP or HTTPS origin")
         return value.rstrip("/")
 
     @field_validator("STABLECOIN_SWAP_DEFAULT_ASSET")
@@ -1448,8 +1452,14 @@ class Settings(BaseSettings):
             PaymentMethod.STABLECOIN_SWAP,
         }:
             failures.append("PAYMENT_ENABLED_METHODS must not enable unsupported methods")
-        if self.STABLECOIN_PAYMENTS_ENABLED and not self.BOLTZ_WEB_URL.startswith("https://"):
-            failures.append("BOLTZ_WEB_URL must use HTTPS when stablecoin payments are enabled")
+        if self.STABLECOIN_PAYMENTS_ENABLED:
+            checkout_origins = {
+                "boltz": ("BOLTZ_WEB_URL", self.BOLTZ_WEB_URL),
+                "lightning_swap": ("LIGHTNING_SWAP_WEB_URL", self.LIGHTNING_SWAP_WEB_URL),
+            }
+            field_name, checkout_origin = checkout_origins[self.STABLECOIN_CHECKOUT_PROVIDER]
+            if not checkout_origin.startswith("https://"):
+                failures.append(f"{field_name} must use HTTPS when stablecoin payments are enabled")
         if PaymentMethod.NWC in self.enabled_payment_methods:
             if self.PAYMENT_NWC_ADAPTER.lower() != "nwc":
                 failures.append("PAYMENT_NWC_ADAPTER must use the nwc adapter when NWC is enabled")

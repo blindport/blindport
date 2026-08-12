@@ -199,6 +199,7 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_DEFAULT_ASSET", "USDC-BASE")
+    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "boltz")
     monkeypatch.setattr(payments.settings, "BOLTZ_WEB_URL", "https://boltz.example")
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -221,6 +222,7 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     assert payment["amount_sats"] == 82500
     assert (payment["billing_term"], payment["period_days"]) == ("yearly", 365)
     assert payment["stablecoin_asset"] == "USDC-BASE"
+    assert payment["stablecoin_provider"] == "boltz"
     assert payment["lightning_uri"] is None
     assert payment["qr_svg"] is None
     checkout = urlsplit(payment["stablecoin_checkout_url"])
@@ -239,8 +241,13 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     assert expires_at.utcoffset() == timedelta(0)
     assert timedelta(seconds=1150) <= expires_at - datetime.now(UTC) <= timedelta(seconds=1200)
 
+    monkeypatch.setattr(payments.settings, "BOLTZ_WEB_URL", "https://changed.example")
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_DEFAULT_ASSET", "USDT0-ETH")
     pending = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()
     assert pending["status"] == "pending"
+    assert pending["stablecoin_provider"] == "boltz"
+    assert pending["stablecoin_asset"] == "USDC-BASE"
+    assert pending["stablecoin_checkout_url"] == payment["stablecoin_checkout_url"]
     factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
     paid = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()
     assert paid["status"] == "paid"
@@ -250,6 +257,50 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
         client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]["status"]
         == "active"
     )
+
+
+def test_lightning_swap_checkout_snapshots_origin_without_invoice_leakage(
+    app_client, monkeypatch
+) -> None:
+    from blindport.services import payments
+
+    client, _ = app_client
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
+    monkeypatch.setattr(
+        payments.settings, "LIGHTNING_SWAP_WEB_URL", "https://lightning-swap.example"
+    )
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions", json={"product": "ip"}, headers=_auth(token)
+    ).json()
+
+    created = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    ).json()
+
+    assert created["stablecoin_provider"] == "lightning_swap"
+    assert created["stablecoin_asset"] is None
+    assert created["stablecoin_checkout_url"] == "https://lightning-swap.example"
+    assert created["invoice"] not in created["stablecoin_checkout_url"]
+    checkout = urlsplit(created["stablecoin_checkout_url"])
+    assert (checkout.path, checkout.query, checkout.fragment) == ("", "", "")
+
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_WEB_URL", "https://changed.example")
+    restored = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token)).json()
+    assert restored["stablecoin_provider"] == "lightning_swap"
+    assert restored["stablecoin_checkout_url"] == "https://lightning-swap.example"
+    conflict = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    )
+    assert conflict.status_code == 200
+    assert conflict.json()["id"] == created["id"]
+    assert conflict.json()["stablecoin_provider"] == "lightning_swap"
+    assert conflict.json()["stablecoin_checkout_url"] == "https://lightning-swap.example"
 
 
 def test_stablecoin_markup_rounds_up_without_floating_point(app_client, monkeypatch) -> None:

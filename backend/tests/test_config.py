@@ -153,7 +153,9 @@ def test_stablecoin_feature_has_bounded_secure_defaults() -> None:
     assert settings.STABLECOIN_SWAP_MARKUP_BPS == 1000
     assert settings.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS == 1200
     assert settings.STABLECOIN_SWAP_DEFAULT_ASSET == "USDC-BASE"
+    assert settings.STABLECOIN_CHECKOUT_PROVIDER == "lightning_swap"
     assert settings.BOLTZ_WEB_URL == "https://boltz.exchange"
+    assert settings.LIGHTNING_SWAP_WEB_URL == "https://lightning-swap.com"
 
 
 @pytest.mark.parametrize(
@@ -161,6 +163,8 @@ def test_stablecoin_feature_has_bounded_secure_defaults() -> None:
     [
         ("BOLTZ_WEB_URL", "https://boltz.exchange/swap"),
         ("BOLTZ_WEB_URL", "https://user@boltz.exchange"),
+        ("LIGHTNING_SWAP_WEB_URL", "https://lightning-swap.com/swap"),
+        ("LIGHTNING_SWAP_WEB_URL", "https://user@lightning-swap.com"),
         ("STABLECOIN_SWAP_DEFAULT_ASSET", "BTC"),
         ("STABLECOIN_SWAP_DEFAULT_ASSET", "usdc-base"),
     ],
@@ -170,13 +174,28 @@ def test_stablecoin_checkout_settings_are_strict(field: str, value: str) -> None
         Settings(_env_file=None, **{field: value})
 
 
-def test_production_stablecoin_checkout_requires_https() -> None:
-    with pytest.raises(ValidationError, match="BOLTZ_WEB_URL"):
+@pytest.mark.parametrize(
+    ("provider", "origin_field", "origin"),
+    [
+        ("boltz", "BOLTZ_WEB_URL", "http://boltz.internal"),
+        ("lightning_swap", "LIGHTNING_SWAP_WEB_URL", "http://lightning-swap.internal"),
+    ],
+)
+def test_production_stablecoin_checkout_requires_selected_provider_https(
+    provider: str, origin_field: str, origin: str
+) -> None:
+    with pytest.raises(ValidationError, match=origin_field):
         _production_settings(
             PAYMENT_ENABLED_METHODS="lightning,stablecoin_swap",
             STABLECOIN_PAYMENTS_ENABLED=True,
-            BOLTZ_WEB_URL="http://boltz.internal",
+            STABLECOIN_CHECKOUT_PROVIDER=provider,
+            **{origin_field: origin},
         )
+
+
+def test_stablecoin_checkout_provider_is_limited_to_supported_values() -> None:
+    with pytest.raises(ValidationError, match="STABLECOIN_CHECKOUT_PROVIDER"):
+        Settings(_env_file=None, STABLECOIN_CHECKOUT_PROVIDER="other")
 
 
 def test_environment_mode_is_strict() -> None:

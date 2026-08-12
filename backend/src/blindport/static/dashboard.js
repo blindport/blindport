@@ -451,13 +451,16 @@ function preparePaymentPanel(method) {
   qrBox.hidden = stablecoin;
   qrBox.innerHTML = "";
   document.getElementById("payInvoiceDetails").hidden = stablecoin;
+  document.getElementById("payInvoiceDetails").open = false;
+  document.getElementById("copyInvoiceBtn").hidden = stablecoin;
   document.getElementById("stablecoinNotice").hidden = !stablecoin;
+  document.getElementById("stablecoinInstructions").hidden = !stablecoin;
   document.getElementById("payBreakdown").hidden = true;
   document.getElementById("payBolt11").textContent = "";
   document.getElementById("payAmount").textContent = "";
   document.getElementById("payUsd").textContent = "";
   const payUri = document.getElementById("payUri");
-  payUri.textContent = stablecoin ? "Continue in Boltz" : "Open in wallet";
+  payUri.textContent = stablecoin ? "Continue with provider" : "Open in wallet";
   payUri.removeAttribute("href");
   payUri.removeAttribute("target");
   payUri.removeAttribute("rel");
@@ -493,8 +496,29 @@ function renderManualPayment(payment, status, externalWindow = null) {
     payUri.target = "_blank";
     payUri.rel = "noopener noreferrer external";
     if (externalWindow) externalWindow.location.replace(payment.stablecoin_checkout_url);
-    status.textContent =
-      `Waiting for payment through Boltz (${payment.stablecoin_asset}, ${payment.period_days} service days).`;
+    const lightningSwap = payment.stablecoin_provider === "lightning_swap";
+    const providerName = lightningSwap ? "Lightning Swap" : "Boltz";
+    payUri.textContent = `Continue with ${providerName}`;
+    const invoiceDetails = document.getElementById("payInvoiceDetails");
+    invoiceDetails.hidden = !lightningSwap;
+    invoiceDetails.open = lightningSwap;
+    document.getElementById("copyInvoiceBtn").hidden = !lightningSwap;
+    const notice = document.getElementById("stablecoinNotice");
+    const instructions = document.getElementById("stablecoinInstructions");
+    if (lightningSwap) {
+      instructions.textContent =
+        "Paste this BOLT11 invoice into Lightning Swap, then choose the asset and network there.";
+      notice.textContent =
+        "Lightning Swap is an external provider. Confirm the exact network and amount after its provider quote before sending.";
+      status.textContent =
+        `Waiting for payment through Lightning Swap (${payment.period_days} service days).`;
+    } else {
+      instructions.textContent = "Continue with Boltz to review the prefilled checkout.";
+      notice.textContent =
+        "Boltz is an external provider. Confirm the exact asset, network, and amount after its provider quote before sending.";
+      status.textContent =
+        `Waiting for payment through Boltz (${payment.stablecoin_asset}, ${payment.period_days} service days).`;
+    }
     return;
   }
   document.getElementById("qrBox").innerHTML = payment.qr_svg;
@@ -784,7 +808,9 @@ async function resumeOpenPayment() {
       status.textContent = "Connected wallet payment is still pending.";
     } else {
       renderManualPayment(payment, status);
-      status.textContent = "Payment still pending. Continue with this invoice.";
+      status.textContent = payment.method === "stablecoin_swap"
+        ? "Payment still pending. Continue with this checkout."
+        : "Payment still pending. Continue with this invoice.";
     }
     const paid = await pollPayment(payment, status);
     if (!paid && card) setCardPaymentButtonsDisabled(card, false);

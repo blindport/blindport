@@ -16,8 +16,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
-
 import pytest
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
 
@@ -62,7 +60,8 @@ def browser_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Browser
             "PAYMENT_ENABLED_METHODS": "lightning,nwc,stablecoin_swap",
             "STABLECOIN_PAYMENTS_ENABLED": "true",
             "STABLECOIN_SWAP_MARKUP_BPS": "1000",
-            "BOLTZ_WEB_URL": "https://boltz.example",
+            "STABLECOIN_CHECKOUT_PROVIDER": "lightning_swap",
+            "LIGHTNING_SWAP_WEB_URL": "https://lightning-swap.example",
             "PAYMENT_LIGHTNING_ADAPTER": "mock",
             "PAYMENT_NWC_ADAPTER": "mock",
             "CREDENTIAL_ENCRYPTION_KEY": "cd" * 32,
@@ -1035,7 +1034,7 @@ def test_dashboard_payment_qr_and_copy_controls(
         context.close()
 
 
-def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
+def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
     browser: Browser,
     browser_server: BrowserServer,
     playwright_runtime: Playwright,
@@ -1054,6 +1053,9 @@ def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
         request.dispose()
 
     context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.grant_permissions(
+        ["clipboard-read", "clipboard-write"], origin=browser_server.base_url
+    )
     context.add_cookies(
         [
             {
@@ -1065,9 +1067,9 @@ def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
         ]
     )
     context.route(
-        "https://boltz.example/**",
+        "https://lightning-swap.example/**",
         lambda route: route.fulfill(
-            status=200, content_type="text/html", body="Boltz test"
+            status=200, content_type="text/html", body="Lightning Swap test"
         ),
     )
     page = context.new_page()
@@ -1092,13 +1094,13 @@ def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
         assert payment_response.ok, payment_response.text()
         payment = payment_response.json()
         popup = popup_info.value
-        popup.wait_for_url("https://boltz.example/**")
-        checkout = urlsplit(popup.url)
-        assert parse_qs(checkout.query) == {
-            "sendAsset": ["USDC-BASE"],
-            "receiveAsset": ["LN"],
-            "destination": [payment["invoice"]],
-        }
+        popup.wait_for_url("https://lightning-swap.example/**")
+        assert payment["stablecoin_provider"] == "lightning_swap"
+        assert payment["stablecoin_asset"] is None
+        assert payment["stablecoin_checkout_url"] == "https://lightning-swap.example"
+        assert payment["invoice"] not in payment["stablecoin_checkout_url"]
+        assert popup.url == "https://lightning-swap.example/"
+        assert payment["invoice"] not in popup.url
         assert payment["base_amount_sats"] == 75000
         assert payment["markup_sats"] == 7500
         assert payment["amount_sats"] == 82500
@@ -1107,11 +1109,42 @@ def test_dashboard_stablecoin_checkout_opens_external_boltz_flow(
             "75000 sats service price + 7500 sats"
             in page.locator("#payBreakdown").text_content()
         )
+        assert page.locator("#payUri").text_content() == "Continue with Lightning Swap"
+        assert (
+            page.locator("#payUri").get_attribute("href")
+            == "https://lightning-swap.example"
+        )
         assert page.locator("#payUri").get_attribute("target") == "_blank"
-        assert page.locator("#payUri").get_attribute("rel") == (
-            "noopener noreferrer external"
+        assert (
+            page.locator("#payUri").get_attribute("rel")
+            == "noopener noreferrer external"
         )
         assert page.locator("#stablecoinNotice").is_visible()
+        assert page.locator("#stablecoinInstructions").text_content() == (
+            "Paste this BOLT11 invoice into Lightning Swap, then choose the asset and network there."
+        )
+        assert page.locator("#stablecoinNotice").text_content() == (
+            "Lightning Swap is an external provider. Confirm the exact network and amount after its "
+            "provider quote before sending."
+        )
+        assert page.locator("#payStatus").text_content() == (
+            "Waiting for payment through Lightning Swap (365 service days)."
+        )
+        invoice_details = page.locator("#payInvoiceDetails")
+        assert invoice_details.is_visible()
+        assert invoice_details.get_attribute("open") == ""
+        assert page.locator("#payBolt11").text_content() == payment["invoice"]
+        page.locator("#copyInvoiceBtn").click()
+        assert page.evaluate("navigator.clipboard.readText()") == payment["invoice"]
+        assert page.locator("#qrBox").is_hidden()
+        page.reload(wait_until="networkidle")
+        assert page.locator("#payStatus").text_content() == (
+            "Payment still pending. Continue with this checkout."
+        )
+        assert page.locator("#payInvoiceDetails").is_visible()
+        assert page.locator("#payInvoiceDetails").get_attribute("open") == ""
+        assert page.locator("#payBolt11").text_content() == payment["invoice"]
+        assert page.locator("#copyInvoiceBtn").is_visible()
         assert page.locator("#qrBox").is_hidden()
         _assert_layout(page)
         assert errors == []

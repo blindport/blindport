@@ -483,6 +483,9 @@ class Payment(SQLModel, table=True):
     period_days: int = Field(default=30, sa_column_kwargs={"server_default": text("30")})
     amount_sats: int
     markup_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    stablecoin_provider: str | None = Field(default=None, max_length=32)
+    stablecoin_checkout_origin: str | None = Field(default=None, max_length=2048)
+    stablecoin_asset: str | None = Field(default=None, max_length=64)
     # Lightning uses BOLT11 invoice + payment_hash.
     invoice: str | None = None
     payment_hash: str | None = None
