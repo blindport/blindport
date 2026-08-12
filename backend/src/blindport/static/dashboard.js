@@ -89,6 +89,21 @@ function billingDays(term) {
   return term === "yearly" ? 365 : 30;
 }
 
+function selectedDashboardRelayHostnameScope() {
+  return chooseEnabledRadio("dashboardRelayHostnameScope")?.value || "exact";
+}
+
+function selectedDashboardPrice(product, term) {
+  if (product === "relay") {
+    const scope = document.querySelector(
+      `input[name="dashboardRelayHostnameScope"][value="${selectedDashboardRelayHostnameScope()}"]`,
+    );
+    return scope?.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"] || "";
+  }
+  const option = document.getElementById("product").selectedOptions[0];
+  return option?.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"] || "";
+}
+
 function approximateUsd(amountSats) {
   if (!Number.isFinite(btcUsdPrice) || btcUsdPrice <= 0) return "";
   const value = Number(amountSats) * btcUsdPrice / 100000000;
@@ -113,6 +128,30 @@ function updateDashboardDomainMode() {
   document.getElementById("dashboardCustomerFields").hidden = !customer;
 }
 
+function updateDashboardWildcardDomainPreview() {
+  const wildcard = selectedDashboardRelayHostnameScope() === "wildcard";
+  const domain = document.getElementById("domain").value.trim();
+  document.getElementById("dashboardWildcardDomainPreview").hidden = !wildcard;
+  document.getElementById("dashboardWildcardDomainPreview").querySelector("strong").textContent =
+    domain ? `*.${domain}` : "Enter a base domain";
+  document.getElementById("dashboardCustomerDomainHelp").textContent = wildcard
+    ? "Enter a customer-owned base domain without '*.'. It routes strict descendant hostnames and requires TLS passthrough."
+    : "Enter the exact hostname to publish, not only the root domain.";
+  document.getElementById("dashboardCustomerDomainLabel").textContent = wildcard
+    ? "Customer-owned base domain"
+    : "Full public hostname";
+}
+
+function updateDashboardRelayHostnameScope() {
+  const wildcard = selectedDashboardRelayHostnameScope() === "wildcard";
+  const managed = document.getElementById("dashboardManagedMode");
+  const customer = document.getElementById("dashboardCustomerMode");
+  managed.disabled = wildcard || managed.dataset.available !== "true";
+  if (wildcard) customer.checked = true;
+  updateDashboardDomainMode();
+  updateDashboardWildcardDomainPreview();
+}
+
 function updateDashboardManagedPreview() {
   document.getElementById("dashboardManagedPreview").textContent =
     dashboardDomain() || "Enter a label";
@@ -129,12 +168,16 @@ function updateSubscriptionFields() {
   document.getElementById("newOrderTerm")?.toggleAttribute("hidden", ipSelected);
   document.getElementById("dashboardIpAnnualOnlyHint").hidden = !ipSelected;
   if (ipSelected && yearlyTerm) yearlyTerm.checked = true;
-  updateDashboardDomainMode();
+  updateDashboardRelayHostnameScope();
   const option = productSelect.selectedOptions[0];
   const term = selectedNewBillingTerm();
-  const priceKey = term === "yearly" ? "yearlyPrice" : "monthlyPrice";
+  document.querySelectorAll('input[name="dashboardRelayHostnameScope"]').forEach((scope) => {
+    scope.closest("label").querySelector(".relay-scope-price").textContent =
+      scope.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"];
+    scope.closest("label").querySelector(".relay-scope-days").textContent = billingDays(term);
+  });
   if (option) {
-    const sats = option.dataset[priceKey];
+    const sats = selectedDashboardPrice(product, term);
     const usd = approximateUsd(sats);
     document.getElementById("selectedPrice").textContent =
       `${sats} sats / ${billingDays(term)} days${usd ? ` · about ${usd} USD` : ""}`;
@@ -142,7 +185,10 @@ function updateSubscriptionFields() {
     document.getElementById("selectedPrice").textContent = "";
   }
   const activeSelect = product === "port" ? transport : null;
-  const invalidDomain = product === "relay" && !dashboardDomain();
+  const wildcard = selectedDashboardRelayHostnameScope() === "wildcard";
+  const invalidDomain = product === "relay" && (
+    !dashboardDomain() || (wildcard && dashboardDomain().startsWith("*."))
+  );
   document.getElementById("createSubBtn").disabled =
     !product || !option || option.disabled ||
     (activeSelect !== null && (!activeSelect.value || activeSelect.selectedOptions[0].disabled)) ||
@@ -157,6 +203,9 @@ document.querySelectorAll('input[name="newBillingTerm"]').forEach((input) => {
 document.querySelectorAll('input[name="dashboardDomainMode"]').forEach((input) => {
   input.addEventListener("change", updateSubscriptionFields);
 });
+document.querySelectorAll('input[name="dashboardRelayHostnameScope"]').forEach((input) => {
+  input.addEventListener("change", updateSubscriptionFields);
+});
 document.getElementById("dashboardManagedLabel").addEventListener("input", () => {
   updateDashboardManagedPreview();
   updateSubscriptionFields();
@@ -165,7 +214,10 @@ document.getElementById("dashboardManagedSuffix").addEventListener("change", () 
   updateDashboardManagedPreview();
   updateSubscriptionFields();
 });
-document.getElementById("domain").addEventListener("input", updateSubscriptionFields);
+document.getElementById("domain").addEventListener("input", () => {
+  updateDashboardWildcardDomainPreview();
+  updateSubscriptionFields();
+});
 
 async function jsonFetch(url, options) {
   const response = await fetch(url, options);
@@ -270,9 +322,14 @@ document.getElementById("newSubForm").addEventListener("submit", async (event) =
     product,
     billing_term: selectedNewBillingTerm(),
     domain: product === "relay" ? dashboardDomain() : null,
+    relay_hostname_scope: product === "relay" ? selectedDashboardRelayHostnameScope() : "exact",
     transport: product === "port" ? document.getElementById("transport").value : "tcp",
     delivery: product === "ip" ? "wireguard" : "framed",
   };
+  if (body.relay_hostname_scope === "wildcard" && body.domain?.startsWith("*.")) {
+    output.textContent = "Enter the wildcard base domain without '*.'.";
+    return;
+  }
   button.disabled = true;
   button.textContent = "Creating order...";
   output.textContent = "Creating the pending order.";

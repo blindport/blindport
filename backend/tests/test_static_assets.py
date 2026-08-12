@@ -158,6 +158,15 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "const button = event.currentTarget;" in dashboard
     assert 'button.textContent = copied ? "Copied"' in dashboard
     assert "JSON.stringify(body)" in dashboard
+    assert 'product === "relay" ? selectedRelayHostnameScope() : "exact"' in landing
+    assert 'product === "relay" ? selectedDashboardRelayHostnameScope() : "exact"' in dashboard
+    assert "relay_scopes.exact.monthly_price_sats" in _asset("templates/landing.html")
+    assert "relay_scopes.wildcard.monthly_price_sats" in _asset("templates/landing.html")
+    assert "relay_scopes.exact.monthly_price_sats" in _asset("templates/dashboard.html")
+    assert "relay_scopes.wildcard.monthly_price_sats" in _asset("templates/dashboard.html")
+    assert "strict descendant hostnames and requires TLS passthrough" in landing
+    assert "strict descendant hostnames and requires TLS passthrough" in dashboard
+    assert "`*.${body.domain} (TLS passthrough)`" in landing
     assert "`${body.domain} (CNAME)`" in landing
     assert 'if (product === "ip") body.delivery = "wireguard"' in landing
     assert 'if (selectedProduct()?.value === "ip") return "yearly"' in landing
@@ -236,6 +245,12 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'data-monthly-price="{{ s.monthly_price_sats }}"' in dashboard
     assert 'data-yearly-price="{{ s.yearly_price_sats }}"' in dashboard
     assert "Enter the exact hostname to publish" in dashboard
+    assert 'name="relayHostnameScope"' in landing
+    assert 'name="dashboardRelayHostnameScope"' in dashboard
+    assert (
+        "Automatic HTTPS to a local plaintext app port for exact names; TLS passthrough for "
+        "wildcard bases" in landing
+    )
     assert 'id="accountToken" type="password" readonly' in dashboard
     assert 'id="copyInvoiceBtn"' in dashboard
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
@@ -245,6 +260,8 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert "BLINDPORT_DOWNLOAD_BASE_URL=" not in dashboard
     assert "BLINDPORT_INSTALL_DIR=" not in dashboard
     assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
+    assert "s.relay_hostname_scope.value != 'wildcard' else 'passthrough'" in dashboard
+    assert "Wildcard Relay uses TLS passthrough" in dashboard
     assert 'class="mappingUpstream"' in dashboard
     assert 'class="copyCommandBtn configDependent"' in dashboard
     assert 'id="framedRunCommand"' in dashboard

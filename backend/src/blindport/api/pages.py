@@ -35,6 +35,7 @@ from ..core.models import (
     Payment,
     PaymentMethod,
     ProductType,
+    RelayHostnameScope,
     RelaySubscriptionConnection,
     ReminderDelivery,
     Subscription,
@@ -373,7 +374,10 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
     ]
     client_mappings: list[dict[str, str]] = []
     for subscription in client_subscriptions:
-        if subscription.product == ProductType.RELAY:
+        if (
+            subscription.product == ProductType.RELAY
+            and subscription.relay_hostname_scope != RelayHostnameScope.WILDCARD
+        ):
             mapping = {
                 "subscription_id": str(subscription.public_id),
                 "upstream": "127.0.0.1:8080",

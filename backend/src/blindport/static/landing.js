@@ -22,13 +22,36 @@ function billingDays(term) {
   return term === "yearly" ? 365 : 30;
 }
 
+function selectedRelayHostnameScope() {
+  return selectedValue("relayHostnameScope") || "exact";
+}
+
+function selectedPrice(product = selectedProduct()?.value, term = selectedBillingTerm()) {
+  if (product === "relay") {
+    const scope = orderForm.querySelector(
+      `input[name="relayHostnameScope"][value="${selectedRelayHostnameScope()}"]`,
+    );
+    return scope?.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"] || "";
+  }
+  const option = selectedProduct();
+  return option?.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"] || "";
+}
+
 function updatePlanPrices() {
   document.querySelectorAll(".plan-price").forEach((price) => {
     const product = price.closest(".plan-option")?.querySelector("input")?.value;
     const term = product === "ip" ? "yearly" : selectedBillingTerm();
     const priceKey = term === "yearly" ? "yearlyPrice" : "monthlyPrice";
-    price.querySelector("strong").textContent = price.dataset[priceKey];
+    price.querySelector("strong").textContent = product === "relay"
+      ? selectedPrice(product, term)
+      : price.dataset[priceKey];
     price.querySelector("span").textContent = billingDays(term);
+  });
+  const term = selectedBillingTerm();
+  orderForm.querySelectorAll('input[name="relayHostnameScope"]').forEach((scope) => {
+    scope.closest("label").querySelector(".relay-scope-price").textContent =
+      scope.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"];
+    scope.closest("label").querySelector(".relay-scope-days").textContent = billingDays(term);
   });
 }
 
@@ -94,6 +117,33 @@ function updateRelayMode() {
   document.getElementById("customerDomainFields").hidden = !customer;
 }
 
+function updateWildcardDomainPreview() {
+  const wildcard = selectedRelayHostnameScope() === "wildcard";
+  const domain = document.getElementById("customerDomain").value.trim();
+  document.getElementById("wildcardDomainPreview").hidden = !wildcard;
+  document.getElementById("wildcardDomainPreview").querySelector("strong").textContent =
+    domain ? `*.${domain}` : "Enter a base domain";
+  document.getElementById("customerDomainHelp").textContent = wildcard
+    ? "Enter a customer-owned base domain without '*.'. It routes strict descendant hostnames and requires TLS passthrough."
+    : "After ordering, add the exact DNS-only CNAME record shown in the dashboard, then check DNS.";
+  document.getElementById("customerDomainLabel").textContent = wildcard
+    ? "Customer-owned base domain"
+    : "Full public hostname";
+}
+
+function updateRelayHostnameScope() {
+  chooseFirstEnabled("relayHostnameScope");
+  const wildcard = selectedRelayHostnameScope() === "wildcard";
+  const managed = document.getElementById("managedMode");
+  const customer = document.getElementById("customerMode");
+  managed.disabled = wildcard || managed.dataset.available !== "true";
+  if (wildcard) customer.checked = true;
+  chooseFirstEnabled("domainMode");
+  updateRelayMode();
+  updateWildcardDomainPreview();
+  updatePlanPrices();
+}
+
 function configureProduct() {
   const productOption = selectedProduct();
   if (!productOption) return;
@@ -103,7 +153,7 @@ function configureProduct() {
   document.getElementById("portConfig").hidden = product !== "port";
   document.getElementById("relayConfig").hidden = product !== "relay";
   if (product === "port") chooseFirstEnabled("orderTransport");
-  if (product === "relay") updateRelayMode();
+  if (product === "relay") updateRelayHostnameScope();
   syncProductBillingTerm();
 }
 
@@ -116,9 +166,12 @@ function validateConfiguration() {
   const mode = selectedValue("domainMode");
   if (!mode) return "Select an available domain option.";
   if (mode === "customer") {
-    return document.getElementById("customerDomain").value.trim()
-      ? ""
-      : "Enter the customer-owned domain.";
+    const domain = document.getElementById("customerDomain").value.trim();
+    if (!domain) return "Enter the customer-owned domain.";
+    if (selectedRelayHostnameScope() === "wildcard" && domain.startsWith("*.")) {
+      return "Enter the wildcard base domain without '*.'.";
+    }
+    return "";
   }
   const label = document.getElementById("managedLabel").value.trim();
   return /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label)
@@ -134,6 +187,7 @@ function orderBody() {
     delivery: "framed",
     transport: "tcp",
     domain: null,
+    relay_hostname_scope: product === "relay" ? selectedRelayHostnameScope() : "exact",
   };
   if (product === "ip") body.delivery = "wireguard";
   if (product === "port") body.transport = selectedValue("orderTransport");
@@ -152,15 +206,16 @@ function populateReview() {
   const product = selectedProduct();
   const body = orderBody();
   document.getElementById("reviewProduct").textContent = product.dataset.name;
-  const priceKey = body.billing_term === "yearly" ? "yearlyPrice" : "monthlyPrice";
-  document.getElementById("reviewPrice").textContent = product.dataset[priceKey];
+  document.getElementById("reviewPrice").textContent = selectedPrice(product.value, body.billing_term);
   document.getElementById("reviewTerm").textContent =
     `${body.billing_term === "yearly" ? "Yearly" : "Monthly"}, ${billingDays(body.billing_term)} days`;
   let configuration = "Framed delivery";
   if (body.product === "ip") configuration = "Routed WireGuard /32";
   if (body.product === "port") configuration = `${body.transport.toUpperCase()} tuple`;
   if (body.product === "relay") {
-    configuration = selectedValue("domainMode") === "customer"
+    configuration = body.relay_hostname_scope === "wildcard"
+      ? `*.${body.domain} (TLS passthrough)`
+      : selectedValue("domainMode") === "customer"
       ? `${body.domain} (CNAME)`
       : body.domain;
   }
@@ -189,6 +244,7 @@ orderForm.addEventListener("change", (event) => {
   }
   if (event.target.name === "domainMode") updateRelayMode();
   if (event.target.name === "orderBillingTerm") updatePlanPrices();
+  if (event.target.name === "relayHostnameScope") updateRelayHostnameScope();
 });
 
 document.querySelectorAll(".product-jump").forEach((link) => {
@@ -205,6 +261,7 @@ document.querySelectorAll(".product-jump").forEach((link) => {
 
 document.getElementById("managedLabel").addEventListener("input", updateManagedPreview);
 document.getElementById("managedSuffix").addEventListener("change", updateManagedPreview);
+document.getElementById("customerDomain").addEventListener("input", updateWildcardDomainPreview);
 document.getElementById("toConfigBtn").addEventListener("click", () => {
   configureProduct();
   showStep("config");
@@ -289,6 +346,6 @@ document.getElementById("continueDashboardBtn").addEventListener("click", () => 
 });
 
 chooseFirstEnabled("domainMode");
-updateRelayMode();
+updateRelayHostnameScope();
 updateManagedPreview();
 syncProductBillingTerm();

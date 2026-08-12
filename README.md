@@ -49,14 +49,16 @@ Blindport IP delivery mode. Blindport Port and Blindport Relay remain applicatio
 forwarding products; framed Blindport IP is retained only for historical service.
 
 Blindport Relay supports provider-managed names strictly below configured wildcard
-suffixes and customer-owned names proven by pointing one exact DNS CNAME record
-at a subscription-specific random target before payment. The managed suffix apex
-is reserved for the provider and cannot be leased. Blindport currently reads
-customer DNS through a recursive resolver; it is not an authoritative DNS server.
-Customer-owned names must be non-apex subdomains with a direct, DNS-only CNAME;
-flattened, proxied, and wildcard customer records are not supported in the hosted beta.
-Future registrar or authoritative-DNS integrations can automate the same
-subscription and verification API flow.
+suffixes, exact customer-owned names for 3,000 sats per 30 days, and customer-owned
+wildcard bases for 7,500 sats per 30 days. Exact customer names use one direct CNAME
+to a subscription-specific random target. Wildcard bases use a TXT ownership challenge
+and a wildcard CNAME to a Relay pool target, route strict descendant names, and require
+TLS passthrough to the customer origin. The managed suffix apex is reserved for the
+provider and cannot be leased. Blindport currently reads customer DNS through a
+recursive resolver; it is not an authoritative DNS server. CNAME flattening and
+CDN-proxied records are not supported in the hosted beta. Future registrar or
+authoritative-DNS integrations can automate the same subscription and verification API
+flow.
 
 Unpaid managed names are held for 30 minutes and customer-owned names for one
 hour. One account may hold at most two unpaid Relay claims, and the background

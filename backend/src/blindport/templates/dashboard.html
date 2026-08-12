@@ -49,13 +49,13 @@
               <header>
                 <div>
                   <p class="endpoint-kind">{% if s.product.value == "ip" %}{{ "Historical framed IP" if legacy_ip else "Routed dedicated /32" }}{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
-                  <h3>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
+                  <h3>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}*.{% endif %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
                 </div>
                 <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
               </header>
 
               <div class="route-line" aria-label="Traffic route">
-                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{{ s.domain }}:443</code>{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}<code>{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
+                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{% if s.relay_hostname_scope.value == "wildcard" %}*.{% endif %}{{ s.domain }}:443</code>{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}<code>{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
                 <span class="route-arrow" aria-hidden="true">&rarr;</span>
                 <span><small>Origin</small><strong>{% if s.status.value == "active" %}Set in blindportd{% else %}Connect after activation{% endif %}</strong></span>
               </div>
@@ -196,10 +196,18 @@
           {% if yearly_billing_enabled %}<fieldset id="newOrderTerm" class="new-order-term"><legend>Service term</legend><div class="segmented"><label><input type="radio" name="newBillingTerm" value="monthly" checked><span>30 days</span></label><label><input type="radio" name="newBillingTerm" value="yearly"><span>365 days</span></label></div></fieldset>{% endif %}
           <p id="dashboardIpAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days.</p>
           <div id="domainField" class="domain-order-fields" hidden>
+            {% set relay = catalog_by_product.relay %}
+            <fieldset>
+              <legend>Hostname scope</legend>
+              <div class="choice-list compact">
+                <label><input type="radio" name="dashboardRelayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span>Exact hostname (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+                <label><input type="radio" name="dashboardRelayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span>Customer-owned wildcard base (<strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+              </div>
+            </fieldset>
             <fieldset>
               <legend>Hostname source</legend>
               <div class="choice-list compact">
-                <label><input id="dashboardManagedMode" type="radio" name="dashboardDomainMode" value="managed" checked{% if not catalog.managed_suffixes or not catalog_by_product.relay.capacity.managed_domains_available %} disabled{% endif %}> <span>Blindport hostname</span></label>
+                <label><input id="dashboardManagedMode" type="radio" name="dashboardDomainMode" value="managed" checked data-available="{{ 'true' if catalog.managed_suffixes and catalog_by_product.relay.capacity.managed_domains_available else 'false' }}"{% if not catalog.managed_suffixes or not catalog_by_product.relay.capacity.managed_domains_available %} disabled{% endif %}> <span>Blindport hostname</span></label>
                 <label><input id="dashboardCustomerMode" type="radio" name="dashboardDomainMode" value="customer"{% if not catalog_by_product.relay.capacity.customer_domains_available %} disabled{% endif %}> <span>My own hostname</span></label>
               </div>
             </fieldset>
@@ -209,9 +217,10 @@
               <p class="field-help">Preview: <strong id="dashboardManagedPreview">Enter a label</strong></p>
             </div>
             <div id="dashboardCustomerFields" class="field-group" hidden>
-              <label for="domain">Full public hostname</label>
+              <label id="dashboardCustomerDomainLabel" for="domain">Full public hostname</label>
               <input type="text" id="domain" placeholder="service.example.com" maxlength="253">
-              <p class="field-help">Enter the exact hostname to publish, not only the root domain.</p>
+              <p id="dashboardCustomerDomainHelp" class="field-help">Enter the exact hostname to publish, not only the root domain.</p>
+              <p id="dashboardWildcardDomainPreview" class="field-help" hidden>Wildcard route: <strong>Enter a base domain</strong></p>
             </div>
           </div>
           <div class="form-actions form-actions-end"><span id="selectedPrice" class="selected-price" aria-live="polite"></span><button id="createSubBtn" type="submit">Create order</button></div>
@@ -236,18 +245,21 @@
               <div class="origin-step-heading"><span aria-hidden="true">2</span><div><h3>Configure local targets</h3><p>Enter the host and port where each service listens on this machine.</p></div></div>
               <div id="mappingControls" class="mapping-controls">
                 {% for s in client_subscriptions %}
-                <div class="mapping-control" data-subscription-id="{{ s.public_id }}" data-tls-mode="{{ 'automatic' if s.product.value == 'relay' else 'passthrough' }}">
-                  <div><strong>{% if s.product.value == "relay" and s.domain %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}{{ s.public_id }}{% endif %}</strong><span>{{ "Automatic HTTPS" if s.product.value == "relay" else "TCP/UDP passthrough" }}</span></div>
+                <div class="mapping-control" data-subscription-id="{{ s.public_id }}" data-tls-mode="{{ 'automatic' if s.product.value == 'relay' and s.relay_hostname_scope.value != 'wildcard' else 'passthrough' }}">
+                  <div><strong>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}*.{% endif %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}{{ s.public_id }}{% endif %}</strong><span>{% if s.product.value == "relay" and s.relay_hostname_scope.value != "wildcard" %}Automatic HTTPS{% elif s.product.value == "relay" %}TLS passthrough{% else %}TCP/UDP passthrough{% endif %}</span></div>
                   <label for="mappingUpstream-{{ loop.index }}">Local target</label>
                   <input id="mappingUpstream-{{ loop.index }}" class="mappingUpstream" type="text" value="127.0.0.1:8080" maxlength="259" inputmode="url" autocomplete="off" spellcheck="false" aria-describedby="mappingError-{{ loop.index }}">
                   <p id="mappingError-{{ loop.index }}" class="mapping-error field-help" aria-live="polite"></p>
                 </div>
                 {% endfor %}
               </div>
-              {% if client_subscriptions | selectattr('product.value', 'equalto', 'relay') | list %}
-              <p class="field-help">For Blindport Relay, your agent terminates TLS and retains automatic certificate private keys while Blindport routes the connection.</p>
+              {% set exact_relay_subscriptions = client_subscriptions | selectattr('product.value', 'equalto', 'relay') | rejectattr('relay_hostname_scope.value', 'equalto', 'wildcard') | list %}
+              {% set wildcard_relay_subscriptions = client_subscriptions | selectattr('product.value', 'equalto', 'relay') | selectattr('relay_hostname_scope.value', 'equalto', 'wildcard') | list %}
+              {% if exact_relay_subscriptions %}
+              <p class="field-help">For exact-name Blindport Relay, your agent terminates TLS and retains automatic certificate private keys while Blindport routes the connection.</p>
               <label class="terms-consent"><input id="acmeTermsAccepted" type="checkbox"> <span>I agree to the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> for automatic HTTPS.</span></label>
               {% endif %}
+              {% if wildcard_relay_subscriptions %}<p class="field-help">Wildcard Relay uses TLS passthrough. Point each mapping to a local TLS listener that serves the matching descendant hostnames.</p>{% endif %}
               <div class="field-group">
                 <label for="linuxHomePath">Absolute Linux home directory</label>
                 <input id="linuxHomePath" type="text" placeholder="/home/alice" maxlength="255" autocomplete="off" spellcheck="false" aria-describedby="linuxHomePathHelp">

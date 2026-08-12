@@ -291,6 +291,7 @@ def test_landing_ip_order_is_wireguard_and_annual_only(
             "delivery": "wireguard",
             "transport": "tcp",
             "domain": None,
+            "relay_hostname_scope": "exact",
         }
         _assert_layout(page)
     finally:
@@ -355,6 +356,124 @@ def test_dashboard_ip_order_is_wireguard_and_annual_only(
             "domain": None,
             "transport": "tcp",
             "delivery": "wireguard",
+            "relay_hostname_scope": "exact",
+        }
+        _assert_layout(page)
+    finally:
+        context.close()
+
+
+def test_landing_wildcard_relay_order_uses_wildcard_price_and_scope(
+    browser: Browser,
+    browser_server: BrowserServer,
+) -> None:
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    try:
+        page.goto(browser_server.base_url, wait_until="networkidle")
+        page.get_by_role("link", name="Choose Relay").click()
+        page.locator("#toConfigBtn").click()
+        page.locator('input[name="relayHostnameScope"][value="wildcard"]').check()
+        assert page.locator("#managedMode").is_disabled()
+        assert page.locator("#customerMode").is_checked()
+        page.locator('input[name="relayHostnameScope"][value="exact"]').check()
+        assert page.locator("#managedMode").is_enabled()
+        assert page.locator("#customerMode").is_checked()
+        page.locator('input[name="relayHostnameScope"][value="wildcard"]').check()
+        assert (
+            "7500"
+            in page.locator(
+                '.plan-option:has(input[value="relay"]) .plan-price'
+            ).inner_text()
+        )
+        page.locator("#customerDomain").fill("base.example")
+        assert page.locator("#wildcardDomainPreview").inner_text() == (
+            "Wildcard route: *.base.example"
+        )
+        page.locator("#toReviewBtn").click()
+        assert page.locator("#reviewPrice").text_content() == "7500"
+        assert (
+            page.locator("#reviewConfig").text_content()
+            == "*.base.example (TLS passthrough)"
+        )
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v2/orders")
+                and response.request.method == "POST"
+            )
+        ) as order_response_info:
+            page.locator("#placeOrderBtn").click()
+        order_response = order_response_info.value
+        assert order_response.ok, order_response.text()
+        assert order_response.request.post_data_json == {
+            "product": "relay",
+            "billing_term": "monthly",
+            "delivery": "framed",
+            "transport": "tcp",
+            "domain": "base.example",
+            "relay_hostname_scope": "wildcard",
+        }
+        _assert_layout(page)
+    finally:
+        context.close()
+
+
+def test_dashboard_wildcard_relay_order_uses_wildcard_price_and_scope(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        page.locator("#product").select_option("relay")
+        page.locator('input[name="newBillingTerm"][value="monthly"]').check()
+        page.locator(
+            'input[name="dashboardRelayHostnameScope"][value="wildcard"]'
+        ).check()
+        assert page.locator("#dashboardManagedMode").is_disabled()
+        assert page.locator("#dashboardCustomerMode").is_checked()
+        page.locator('input[name="dashboardRelayHostnameScope"][value="exact"]').check()
+        assert page.locator("#dashboardManagedMode").is_enabled()
+        assert page.locator("#dashboardCustomerMode").is_checked()
+        page.locator(
+            'input[name="dashboardRelayHostnameScope"][value="wildcard"]'
+        ).check()
+        assert page.locator("#selectedPrice").text_content() == "7500 sats / 30 days"
+        page.locator("#domain").fill("dashboard-base.example")
+        assert page.locator("#dashboardWildcardDomainPreview").inner_text() == (
+            "Wildcard route: *.dashboard-base.example"
+        )
+        with page.expect_response(
+            lambda response: (
+                response.url.endswith("/api/v1/subscriptions")
+                and response.request.method == "POST"
+            )
+        ) as order_response_info:
+            page.locator("#newSubForm").get_by_role(
+                "button", name="Create order"
+            ).click()
+        order_response = order_response_info.value
+        assert order_response.ok, order_response.text()
+        assert order_response.request.post_data_json == {
+            "product": "relay",
+            "billing_term": "monthly",
+            "domain": "dashboard-base.example",
+            "relay_hostname_scope": "wildcard",
+            "transport": "tcp",
+            "delivery": "framed",
         }
         _assert_layout(page)
     finally:
@@ -1151,6 +1270,83 @@ def test_active_relay_setup_command_is_complete_and_mode_specific(
                 path=browser_server.artifacts / "relay-setup-desktop.png",
                 full_page=True,
             )
+    finally:
+        context.close()
+
+
+def test_active_wildcard_relay_setup_uses_tls_passthrough(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        response = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={
+                "product": "relay",
+                "domain": "browser-wildcard.example",
+                "relay_hostname_scope": "wildcard",
+            },
+        )
+        assert response.ok, response.text()
+        subscription = response.json()
+    finally:
+        request.dispose()
+
+    now = datetime.now(UTC)
+    with sqlite3.connect(browser_server.database) as database:
+        database.execute(
+            "UPDATE subscription SET status = ?, current_period_start = ?, "
+            "current_period_end = ? WHERE public_id = ?",
+            (
+                "ACTIVE",
+                now.isoformat(),
+                (now + timedelta(days=30)).isoformat(),
+                subscription["id"].replace("-", ""),
+            ),
+        )
+
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        mapping = page.locator(
+            f'.mapping-control[data-subscription-id="{subscription["id"]}"]'
+        )
+        assert mapping.get_attribute("data-tls-mode") == "passthrough"
+        assert mapping.get_by_text(
+            "*.browser-wildcard.example", exact=True
+        ).is_visible()
+        assert mapping.get_by_text("TLS passthrough", exact=True).is_visible()
+        assert page.locator("#acmeTermsAccepted").count() == 0
+        assert (
+            "local TLS listener"
+            in page.get_by_text(
+                "Wildcard Relay uses TLS passthrough", exact=False
+            ).text_content()
+        )
+
+        mapping.locator(".mappingUpstream").fill("127.0.0.1:8443")
+        page.locator("#linuxHomePath").fill("/home/wildcard")
+        command = page.locator("#framedConfigInstallCommand").text_content()
+        assert '"upstream": "127.0.0.1:8443"' in command
+        assert '"tls_mode": "passthrough"' in command
+        assert "acme_terms_accepted" not in command
+        assert page.locator("#framedRunCommand + button").is_enabled()
+        _assert_layout(page)
     finally:
         context.close()
 

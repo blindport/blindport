@@ -108,8 +108,8 @@ def test_active_relay_command_installs_exact_private_config_without_wireguard(
     assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
     assert 'acmeTermsAccepted" type="checkbox" checked' not in dashboard
     assert (
-        "For Blindport Relay, your agent terminates TLS and retains automatic certificate "
-        "private keys while Blindport routes the connection." in dashboard
+        "For exact-name Blindport Relay, your agent terminates TLS and retains automatic "
+        "certificate private keys while Blindport routes the connection." in dashboard
     )
     assert run_command == (
         'export PATH="$HOME/.local/bin:$PATH" && '
@@ -245,6 +245,34 @@ def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_clie
     )
     assert f"<code>{port_id}</code>" in dashboard
     assert f"<code>{ip_id}</code>" in dashboard
+
+
+def test_server_rendered_wildcard_relay_uses_passthrough_without_acme(app_client) -> None:
+    client, _ = app_client
+    signup = client.post("/api/v2/signup").json()
+    token = signup["token"]
+    public_id = _create_subscription(
+        client,
+        token,
+        "relay",
+        domain="rendered-wildcard.example",
+        relay_hostname_scope="wildcard",
+    )
+    _set_status(public_id, SubscriptionStatus.ACTIVE)
+
+    dashboard = _dashboard(client, token)
+    config = json.loads(_element_text(dashboard, "generatedClientConfig"))
+
+    assert "*.rendered-wildcard.example" in dashboard
+    assert 'id="acmeTermsAccepted"' not in dashboard
+    assert "Wildcard Relay uses TLS passthrough" in dashboard
+    assert config["accounts"][0]["mappings"] == [
+        {
+            "subscription_id": public_id,
+            "upstream": "127.0.0.1:8080",
+            "tls_mode": "passthrough",
+        }
+    ]
 
 
 def test_setup_visibility_tracks_non_cancelled_delivery_modes(app_client) -> None:

@@ -177,7 +177,7 @@ tech.blindport.mapping.game.upstream: "game:27015"</code></pre>
       <p>Keep <code>$HOME/.local/state/blindport</code> private and persistent because it contains the ACME account and certificate keys. Automatic HTTPS applies only to Relay mappings.</p>
       <h3>Advanced: TLS passthrough</h3>
       <p>Set <code>"tls_mode": "passthrough"</code> when your local server must own its certificate and terminate TLS. Point <code>upstream</code> to that TLS listener. If it uses HTTP-01, add a separate plaintext <code>http_challenge_upstream</code>. Do not set <code>acme_terms_accepted</code> in passthrough mode.</p>
-      <p>Customer-owned names must be subdomains with a direct CNAME. Zone apexes, wildcard claims, CNAME flattening, and CDN-proxied records are not supported. Keep the record in DNS-only mode so Blindport can verify it before each invoice.</p>
+      <p>An exact customer-owned Relay name uses a direct CNAME and can use automatic HTTPS. A wildcard Relay subscription accepts a customer-owned base domain without <code>*.</code>, verifies ownership with the dashboard TXT challenge, and routes strict descendants through the displayed wildcard CNAME. Wildcard Relay requires TLS passthrough to a local TLS listener that serves those names. CNAME flattening and CDN-proxied records are not supported. Keep records in DNS-only mode so Blindport can verify them before each invoice.</p>
     </section>
 
     <section id="wireguard">
