@@ -109,18 +109,22 @@ Concurrent replicas converge through the unique identity/hash indexes, a
 PostgreSQL row lock around issuance and expiry, and a conditional invoice-binding
 update.
 
-Stablecoin checkout reuses this LND outbox without a second provider-side API
-transaction. Each payment snapshots its selected provider, checkout origin, and
-optional asset. Boltz receives a prefilled web URL from the bound BOLT11 invoice;
-Lightning Swap receives its exact origin only, and the customer pastes the visible
-BOLT11 invoice there before choosing asset and network. Blindport records no
-stablecoin address, wallet, or swap ID. Provider quote state is advisory; LND
-invoice settlement is the only activation authority. Megalithic's guide recommends
-Lightning Swap for this credential-free path. A native provider API path would need
-separate credentials and is not implemented.
+Stablecoin checkout reuses this LND outbox. Each payment snapshots its selected
+provider, checkout origin, asset, and whether provider API ordering was enabled at
+creation. Boltz receives a prefilled web URL from the bound BOLT11 invoice. Lightning
+Swap manual payments expose its origin and require invoice paste; API-enabled payments
+reuse the durable invoice UUID as the provider idempotency key and bind one prepared
+order. The order ID and state are stored, while its bearer token is AES-256-GCM
+encrypted with the subscription public UUID and a dedicated purpose. The public rate
+feed raises the API-order floor above the pair minimum with a safety margin; a local
+hard floor remains available when that advisory feed fails. Provider order state is
+advisory; LND invoice settlement is the only activation authority.
 Migration `0026` marks legacy stablecoin rows as Boltz payments but leaves their
 origin and asset unset because historical custom configuration is not recoverable;
 those rows therefore cannot generate a new external checkout URL.
+Migration `0027` adds API-order snapshots and encrypted token storage. Historical and
+already-issued manual payments default to API ordering disabled, so later credential
+configuration cannot change their checkout mode.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment

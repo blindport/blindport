@@ -33,7 +33,7 @@ def test_fresh_sqlite_chain_creates_generic_outbox(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
     upgrade_database(engine)
     inspector = inspect(engine)
-    assert database_revisions(engine) == ("0026", "0026")
+    assert database_revisions(engine) == ("0027", "0027")
     assert {
         column["name"] for column in inspector.get_columns("reminderdelivery")
     } == _GENERIC_COLUMNS
@@ -50,7 +50,7 @@ def test_deployed_0012_sqlite_rows_are_preserved_scrubbed_and_not_replayed(tmp_p
 
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0026", "0026")
+    assert database_revisions(engine) == ("0027", "0027")
     columns = {column["name"] for column in inspect(engine).get_columns("reminderdelivery")}
     assert columns == _GENERIC_COLUMNS
     with engine.connect() as connection:

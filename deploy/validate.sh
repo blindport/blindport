@@ -117,6 +117,62 @@ assert "relay-heartbeat-keys" in secret_names
 '
 }
 
+lightning_swap_api_secret_scope_check() {
+    directory="$1"
+    docker compose \
+        --profile tools \
+        --env-file "$root/$directory/.env.example" \
+        -f "$root/$directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+for service in services.values():
+    secret_names = {
+        item if isinstance(item, str) else item.get("source")
+        for item in service.get("secrets", [])
+    }
+    assert "lightning-swap-api-key" not in secret_names
+    assert "lightning-swap-api-secret" not in secret_names
+assert services["backend"]["environment"]["LIGHTNING_SWAP_API_KEY_FILE"] == ""
+assert services["backend"]["environment"]["LIGHTNING_SWAP_API_SECRET_FILE"] == ""
+'
+
+    LIGHTNING_SWAP_API_KEY_FILE=/run/secrets/lightning-swap-api-key \
+    LIGHTNING_SWAP_API_SECRET_FILE=/run/secrets/lightning-swap-api-secret \
+    CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key \
+    docker compose \
+        --profile tools \
+        --env-file "$root/$directory/.env.example" \
+        -f "$root/$directory/compose.yaml" \
+        -f "$root/$directory/compose.lightning-swap-api.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+for name, service in services.items():
+    secret_names = {
+        item if isinstance(item, str) else item.get("source")
+        for item in service.get("secrets", [])
+    }
+    if name == "backend":
+        assert {"lightning-swap-api-key", "lightning-swap-api-secret"} <= secret_names
+        environment = service["environment"]
+        assert environment["LIGHTNING_SWAP_API_KEY_FILE"] == "/run/secrets/lightning-swap-api-key"
+        assert environment["LIGHTNING_SWAP_API_SECRET_FILE"] == "/run/secrets/lightning-swap-api-secret"
+        assert environment["CREDENTIAL_ENCRYPTION_KEY_FILE"] == "/run/secrets/credential-encryption-key"
+    else:
+        assert "lightning-swap-api-key" not in secret_names
+        assert "lightning-swap-api-secret" not in secret_names
+        assert service.get("environment", {}).get("LIGHTNING_SWAP_API_KEY_FILE", "") == ""
+        assert service.get("environment", {}).get("LIGHTNING_SWAP_API_SECRET_FILE", "") == ""
+'
+}
+
 logging_policy_check() {
     directory="$1"
     docker compose \
@@ -655,6 +711,8 @@ offline_entitlement_secret_scope_check deploy/production
 offline_entitlement_secret_scope_check deploy/split/control
 migration_credential_scope_check deploy/production
 migration_credential_scope_check deploy/split/control
+lightning_swap_api_secret_scope_check deploy/production
+lightning_swap_api_secret_scope_check deploy/split/control
 logging_policy_check deploy/production
 logging_policy_check deploy/split/control
 logging_policy_check deploy/split/relay

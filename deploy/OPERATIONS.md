@@ -206,7 +206,8 @@ Node or Bun service runs in production. Each user should create a dedicated wall
 connection with a wallet-enforced budget and expiry that cover the selected renewal
 term plus fees.
 
-Optional stablecoin checkout requires no provider secret. Apply migration `0026`,
+Optional stablecoin checkout can run manually without a provider secret. Apply migrations
+through `0027`,
 then roll out the new application code to every API and reconciler replica while
 keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.
 Before migrating an installation that previously enabled stablecoin checkout, let
@@ -221,19 +222,32 @@ After every old replica is drained, set
 checked-in default remains false. The default `STABLECOIN_SWAP_MARKUP_BPS=1000`
 adds 10 percent to the LND invoice and
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS=1200` leaves time for the external swap
-within the 1,800-second reservation. Disable the feature flag first during a
+within the 1,800-second reservation. Lightning Swap also uses a 5,000-sat hard floor.
+When API ordering is enabled, the configured `USDCSOL` live minimum receives a 20
+percent safety margin. Disable the feature flag first during a
 rollback. The flag blocks new checkout creation and removes the UI control;
 reconciliation still settles or expires invoices issued before disablement so
-customer payments and resource holds are not stranded. Do not deploy application code from before migration `0026` or
-downgrade the migration while stablecoin payment rows remain; the downgrade rejects
-that unsafe state because older code cannot populate or honor the checkout snapshots.
+customer payments and resource holds are not stranded. Do not deploy application code
+from before migration `0027` during this rollout. Migration `0026` cannot be removed
+while stablecoin payment rows remain, and migration `0027` cannot be removed while
+Lightning Swap API-mode payments remain.
 
-Megalithic's guide recommends Lightning Swap for this credential-free checkout.
-Blindport opens its external origin and the customer pastes the displayed BOLT11
-invoice there before choosing an asset and network. Confirm the exact network and
-amount after the provider quote. Blindport neither creates a provider swap nor
-accepts provider callbacks; only the LND payment hash settles service. A native
-provider API flow would require separate credentials and is not implemented.
+Megalithic's guide recommends Lightning Swap. Without API credentials, Blindport opens
+its external origin and the customer pastes the displayed BOLT11 before choosing USDC
+on Solana. For a prepared order, install both credential files, mount them at
+`/run/secrets/lightning-swap-api-key` and `/run/secrets/lightning-swap-api-secret`, and
+set both `_FILE` variables. Also set
+`CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key`. Include
+`compose.lightning-swap-api.yaml` in every migration, pull, start, and status command
+while API ordering is configured. Provider orders
+use the invoice UUID for idempotency, and order bearer tokens are encrypted in the
+payment row. Never print either API credential or an order token. Blindport accepts no
+provider callback; only the LND payment hash settles service.
+
+```sh
+install -o 10001 -g 10001 -m 0400 /path/to/lightning-swap-api-key secrets/lightning-swap-api-key
+install -o 10001 -g 10001 -m 0400 /path/to/lightning-swap-api-secret secrets/lightning-swap-api-secret
+```
 
 Managed names have a 30-minute unpaid hold, customer-owned names have a one-hour
 DNS and payment hold, and one account may retain at most two unpaid Relay claims.
@@ -423,6 +437,10 @@ docker compose --env-file .env -f compose.yaml --profile tools run --rm migrate
 docker compose --env-file .env -f compose.yaml up -d
 docker compose --env-file .env -f compose.yaml ps
 ```
+
+Append `-f compose.lightning-swap-api.yaml` to each command above when prepared
+Lightning Swap ordering is configured. Omitting that overlay keeps the manual checkout
+available and does not require the provider credential files.
 
 ## Split control host
 

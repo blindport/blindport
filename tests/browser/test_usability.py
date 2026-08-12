@@ -1091,7 +1091,8 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         assert payment_response.ok, payment_response.text()
         payment = payment_response.json()
         assert payment["stablecoin_provider"] == "lightning_swap"
-        assert payment["stablecoin_asset"] is None
+        assert payment["stablecoin_asset"] == "USDCSOL"
+        assert payment["stablecoin_checkout_prefilled"] is False
         assert payment["stablecoin_checkout_url"] == "https://lightning-swap.example"
         assert payment["invoice"] not in payment["stablecoin_checkout_url"]
         assert payment["base_amount_sats"] == 75000
@@ -1120,11 +1121,11 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         assert payment["invoice"] not in popup.url
         assert page.locator("#stablecoinNotice").is_visible()
         assert page.locator("#stablecoinInstructions").text_content() == (
-            "Paste this BOLT11 invoice into Lightning Swap, then choose the asset and network there."
+            "Paste this BOLT11 invoice into Lightning Swap, then choose USDC on Solana."
         )
         assert page.locator("#stablecoinNotice").text_content() == (
-            "Lightning Swap is an external provider. Confirm the exact network and amount after its "
-            "provider quote before sending."
+            "Lightning Swap is an external provider. Send one transaction using the exact asset, "
+            "network, and amount shown there."
         )
         assert page.locator("#payStatus").text_content() == (
             "Waiting for payment through Lightning Swap (365 service days)."
@@ -1152,7 +1153,7 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         context.close()
 
 
-def test_dashboard_stablecoin_dns_failure_does_not_open_blank_popup(
+def test_dashboard_payment_controls_require_successful_dns_check(
     browser: Browser,
     browser_server: BrowserServer,
     playwright_runtime: Playwright,
@@ -1186,51 +1187,51 @@ def test_dashboard_stablecoin_dns_failure_does_not_open_blank_popup(
         ]
     )
     page = context.new_page()
-    popups: list[Page] = []
-    page.on("popup", lambda popup: popups.append(popup))
+    payment_requests = []
+    page.on(
+        "request",
+        lambda request: payment_requests.append(request)
+        if request.url.endswith("/api/v1/payments") and request.method == "POST"
+        else None,
+    )
 
-    def reject_payment(route) -> None:
-        if route.request.method != "POST":
-            route.continue_()
-            return
+    def verify_domain(route) -> None:
         route.fulfill(
-            status=400,
+            status=200,
             content_type="application/json",
             body=json.dumps(
                 {
-                    "detail": (
-                        "domain ownership verification failed: "
-                        "challenge TXT value did not match"
-                    )
+                    "verified": True,
+                    "detail": "domain verified",
+                    "subscription": subscription,
                 }
             ),
         )
 
-    context.route("**/api/v1/payments", reject_payment)
+    context.route(
+        f"**/api/v1/subscriptions/{subscription['id']}/verify-domain", verify_domain
+    )
     try:
         page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
-        with page.expect_response(
-            lambda payment: (
-                payment.url.endswith("/api/v1/payments")
-                and payment.request.method == "POST"
-            )
-        ) as payment_response_info:
-            page.locator(
-                f'.stablecoinPayBtn[data-sub-id="{subscription["id"]}"]'
-            ).click()
-
-        assert payment_response_info.value.status == 400
-        expected = (
-            "Payment error: domain ownership verification failed: challenge TXT value "
-            "did not match. Correct the DNS records shown above, then select Check DNS "
-            "before paying."
-        )
-        assert page.locator("#payStatus").text_content() == expected
         card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
-        assert card.locator(".cardStatus").text_content() == expected
-        assert card.get_by_role("button", name="Check DNS").is_visible()
-        assert popups == []
-        assert len(context.pages) == 1
+        lightning = card.locator(".payBtn")
+        stablecoin = card.locator(".stablecoinPayBtn")
+        inline_nwc = card.locator(".inlineNwcPayBtn")
+        assert lightning.is_disabled()
+        assert stablecoin.is_disabled()
+        assert inline_nwc.is_disabled()
+        stablecoin.click(force=True)
+        page.wait_for_timeout(100)
+        assert payment_requests == []
+
+        card.get_by_role("button", name="Check DNS").click()
+        assert card.get_by_role("button", name="Verified").is_disabled()
+        assert lightning.is_enabled()
+        assert stablecoin.is_enabled()
+        assert inline_nwc.is_enabled()
+        assert card.locator(".cardStatus").text_content() == (
+            "DNS verified. Payment is now available."
+        )
         _assert_layout(page)
     finally:
         context.close()

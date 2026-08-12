@@ -486,6 +486,16 @@ class Payment(SQLModel, table=True):
     stablecoin_provider: str | None = Field(default=None, max_length=32)
     stablecoin_checkout_origin: str | None = Field(default=None, max_length=2048)
     stablecoin_asset: str | None = Field(default=None, max_length=64)
+    stablecoin_api_order_enabled: bool = Field(
+        default=False, sa_column_kwargs={"server_default": text("false")}
+    )
+    stablecoin_order_id: str | None = Field(default=None, max_length=32)
+    stablecoin_order_token_ciphertext: str | None = Field(default=None, max_length=8192)
+    stablecoin_order_token_key_version: str | None = Field(default=None, max_length=32)
+    stablecoin_order_status: str | None = Field(default=None, max_length=32)
+    stablecoin_order_expires_at: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     # Lightning uses BOLT11 invoice + payment_hash.
     invoice: str | None = None
     payment_hash: str | None = None

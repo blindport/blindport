@@ -153,9 +153,14 @@ def test_stablecoin_feature_has_bounded_secure_defaults() -> None:
     assert settings.STABLECOIN_SWAP_MARKUP_BPS == 1000
     assert settings.STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS == 1200
     assert settings.STABLECOIN_SWAP_DEFAULT_ASSET == "USDC-BASE"
+    assert settings.STABLECOIN_SWAP_MIN_INVOICE_SATS == 5000
+    assert settings.STABLECOIN_SWAP_MIN_MARGIN_BPS == 2000
     assert settings.STABLECOIN_CHECKOUT_PROVIDER == "lightning_swap"
     assert settings.BOLTZ_WEB_URL == "https://boltz.exchange"
     assert settings.LIGHTNING_SWAP_WEB_URL == "https://lightning-swap.com"
+    assert settings.LIGHTNING_SWAP_DEFAULT_ASSET == "USDCSOL"
+    assert settings.LIGHTNING_SWAP_API_KEY == ""
+    assert settings.LIGHTNING_SWAP_API_SECRET == ""
 
 
 @pytest.mark.parametrize(
@@ -196,6 +201,31 @@ def test_production_stablecoin_checkout_requires_selected_provider_https(
 def test_stablecoin_checkout_provider_is_limited_to_supported_values() -> None:
     with pytest.raises(ValidationError, match="STABLECOIN_CHECKOUT_PROVIDER"):
         Settings(_env_file=None, STABLECOIN_CHECKOUT_PROVIDER="other")
+
+
+@pytest.mark.parametrize("asset", ["USDC-BASE", "usdsol", "BTC", "USDC"])
+def test_lightning_swap_asset_is_limited_to_supported_stablecoin_networks(asset: str) -> None:
+    with pytest.raises(ValidationError, match="LIGHTNING_SWAP_DEFAULT_ASSET"):
+        Settings(_env_file=None, LIGHTNING_SWAP_DEFAULT_ASSET=asset)
+
+
+def test_lightning_swap_api_credentials_are_paired_and_require_encryption() -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(_env_file=None, LIGHTNING_SWAP_API_KEY="api-key")
+    with pytest.raises(ValidationError, match="CREDENTIAL_ENCRYPTION_KEY"):
+        Settings(
+            _env_file=None,
+            LIGHTNING_SWAP_API_KEY="api-key",
+            LIGHTNING_SWAP_API_SECRET="api-secret",
+            CREDENTIAL_ENCRYPTION_KEY="",
+        )
+    settings = Settings(
+        _env_file=None,
+        LIGHTNING_SWAP_API_KEY="api-key",
+        LIGHTNING_SWAP_API_SECRET="api-secret",
+        CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
+    )
+    assert settings.LIGHTNING_SWAP_API_KEY == "api-key"
 
 
 def test_environment_mode_is_strict() -> None:

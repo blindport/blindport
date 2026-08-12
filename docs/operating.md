@@ -725,7 +725,7 @@ longer than the minimum payable duration plus this safety interval.
 Optional stablecoin checkout uses its own invoice expiry,
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS` (1,200 seconds by default), which plus
 the safety interval must remain shorter than the resource reservation. Apply
-migration `0026`, then deploy the new code to every API and reconciler replica
+migrations through `0027`, then deploy the new code to every API and reconciler replica
 with the kill switch still false. If stablecoin checkout was previously enabled,
 first let every open stablecoin invoice settle or expire. Migration `0026` marks
 legacy rows as Boltz payments but cannot safely reconstruct a historical custom
@@ -736,17 +736,24 @@ separate configuration rollout add `stablecoin_swap` to
 `STABLECOIN_SWAP_MARKUP_BPS=1000` charges a 10 percent satoshi markup, rounded
 up. New installs use `STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and must keep
 `LIGHTNING_SWAP_WEB_URL` on an HTTPS origin. Megalithic's guide recommends this
-credential-free Lightning Swap flow: the external provider opens with no BOLT11 in
-the URL, and the customer pastes the displayed invoice before choosing asset and
-network. Confirm the exact network and amount after its provider quote. Set
+provider. Manual fallback opens the provider without a BOLT11 in the URL, and the
+customer pastes the invoice before selecting `LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL`
+(USDC on Solana). The final invoice is the maximum of service price plus markup and
+`STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`; the difference remains a surcharge, not extra
+service time. Set both file-backed API credentials, set
+`CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key`, and include
+`compose.lightning-swap-api.yaml` to enable prepared orders. API mode
+fetches the public pair minimum, adds `STABLECOIN_SWAP_MIN_MARGIN_BPS=2000`, and uses
+the larger result; feed failure falls back to the hard floor. The provider create call
+is idempotent, and the returned order token is encrypted using the credential key.
+Users must send the exact displayed asset and amount in one transaction within the
+provider's ten-minute order window. Set
 `STABLECOIN_CHECKOUT_PROVIDER=boltz` to retain the prefilled Boltz checkout; its
 `BOLTZ_WEB_URL` must also be an HTTPS origin and `STABLECOIN_SWAP_DEFAULT_ASSET`
-selects the initial USDC or USDT0 asset. Blindport does not request a quote, create
-a swap, consume provider callbacks, or implement the separate-credential native
-provider API flow. LND settlement remains the only authority. For rollback, disable
-the kill switch first and retain `0026`-compatible application code until no
-stablecoin payment rows remain. The downgrade rejects that unsafe state because
-older code cannot populate or honor the checkout snapshots.
+selects the initial USDC or USDT0 asset. Blindport consumes no provider callback, and
+LND settlement remains the only authority. For rollback, disable the kill switch first.
+Migration `0026` cannot be removed while stablecoin payment rows remain; migration
+`0027` cannot be removed while API-created provider orders remain.
 
 When `BTC_USD_PRICE_ENABLED=true`, each backend process requests
 `https://mempool.space/api/v1/prices` every five minutes. The cache accepts only

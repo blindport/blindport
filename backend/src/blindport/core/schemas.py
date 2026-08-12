@@ -419,6 +419,7 @@ class PaymentResponse(BaseModel):
     stablecoin_provider: str | None = None
     stablecoin_checkout_url: str | None = None
     stablecoin_asset: str | None = None
+    stablecoin_checkout_prefilled: bool = False
     nwc_state: str | None = None
     nwc_attempt_count: int = 0
     nwc_error_code: str | None = None

@@ -505,12 +505,22 @@ function renderManualPayment(payment, status) {
     const notice = document.getElementById("stablecoinNotice");
     const instructions = document.getElementById("stablecoinInstructions");
     if (lightningSwap) {
-      instructions.textContent =
-        "Paste this BOLT11 invoice into Lightning Swap, then choose the asset and network there.";
+      const prepared = payment.stablecoin_checkout_prefilled;
+      const assetName = payment.stablecoin_asset === "USDCSOL"
+        ? "USDC on Solana"
+        : payment.stablecoin_asset;
+      invoiceDetails.hidden = prepared;
+      invoiceDetails.open = !prepared;
+      document.getElementById("copyInvoiceBtn").hidden = prepared;
+      instructions.textContent = prepared
+        ? `Continue with Lightning Swap to send the exact ${assetName} amount to the prepared order.`
+        : `Paste this BOLT11 invoice into Lightning Swap, then choose ${assetName}.`;
       notice.textContent =
-        "Lightning Swap is an external provider. Confirm the exact network and amount after its provider quote before sending.";
+        "Lightning Swap is an external provider. Send one transaction using the exact asset, network, and amount shown there.";
       status.textContent =
-        `Waiting for payment through Lightning Swap (${payment.period_days} service days).`;
+        prepared
+          ? `Prepared ${assetName} order. Waiting for payment (${payment.period_days} service days).`
+          : `Waiting for payment through Lightning Swap (${payment.period_days} service days).`;
     } else {
       instructions.textContent = "Continue with Boltz to review the prefilled checkout.";
       notice.textContent =
@@ -935,6 +945,7 @@ if (deleteNotificationEmailButton) {
 
 document.querySelectorAll(".verifyDomainBtn").forEach((button) => {
   button.addEventListener("click", async () => {
+    const card = button.closest(".subscription-card");
     const originalText = button.textContent;
     button.disabled = true;
     button.textContent = "Checking DNS...";
@@ -945,7 +956,14 @@ document.querySelectorAll(".verifyDomainBtn").forEach((button) => {
       );
       button.textContent = result.verified ? "Verified" : result.detail;
       if (result.verified) {
-        window.setTimeout(() => window.location.reload(), 600);
+        card.dataset.dnsPaymentBlocked = "false";
+        card.querySelectorAll(
+          ".payBtn, .stablecoinPayBtn, .nwcPayBtn, .inlineNwcPayBtn",
+        ).forEach((control) => {
+          control.disabled = false;
+        });
+        card.querySelector(".cardStatus").textContent =
+          "DNS verified. Payment is now available.";
         return;
       }
     } catch (error) {

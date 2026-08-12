@@ -869,6 +869,10 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
     if p.method == PaymentMethod.LIGHTNING and p.invoice:
         lightning_uri = f"lightning:{p.invoice}"
         qr_svg = qr.render_svg(p.invoice.upper())
+    try:
+        stablecoin_checkout_url = payments_svc.stablecoin_checkout_url(p, subscription)
+    except payments_svc.PaymentProviderError as error:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
     return PaymentResponse(
         id=p.id or 0,
         subscription_id=subscription.public_id,
@@ -884,8 +888,9 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         lightning_uri=lightning_uri,
         qr_svg=qr_svg,
         stablecoin_provider=p.stablecoin_provider,
-        stablecoin_checkout_url=payments_svc.stablecoin_checkout_url(p),
+        stablecoin_checkout_url=stablecoin_checkout_url,
         stablecoin_asset=p.stablecoin_asset,
+        stablecoin_checkout_prefilled=p.stablecoin_order_id is not None,
         nwc_state=p.nwc_state,
         nwc_attempt_count=p.nwc_attempt_count,
         nwc_error_code=p.nwc_error_code,

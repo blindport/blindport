@@ -21,6 +21,7 @@ class CredentialPurpose(StrEnum):
 
     NWC = "nwc"
     NOTIFICATION_EMAIL = "notification-email"
+    LIGHTNING_SWAP_ORDER = "lightning-swap-order"
 
 
 class CredentialError(ValueError):

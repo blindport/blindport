@@ -606,6 +606,8 @@ class Settings(BaseSettings):
     STABLECOIN_SWAP_MARKUP_BPS: int = Field(default=1000, ge=1, le=10000)
     STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS: int = Field(default=1200, ge=60, le=3600)
     STABLECOIN_SWAP_DEFAULT_ASSET: str = "USDC-BASE"
+    STABLECOIN_SWAP_MIN_INVOICE_SATS: int = Field(default=5000, ge=1000, le=1000000)
+    STABLECOIN_SWAP_MIN_MARGIN_BPS: int = Field(default=2000, ge=0, le=10000)
     STABLECOIN_CHECKOUT_PROVIDER: Literal["boltz", "lightning_swap"] = "lightning_swap"
 
     # Advisory Bitcoin/USD display pricing. This never affects payment amounts.
@@ -662,6 +664,10 @@ class Settings(BaseSettings):
     BOLTZ_URL: str = "https://api.boltz.exchange"
     BOLTZ_WEB_URL: str = "https://boltz.exchange"
     LIGHTNING_SWAP_WEB_URL: str = "https://lightning-swap.com"
+    LIGHTNING_SWAP_DEFAULT_ASSET: str = "USDCSOL"
+    LIGHTNING_SWAP_API_KEY: str = ""
+    LIGHTNING_SWAP_API_SECRET: str = ""
+    LIGHTNING_SWAP_REQUEST_TIMEOUT_SECONDS: float = Field(default=5.0, ge=1, le=15)
 
     # Relay control plane
     RELAY_CONTROL_URL: str = "relay:5443"
@@ -957,6 +963,16 @@ class Settings(BaseSettings):
         if not re.fullmatch(r"(?:USDC|USDT0)(?:-[A-Z0-9]+)?", value):
             raise ValueError(
                 "STABLECOIN_SWAP_DEFAULT_ASSET must be a canonical Boltz USDC or USDT0 asset"
+            )
+        return value
+
+    @field_validator("LIGHTNING_SWAP_DEFAULT_ASSET")
+    @classmethod
+    def validate_lightning_swap_asset(cls, value: str) -> str:
+        supported = {"USDCSOL", "USDTSOL", "USDTTRC", "USDT", "USDCETH"}
+        if value not in supported:
+            raise ValueError(
+                "LIGHTNING_SWAP_DEFAULT_ASSET must be a supported stablecoin network code"
             )
         return value
 
@@ -1372,6 +1388,14 @@ class Settings(BaseSettings):
                         "STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS plus payment expiry safety "
                         f"must be shorter than {claim_ttl_field}"
                     )
+        if bool(self.LIGHTNING_SWAP_API_KEY) != bool(self.LIGHTNING_SWAP_API_SECRET):
+            raise ValueError(
+                "LIGHTNING_SWAP_API_KEY and LIGHTNING_SWAP_API_SECRET must be configured together"
+            )
+        if (self.LIGHTNING_SWAP_API_KEY or self.LIGHTNING_SWAP_API_SECRET) and not (
+            self.CREDENTIAL_ENCRYPTION_KEY
+        ):
+            raise ValueError("CREDENTIAL_ENCRYPTION_KEY is required for Lightning Swap API orders")
         if self.NWC_PAYMENT_LEASE_SECONDS < self.NWC_HELPER_TIMEOUT_SECONDS + 5:
             raise ValueError(
                 "NWC_PAYMENT_LEASE_SECONDS must exceed NWC_HELPER_TIMEOUT_SECONDS by at least 5"

@@ -70,12 +70,13 @@ opaque sessions; passkey authentication never reveals the bearer token. The prim
 payment path is direct Lightning through LND. Nostr Wallet Connect is optional
 wallet control over BOLT11 invoices. Operators may separately enable a stablecoin
 checkout. New installs use Lightning Swap, as recommended by Megalithic's guide:
-the credential-free flow opens the external provider and requires the customer to
-paste the displayed surcharged LND invoice, then choose an asset and network.
+the default manual flow opens the external provider and requires the customer to
+paste the displayed surcharged LND invoice, then choose the configured stablecoin
+network. Operators may add file-backed Lightning Swap API credentials to create a
+prepared order page with the invoice, asset, network, and exact amount already bound.
 Boltz remains an optional prefilled checkout provider. Blindport receives Lightning
-bitcoin and activates service only after LND reports settlement; it neither creates
-provider swaps nor accepts provider callbacks. A native provider API flow requires
-separate credentials and is not implemented. Legacy persisted Cashu payment rows
+bitcoin and activates service only after LND reports settlement; provider order state
+is advisory and no callback can activate service. Legacy persisted Cashu payment rows
 remain readable, but Cashu runtime support has been removed.
 
 Blindport Port and Relay support fixed monthly (30 service days) and yearly (365
@@ -222,9 +223,12 @@ by all API replicas; see [`docs/operating.md`](docs/operating.md).
 
 Stablecoin checkout uses the same durable invoice and settlement path. Blindport
 snapshots the selected provider and checkout origin on each payment. Boltz receives
-a prefilled external URL; Lightning Swap receives no invoice in its URL, so the
-customer pastes the visible BOLT11 there and selects the asset and network after its
-quote. The provider quote is advisory and LND settlement remains authoritative.
+a prefilled external URL. Lightning Swap defaults to USDC on Solana and a 5,000-sat
+invoice floor; API-enabled deployments also apply a 20 percent margin to the pair's
+live minimum and create an idempotent prepared provider order. Its bearer order token
+is encrypted at rest. Without API credentials, the customer pastes the visible BOLT11
+into the manual provider flow. Provider state is advisory and LND settlement remains
+authoritative.
 The hosted UI may show a cached approximate USD value from mempool.space for
 orientation; satoshi prices remain authoritative when that optional feed is stale
 or unavailable.
