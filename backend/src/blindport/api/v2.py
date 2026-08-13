@@ -190,7 +190,9 @@ def me(
         account_id=user.public_id,
         is_admin=user.is_admin,
         created_at=user.created_at,
-        subscriptions=[_sub_to_response(subscription) for subscription in subscriptions],
+        subscriptions=[
+            _sub_to_response(subscription, session=session) for subscription in subscriptions
+        ],
     )
 
 
@@ -406,7 +408,7 @@ def anonymous_order(
 
     from .v1 import _sub_to_response
 
-    subscription_response = _sub_to_response(subscription)
+    subscription_response = _sub_to_response(subscription, session=session)
     set_browser_session_cookies(response, request, issued)
     return AnonymousOrderResponse(
         token=display,

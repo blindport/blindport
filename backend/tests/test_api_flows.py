@@ -220,6 +220,12 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     assert payment["base_amount_sats"] == 75000
     assert payment["markup_sats"] == 7500
     assert payment["amount_sats"] == 82500
+    assert (
+        payment["standard_period_days"],
+        payment["bonus_days"],
+        payment["stablecoin_surcharge_sats"],
+        payment["stablecoin_minimum_topup_sats"],
+    ) == (365, 0, 7500, 0)
     assert (payment["billing_term"], payment["period_days"]) == ("yearly", 365)
     assert payment["stablecoin_asset"] == "USDC-BASE"
     assert payment["stablecoin_provider"] == "boltz"
@@ -284,6 +290,10 @@ def test_lightning_swap_checkout_snapshots_origin_without_invoice_leakage(
     assert created["stablecoin_provider"] == "lightning_swap"
     assert created["stablecoin_asset"] == "USDCSOL"
     assert created["stablecoin_checkout_prefilled"] is False
+    assert created["bonus_days"] == 0
+    assert created["period_days"] == created["standard_period_days"] == 365
+    assert created["markup_sats"] == created["stablecoin_surcharge_sats"]
+    assert created["stablecoin_minimum_topup_sats"] == 0
     assert created["stablecoin_checkout_url"] == "https://lightning-swap.example"
     assert created["invoice"] not in created["stablecoin_checkout_url"]
     checkout = urlsplit(created["stablecoin_checkout_url"])
@@ -331,8 +341,151 @@ def test_lightning_swap_manual_checkout_uses_conservative_local_floor(
     assert created["base_amount_sats"] == 1500
     assert created["markup_sats"] == 3500
     assert created["amount_sats"] == 5000
+    assert created["stablecoin_surcharge_sats"] == 150
+    assert created["stablecoin_minimum_topup_sats"] == 3350
+    assert (created["standard_period_days"], created["bonus_days"], created["period_days"]) == (
+        30,
+        61,
+        91,
+    )
     assert created["stablecoin_asset"] == "USDCSOL"
     assert created["stablecoin_checkout_prefilled"] is False
+
+
+def test_lightning_swap_floor_topup_grants_bonus_days_and_settles_idempotently(
+    app_client, monkeypatch
+) -> None:
+    from blindport.core.models import Payment, Subscription
+    from blindport.db import engine
+    from blindport.services import payments
+
+    client, factory = app_client
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+
+    created = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    ).json()
+    repeated = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    ).json()
+    assert repeated["id"] == created["id"]
+    assert created["period_days"] == 91
+
+    factory.get_lightning_adapter().mark_paid(created["payment_hash"])
+    settled = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token)).json()
+    assert (settled["status"], settled["period_days"], settled["bonus_days"]) == ("paid", 91, 61)
+
+    with Session(engine) as session:
+        payment = session.get(Payment, created["id"])
+        stored_subscription = (
+            session.get(Subscription, payment.subscription_id) if payment else None
+        )
+        assert payment is not None and stored_subscription is not None
+        assert stored_subscription.current_period_start is not None
+        assert stored_subscription.current_period_end is not None
+        assert (
+            stored_subscription.current_period_end - stored_subscription.current_period_start
+            == timedelta(days=91)
+        )
+
+
+def test_legacy_stablecoin_snapshot_with_zero_surcharge_settles_standard_period(
+    app_client, monkeypatch
+) -> None:
+    from blindport.core.models import Payment
+    from blindport.db import engine
+    from blindport.services import payments
+
+    client, factory = app_client
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    created = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    ).json()
+
+    with Session(engine) as session:
+        payment = session.get(Payment, created["id"])
+        assert payment is not None
+        payment.stablecoin_surcharge_sats = 0
+        payment.period_days = 30
+        session.add(payment)
+        session.commit()
+
+    factory.get_lightning_adapter().mark_paid(created["payment_hash"])
+    settled = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token)).json()
+    assert (settled["status"], settled["period_days"]) == ("paid", 30)
+
+
+def test_tampered_lightning_swap_bonus_snapshot_cannot_settle(app_client, monkeypatch) -> None:
+    from blindport.core.models import Payment, PaymentStatus
+    from blindport.db import engine
+    from blindport.services import payments
+
+    client, factory = app_client
+    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
+    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
+    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    created = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        headers=_auth(token),
+    ).json()
+
+    with Session(engine) as session:
+        payment = session.get(Payment, created["id"])
+        assert payment is not None
+        payment.period_days = 90
+        session.add(payment)
+        session.commit()
+
+    factory.get_lightning_adapter().mark_paid(created["payment_hash"])
+    with Session(engine) as session:
+        payment = session.get(Payment, created["id"])
+        assert payment is not None
+        with pytest.raises(ValueError, match="invalid period"):
+            payments.check_and_settle_payment(session, payment)
+
+    with Session(engine) as session:
+        payment = session.get(Payment, created["id"])
+        assert payment is not None
+        assert payment.status == PaymentStatus.PENDING
+
+
+def test_stablecoin_credit_rounds_up_for_annual_and_boundary_amounts(app_client) -> None:
+    del app_client
+    from blindport.services.payments import stablecoin_credited_days
+
+    assert stablecoin_credited_days(5000, 1500, 150, 365) == 1107
+    assert stablecoin_credited_days(1651, 1500, 150, 30) == 31
 
 
 def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(

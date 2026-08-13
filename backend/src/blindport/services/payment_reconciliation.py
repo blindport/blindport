@@ -30,6 +30,7 @@ from ..db import engine
 from .domain_verification import get_domain_verifier
 from .payments import check_and_settle_payment, create_payment
 from .subscriptions import (
+    has_pending_upgrade,
     reap_expired_domain_claims,
     requires_domain_renewal_verification,
     verify_subscription_domain,
@@ -89,6 +90,7 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                     or subscription.status != SubscriptionStatus.ACTIVE
                     or period_end is None
                     or period_end > due_before
+                    or has_pending_upgrade(session, subscription)
                 ):
                     continue
                 user = session.get(User, subscription.user_id)
@@ -132,6 +134,7 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                     or subscription.status != SubscriptionStatus.ACTIVE
                     or period_end is None
                     or period_end > due_before
+                    or has_pending_upgrade(session, subscription)
                 ):
                     continue
                 open_payment = session.exec(

@@ -125,6 +125,9 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     )
     assert "if (ipSelected && yearlyTerm) yearlyTerm.checked = true;" in dashboard
     assert "payment.period_days" in dashboard
+    assert "payment.bonus_days" in dashboard
+    assert "payment.stablecoin_surcharge_sats" in dashboard
+    assert "payment.stablecoin_minimum_topup_sats" in dashboard
     assert 'name="orderBillingTerm"' in _asset("templates/landing.html")
     assert 'name="newBillingTerm"' in _asset("templates/dashboard.html")
     assert 'name="paymentTerm-{{ s.public_id }}"' in _asset("templates/dashboard.html")

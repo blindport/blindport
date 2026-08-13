@@ -319,6 +319,9 @@ class SubscriptionResponse(BaseModel):
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     auto_renew: bool
+    upgrade_from_subscription_id: UUID | None = None
+    upgrade_credit_sats: int = 0
+    upgrade_source_period_end: datetime | None = None
 
 
 class AnonymousOrderResponse(BaseModel):
@@ -402,6 +405,12 @@ class CreatePaymentRequest(BaseModel):
     billing_term: BillingTerm | None = None
 
 
+class CreateWildcardUpgradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    billing_term: BillingTerm = Field(strict=False)
+
+
 class PaymentResponse(BaseModel):
     id: int
     subscription_id: UUID
@@ -410,6 +419,12 @@ class PaymentResponse(BaseModel):
     amount_sats: int
     base_amount_sats: int
     markup_sats: int
+    service_price_sats: int
+    discount_sats: int
+    standard_period_days: int
+    bonus_days: int
+    stablecoin_surcharge_sats: int
+    stablecoin_minimum_topup_sats: int
     billing_term: BillingTerm
     period_days: int
     invoice: str | None = None

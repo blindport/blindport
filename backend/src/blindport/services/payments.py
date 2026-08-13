@@ -41,6 +41,7 @@ from ..core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    RelayHostnameScope,
     Subscription,
     SubscriptionStatus,
     User,
@@ -189,6 +190,11 @@ def _payment_eligibility_deadline(subscription: Subscription) -> datetime | None
         for deadline in (
             _aware(subscription.reservation_expires_at),
             subs.domain_payment_eligibility_deadline(subscription),
+            (
+                _aware(subscription.upgrade_source_period_end)
+                if subscription.upgrade_from_subscription_id is not None
+                else None
+            ),
         )
         if deadline is not None
     ]
@@ -226,6 +232,27 @@ def stablecoin_markup_sats(base_amount_sats: int) -> int:
         raise ValueError("base payment amount must be positive")
     numerator = base_amount_sats * settings.STABLECOIN_SWAP_MARKUP_BPS
     return (numerator + 9_999) // 10_000
+
+
+def stablecoin_credited_days(
+    amount_sats: int,
+    base_amount_sats: int,
+    stablecoin_surcharge_sats: int,
+    standard_period_days: int,
+    service_price_sats: int | None = None,
+) -> int:
+    """Return proportional service credit for a Lightning Swap floor top-up."""
+    service_price = service_price_sats if service_price_sats is not None else base_amount_sats
+    minimum_topup_sats = amount_sats - base_amount_sats - stablecoin_surcharge_sats
+    denominator = service_price + stablecoin_surcharge_sats
+    if amount_sats <= 0 or denominator <= 0 or standard_period_days <= 0:
+        raise ValueError("stablecoin payment snapshot has an invalid credit amount")
+    if minimum_topup_sats <= 0:
+        return standard_period_days
+    if service_price_sats is None or service_price_sats == base_amount_sats:
+        return (amount_sats * standard_period_days + denominator - 1) // denominator
+    bonus_days = (minimum_topup_sats * standard_period_days + denominator - 1) // denominator
+    return standard_period_days + bonus_days
 
 
 def _lightning_swap_api_enabled() -> bool:
@@ -293,10 +320,11 @@ def _stablecoin_checkout_snapshot() -> tuple[str, str, str | None]:
 
 def _stablecoin_amounts(
     base_amount_sats: int, provider: str, origin: str, asset: str | None
-) -> tuple[int, int]:
-    amount_sats = base_amount_sats + stablecoin_markup_sats(base_amount_sats)
+) -> tuple[int, int, int]:
+    stablecoin_surcharge_sats = stablecoin_markup_sats(base_amount_sats)
+    amount_sats = base_amount_sats + stablecoin_surcharge_sats
     if provider != "lightning_swap" or asset is None:
-        return amount_sats, amount_sats - base_amount_sats
+        return amount_sats, amount_sats - base_amount_sats, stablecoin_surcharge_sats
     dynamic_floor = 0
     if _lightning_swap_api_enabled():
         with suppress(LightningSwapError):
@@ -309,7 +337,7 @@ def _stablecoin_amounts(
         settings.STABLECOIN_SWAP_MIN_INVOICE_SATS,
         dynamic_floor,
     )
-    return amount_sats, amount_sats - base_amount_sats
+    return amount_sats, amount_sats - base_amount_sats, stablecoin_surcharge_sats
 
 
 def _invoice_preimage(payment: Payment) -> bytes:
@@ -807,6 +835,12 @@ def create_payment(
     subs.reap_expired_domain_claims(session)
     session.refresh(subscription)
     selected_term = billing_term or subscription.billing_term
+    is_upgrade_initial = (
+        subscription.upgrade_from_subscription_id is not None
+        and subscription.status == SubscriptionStatus.PENDING
+    )
+    if is_upgrade_initial and selected_term != subscription.billing_term:
+        raise ValueError("wildcard upgrade payment must use the selected upgrade billing term")
     if subscription.product == ProductType.IP:
         if subscription.delivery != DeliveryMode.WIREGUARD:
             raise ValueError("Blindport IP is available with WireGuard delivery only")
@@ -856,6 +890,9 @@ def create_payment(
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one()
+    session.refresh(subscription)
+    if subs.has_pending_upgrade(session, subscription):
+        raise ValueError("subscription has a pending wildcard upgrade")
     open_payment_ids = set(
         session.exec(
             select(Payment.id)
@@ -889,36 +926,55 @@ def create_payment(
     if subscription.status == SubscriptionStatus.CANCELLED:
         raise ValueError("cancelled subscription cannot be paid; create a new subscription")
 
-    base_amount_sats = (
+    service_price_sats = (
         subscription.monthly_price_sats
         if selected_term == BillingTerm.MONTHLY
         else subscription.yearly_price_sats
     )
+    discount_sats = subscription.upgrade_credit_sats if is_upgrade_initial else 0
+    if discount_sats < 0 or discount_sats > service_price_sats:
+        raise ValueError("wildcard upgrade credit snapshot is invalid")
+    base_amount_sats = service_price_sats - discount_sats
     stablecoin_provider = None
     stablecoin_checkout_origin = None
     stablecoin_asset = None
     amount_sats = base_amount_sats
     markup_sats = 0
-    if method == PaymentMethod.STABLECOIN_SWAP:
+    stablecoin_surcharge_sats = 0
+    period_days = subs.billing_period_days(selected_term)
+    if base_amount_sats == 0 and is_upgrade_initial:
+        pass
+    elif method == PaymentMethod.STABLECOIN_SWAP:
         (
             stablecoin_provider,
             stablecoin_checkout_origin,
             stablecoin_asset,
         ) = _stablecoin_checkout_snapshot()
-        amount_sats, markup_sats = _stablecoin_amounts(
+        amount_sats, markup_sats, stablecoin_surcharge_sats = _stablecoin_amounts(
             base_amount_sats,
             stablecoin_provider,
             stablecoin_checkout_origin,
             stablecoin_asset,
         )
+        if stablecoin_provider == "lightning_swap" and markup_sats > stablecoin_surcharge_sats:
+            period_days = stablecoin_credited_days(
+                amount_sats,
+                base_amount_sats,
+                stablecoin_surcharge_sats,
+                period_days,
+                service_price_sats,
+            )
     payment = Payment(
         subscription_id=subscription.id,  # type: ignore[arg-type]
         agent_order_id=agent_order_id,
         method=method,
         billing_term=selected_term,
-        period_days=subs.billing_period_days(selected_term),
+        period_days=period_days,
         amount_sats=amount_sats,
         markup_sats=markup_sats,
+        service_price_sats=service_price_sats,
+        discount_sats=discount_sats,
+        stablecoin_surcharge_sats=stablecoin_surcharge_sats,
         stablecoin_provider=stablecoin_provider,
         stablecoin_checkout_origin=stablecoin_checkout_origin,
         stablecoin_asset=stablecoin_asset,
@@ -935,6 +991,10 @@ def create_payment(
         if payment.id is None:  # pragma: no cover - flush assigns integer primary keys
             raise RuntimeError("payment id was not assigned")
         subs.reserve_subscription_resource(session, subscription, payment.id)
+        if base_amount_sats == 0:
+            if not is_upgrade_initial:
+                raise ValueError("only a fully credited wildcard upgrade can have a zero payment")
+            return _finalize_payment(session, payment, PaymentStatus.PENDING)
         eligibility_deadline = _payment_eligibility_deadline(subscription)
         invoice_expiry = _bounded_invoice_expiry(eligibility_deadline)
 
@@ -1029,19 +1089,86 @@ def _finalize_payment(
         return _reload_payment(session, payment_id)
 
     payment = _reload_payment(session, payment_id)
-    if payment.period_days != subs.billing_period_days(payment.billing_term):
+    standard_period_days = subs.billing_period_days(payment.billing_term)
+    if (
+        payment.method != PaymentMethod.STABLECOIN_SWAP
+        and payment.period_days != standard_period_days
+    ):
         session.rollback()
         raise ValueError("payment billing snapshot has an invalid period")
-    if payment.amount_sats <= 0:
+    if payment.service_price_sats == 0:
+        # Legacy payments predate the explicit full-service-price snapshot.
+        if payment.discount_sats != 0:
+            session.rollback()
+            raise ValueError("payment billing snapshot has an invalid discount")
+        service_price_sats = payment.amount_sats - payment.markup_sats
+        discount_sats = 0
+    else:
+        service_price_sats = payment.service_price_sats
+        discount_sats = payment.discount_sats
+    if service_price_sats <= 0 or discount_sats < 0 or discount_sats > service_price_sats:
+        session.rollback()
+        raise ValueError("payment billing snapshot has an invalid service price or discount")
+    due_base_sats = service_price_sats - discount_sats
+    if payment.amount_sats <= 0 and due_base_sats > 0:
         session.rollback()
         raise ValueError("payment billing snapshot has an invalid amount")
-    if payment.markup_sats < 0 or payment.markup_sats >= payment.amount_sats:
+    if payment.markup_sats < 0 or payment.amount_sats - payment.markup_sats != due_base_sats:
         session.rollback()
         raise ValueError("payment billing snapshot has an invalid markup")
+    if payment.method == PaymentMethod.STABLECOIN_SWAP:
+        if (
+            payment.stablecoin_surcharge_sats < 0
+            or payment.stablecoin_surcharge_sats > payment.markup_sats
+        ):
+            session.rollback()
+            raise ValueError("stablecoin payment snapshot has an invalid surcharge")
+        # Revision 0028 cannot reconstruct the normal surcharge for older rows.
+        # Their standard-period snapshot remains valid and must remain settleable.
+        is_legacy_standard_payment = (
+            payment.stablecoin_surcharge_sats == 0 and payment.period_days == standard_period_days
+        )
+        if payment.stablecoin_provider == "lightning_swap" and not is_legacy_standard_payment:
+            expected_period_days = stablecoin_credited_days(
+                payment.amount_sats,
+                due_base_sats,
+                payment.stablecoin_surcharge_sats,
+                standard_period_days,
+                service_price_sats,
+            )
+            if payment.period_days != expected_period_days:
+                session.rollback()
+                raise ValueError("payment billing snapshot has an invalid period")
+        elif (
+            payment.stablecoin_provider != "lightning_swap"
+            and payment.period_days != standard_period_days
+        ):
+            session.rollback()
+            raise ValueError("payment billing snapshot has an invalid period")
     subscription = session.get(Subscription, payment.subscription_id, populate_existing=True)
     if subscription is None:
         session.rollback()
         raise RuntimeError("payment subscription disappeared")
+    upgrade_initial = (
+        subscription.upgrade_from_subscription_id is not None
+        and subscription.status == SubscriptionStatus.PENDING
+    )
+    if payment.amount_sats == 0 and not (upgrade_initial and due_base_sats == 0):
+        session.rollback()
+        raise ValueError("payment billing snapshot has an invalid amount")
+    if upgrade_initial and (
+        payment.billing_term != subscription.billing_term
+        or payment.discount_sats != subscription.upgrade_credit_sats
+        or payment.service_price_sats
+        != (
+            subscription.monthly_price_sats
+            if payment.billing_term == BillingTerm.MONTHLY
+            else subscription.yearly_price_sats
+        )
+        or subscription.upgrade_source_period_end is None
+    ):
+        session.rollback()
+        raise ValueError("wildcard upgrade payment snapshot is invalid")
     try:
         subs.require_domain_payment_settlement_ready(subscription, payment)
     except Exception:
@@ -1058,6 +1185,37 @@ def _finalize_payment(
         subs.renew_subscription(session, subscription, payment.period_days)
     else:
         subs.activate_subscription(session, subscription, payment_id, payment.period_days)
+    if upgrade_initial:
+        source = session.exec(
+            select(Subscription)
+            .where(Subscription.id == subscription.upgrade_from_subscription_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one_or_none()
+        if (
+            source is None
+            or source.user_id != subscription.user_id
+            or source.product != ProductType.RELAY
+            or source.relay_hostname_scope != RelayHostnameScope.EXACT
+            or source.status not in (SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRED)
+            or not source.domain
+            or source.domain_is_managed
+            or ".".join(source.domain.split(".")[1:]) != subscription.domain
+            or source.current_period_end != subscription.upgrade_source_period_end
+        ):
+            session.rollback()
+            raise ValueError("wildcard upgrade source changed before settlement")
+        source.status = SubscriptionStatus.CANCELLED
+        source.domain = None
+        source.relay_pool_domain = None
+        source.domain_is_managed = False
+        source.domain_verification_token = None
+        source.domain_verified_at = None
+        source.domain_claim_expires_at = None
+        source.domain_renewal_grace_expires_at = None
+        source.auto_renew = False
+        source.updated_at = _utcnow()
+        session.add(source)
     user = session.get(User, subscription.user_id)
     if (
         settings.REMINDER_EMAIL_ENABLED

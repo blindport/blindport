@@ -234,6 +234,9 @@ EXPECTED_COLUMNS = {
         "current_period_start",
         "current_period_end",
         "auto_renew",
+        "upgrade_from_subscription_id",
+        "upgrade_credit_sats",
+        "upgrade_source_period_end",
         "created_at",
         "updated_at",
     },
@@ -247,6 +250,9 @@ EXPECTED_COLUMNS = {
         "period_days",
         "amount_sats",
         "markup_sats",
+        "service_price_sats",
+        "discount_sats",
+        "stablecoin_surcharge_sats",
         "invoice",
         "payment_hash",
         "invoice_idempotency_key",
@@ -401,6 +407,7 @@ EXPECTED_DATETIME_COLUMNS = {
     ("subscription", "resource_quarantined_until"),
     ("subscription", "current_period_start"),
     ("subscription", "current_period_end"),
+    ("subscription", "upgrade_source_period_end"),
     ("subscription", "created_at"),
     ("subscription", "updated_at"),
     ("payment", "created_at"),
@@ -447,7 +454,7 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path)
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
     verify_database_current(engine)
 
     inspector = inspect(engine)
@@ -560,7 +567,10 @@ def test_fresh_sqlite_upgrade_current_and_schema(tmp_path) -> None:
             == 0
         )
     subscription_foreign_keys = inspector.get_foreign_keys("subscription")
-    assert [fk["referred_table"] for fk in subscription_foreign_keys] == ["user"]
+    assert {fk["referred_table"] for fk in subscription_foreign_keys} == {"subscription", "user"}
+    assert {
+        constraint["name"] for constraint in inspector.get_unique_constraints("subscription")
+    } >= {"uq_subscription_upgrade_from_subscription"}
     assert {fk["referred_table"] for fk in inspector.get_foreign_keys("payment")} == {
         "agentorder",
         "subscription",
@@ -702,7 +712,7 @@ def test_0014_upgrades_deployed_0013_subscription_identity(tmp_path) -> None:
 
     original_public_ids = {row.id: str(row.public_id) for row in rows}
     downgrade_database(engine, "0013")
-    assert database_revisions(engine) == ("0013", "0027")
+    assert database_revisions(engine) == ("0013", "0029")
     downgraded = Table("subscription", MetaData(), autoload_with=engine)
     assert "public_id" in downgraded.c
     assert any(
@@ -951,7 +961,7 @@ def test_sqlite_upgrade_from_0003_preserves_tcp_lease_and_adds_transport_identit
 
     with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
         downgrade_database(engine, "0003")
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
     assert any(
         constraint["column_names"] == ["assigned_ip", "assigned_port", "transport"]
         for constraint in inspect(engine).get_unique_constraints("subscription")
@@ -1067,12 +1077,12 @@ def test_0016_rejects_downgrade_with_stablecoin_payments(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
         downgrade_database(engine, "0015")
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
     with engine.begin() as connection:
         connection.execute(payment.delete().where(payment.c.id == payment_id))
     downgrade_database(engine, "0015")
-    assert database_revisions(engine) == ("0015", "0027")
+    assert database_revisions(engine) == ("0015", "0029")
     assert "markup_sats" not in {
         column["name"] for column in inspect(engine).get_columns("payment")
     }
@@ -1126,7 +1136,7 @@ def test_0017_backfills_current_ip_lease_and_downgrades_cleanly(tmp_path) -> Non
     assert row.smtp_enabled is False
 
     downgrade_database(engine, "0016")
-    assert database_revisions(engine) == ("0016", "0027")
+    assert database_revisions(engine) == ("0016", "0029")
     assert not inspect(engine).has_table("iplease")
     with engine.connect() as connection:
         assert (
@@ -1140,7 +1150,7 @@ def test_0018_service_announcements_downgrade_cleanly_on_sqlite(tmp_path) -> Non
 
     downgrade_database(engine, "0017")
 
-    assert database_revisions(engine) == ("0017", "0027")
+    assert database_revisions(engine) == ("0017", "0029")
     inspector = inspect(engine)
     assert not inspector.has_table("announcement")
     assert not inspector.has_table("announcementdelivery")
@@ -1153,7 +1163,7 @@ def test_0018_service_announcements_downgrade_cleanly_on_sqlite(tmp_path) -> Non
     }.isdisjoint(columns)
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_0019_production_observations_downgrade_cleanly_on_sqlite(tmp_path) -> None:
@@ -1162,13 +1172,13 @@ def test_0019_production_observations_downgrade_cleanly_on_sqlite(tmp_path) -> N
 
     downgrade_database(engine, "0018")
 
-    assert database_revisions(engine) == ("0018", "0027")
+    assert database_revisions(engine) == ("0018", "0029")
     inspector = inspect(engine)
     assert not inspector.has_table("relayheartbeat")
     assert not inspector.has_table("dnsobservation")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_0020_relay_hostname_scope_defaults_existing_rows_and_downgrades_cleanly(tmp_path) -> None:
@@ -1240,7 +1250,7 @@ def test_0020_relay_hostname_scope_defaults_existing_rows_and_downgrades_cleanly
     }
 
     downgrade_database(engine, "0019")
-    assert database_revisions(engine) == ("0019", "0027")
+    assert database_revisions(engine) == ("0019", "0029")
     assert "relay_hostname_scope" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -1256,7 +1266,7 @@ def test_0021_daily_bandwidth_upgrade_and_downgrade_ordering(tmp_path) -> None:
     assert not inspect(engine).has_table("relaybandwidthcursor")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
     inspector = inspect(engine)
     assert [
         fk["referred_table"] for fk in inspector.get_foreign_keys("subscriptiondailybandwidth")
@@ -1269,7 +1279,7 @@ def test_0021_daily_bandwidth_upgrade_and_downgrade_ordering(tmp_path) -> None:
     ) == ("subscription_id", "day")
 
     downgrade_database(engine, "0020")
-    assert database_revisions(engine) == ("0020", "0027")
+    assert database_revisions(engine) == ("0020", "0029")
     assert not inspect(engine).has_table("subscriptiondailybandwidth")
     assert not inspect(engine).has_table("relaybandwidthcursor")
 
@@ -1280,7 +1290,7 @@ def test_0022_notification_outbox_downgrades_to_0021_on_sqlite(tmp_path) -> None
 
     downgrade_database(engine, "0021")
 
-    assert database_revisions(engine) == ("0021", "0027")
+    assert database_revisions(engine) == ("0021", "0029")
     inspector = inspect(engine)
     assert not inspector.has_table("notificationdelivery")
     assert not inspector.has_table("announcementrecipientsnapshot")
@@ -1292,7 +1302,7 @@ def test_0022_notification_outbox_downgrades_to_0021_on_sqlite(tmp_path) -> None
     )
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_0023_passkey_persistence_downgrades_to_0022_on_sqlite(tmp_path) -> None:
@@ -1301,7 +1311,7 @@ def test_0023_passkey_persistence_downgrades_to_0022_on_sqlite(tmp_path) -> None
 
     downgrade_database(engine, "0022")
 
-    assert database_revisions(engine) == ("0022", "0027")
+    assert database_revisions(engine) == ("0022", "0029")
     inspector = inspect(engine)
     assert not inspector.has_table("passkeycredential")
     assert not inspector.has_table("webauthnchallenge")
@@ -1309,7 +1319,7 @@ def test_0023_passkey_persistence_downgrades_to_0022_on_sqlite(tmp_path) -> None
     assert inspector.has_table("notificationdelivery")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_0024_unified_notification_email_cancels_queued_rows_and_drops_old_columns(
@@ -1401,7 +1411,7 @@ def test_0025_relay_subscription_connections_upgrades_and_downgrades_cleanly(tmp
     }
 
     downgrade_database(engine, "0024")
-    assert database_revisions(engine) == ("0024", "0027")
+    assert database_revisions(engine) == ("0024", "0029")
     assert not inspect(engine).has_table("relaysubscriptionconnection")
 
 
@@ -1514,14 +1524,14 @@ def test_0026_backfills_stablecoin_checkout_snapshots_and_downgrades_cleanly(tmp
 
     with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
         downgrade_database(engine, "0025")
-    assert database_revisions(engine) == ("0026", "0027")
+    assert database_revisions(engine) == ("0026", "0029")
 
     with engine.begin() as connection:
         connection.execute(
             upgraded_payment.delete().where(upgraded_payment.c.id == stablecoin_payment_id)
         )
     downgrade_database(engine, "0025")
-    assert database_revisions(engine) == ("0025", "0027")
+    assert database_revisions(engine) == ("0025", "0029")
     downgraded_payment = Table("payment", MetaData(), autoload_with=engine)
     assert {
         "stablecoin_provider",
@@ -1583,7 +1593,7 @@ def test_0027_adds_guarded_encrypted_lightning_swap_order_state(tmp_path) -> Non
         ).inserted_primary_key[0]
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
     upgraded = Table("payment", MetaData(), autoload_with=engine)
     columns = {column.name: column for column in upgraded.columns}
     assert columns["stablecoin_api_order_enabled"].nullable is False
@@ -1591,13 +1601,17 @@ def test_0027_adds_guarded_encrypted_lightning_swap_order_state(tmp_path) -> Non
     assert columns["stablecoin_order_token_ciphertext"].type.length == 8192
     assert columns["stablecoin_order_token_key_version"].type.length == 32
     assert columns["stablecoin_order_status"].type.length == 32
+    assert columns["stablecoin_surcharge_sats"].nullable is False
     with engine.connect() as connection:
         row = connection.execute(select(upgraded).where(upgraded.c.id == payment_id)).one()
     assert row.stablecoin_api_order_enabled is False
     assert row.stablecoin_order_id is None
+    assert row.stablecoin_surcharge_sats == 0
 
-    downgrade_database(engine, "0026")
-    assert database_revisions(engine) == ("0026", "0027")
+    downgrade_database(engine, "0027")
+    assert database_revisions(engine) == ("0027", "0029")
+    downgraded = Table("payment", MetaData(), autoload_with=engine)
+    assert "stablecoin_surcharge_sats" not in downgraded.c
     upgrade_database(engine)
     upgraded = Table("payment", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
@@ -1608,7 +1622,305 @@ def test_0027_adds_guarded_encrypted_lightning_swap_order_state(tmp_path) -> Non
         )
     with pytest.raises(RuntimeError, match="Lightning Swap API payments exist"):
         downgrade_database(engine, "0026")
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
+
+
+def test_0028_adds_surcharge_defaults_and_guards_bonus_day_downgrades(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path)
+    upgrade_database(engine, "0027")
+    metadata = MetaData()
+    user = Table("user", metadata, autoload_with=engine)
+    subscription = Table("subscription", metadata, autoload_with=engine)
+    payment = Table("payment", metadata, autoload_with=engine)
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            user.insert().values(
+                hashed_token="stablecoin-surcharge-migration-user",
+                is_admin=False,
+                is_suspended=False,
+                created_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        legacy_subscription_id = connection.execute(
+            subscription.insert().values(
+                user_id=user_id,
+                product="ip",
+                delivery="FRAMED",
+                status="PENDING",
+                transport="TCP",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=1000,
+                yearly_price_sats=10000,
+                auto_renew=False,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        legacy_payment_id = connection.execute(
+            payment.insert().values(
+                subscription_id=legacy_subscription_id,
+                method="stablecoin_swap",
+                status="paid",
+                billing_term="monthly",
+                period_days=30,
+                amount_sats=1100,
+                markup_sats=100,
+                created_at=created_at,
+            )
+        ).inserted_primary_key[0]
+
+    upgrade_database(engine, "0028")
+    assert database_revisions(engine) == ("0028", "0029")
+    upgraded_payment = Table("payment", MetaData(), autoload_with=engine)
+    assert upgraded_payment.c.stablecoin_surcharge_sats.nullable is False
+    with engine.connect() as connection:
+        legacy_payment = connection.execute(
+            select(upgraded_payment).where(upgraded_payment.c.id == legacy_payment_id)
+        ).one()
+    assert legacy_payment.stablecoin_surcharge_sats == 0
+
+    downgrade_database(engine, "0027")
+    assert database_revisions(engine) == ("0027", "0029")
+    downgraded_payment = Table("payment", MetaData(), autoload_with=engine)
+    assert "stablecoin_surcharge_sats" not in downgraded_payment.c
+    with engine.connect() as connection:
+        assert (
+            connection.execute(
+                select(downgraded_payment.c.id).where(downgraded_payment.c.id == legacy_payment_id)
+            ).scalar_one()
+            == legacy_payment_id
+        )
+
+    upgrade_database(engine)
+    upgraded_subscription = Table("subscription", MetaData(), autoload_with=engine)
+    upgraded_payment = Table("payment", MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        bonus_subscription_id = connection.execute(
+            upgraded_subscription.insert().values(
+                user_id=user_id,
+                product="port",
+                delivery="FRAMED",
+                status="PENDING",
+                transport="TCP",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=1000,
+                yearly_price_sats=10000,
+                auto_renew=False,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        connection.execute(
+            upgraded_payment.insert().values(
+                subscription_id=bonus_subscription_id,
+                method="stablecoin_swap",
+                status="pending",
+                billing_term="monthly",
+                period_days=31,
+                amount_sats=1100,
+                markup_sats=100,
+                created_at=created_at,
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="stablecoin bonus-day payments exist"):
+        downgrade_database(engine, "0027")
+    assert database_revisions(engine) == ("0029", "0029")
+    assert "stablecoin_surcharge_sats" in {
+        column["name"] for column in inspect(engine).get_columns("payment")
+    }
+
+
+def test_0029_persists_upgrade_snapshots_and_guards_downgrades(tmp_path) -> None:
+    engine = _sqlite_engine(tmp_path)
+    upgrade_database(engine, "0028")
+    metadata = MetaData()
+    user = Table("user", metadata, autoload_with=engine)
+    subscription = Table("subscription", metadata, autoload_with=engine)
+    payment = Table("payment", metadata, autoload_with=engine)
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    with engine.begin() as connection:
+        user_id = connection.execute(
+            user.insert().values(
+                hashed_token="relay-wildcard-upgrade-migration-user",
+                is_admin=False,
+                is_suspended=False,
+                created_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        source_subscription_id = connection.execute(
+            subscription.insert().values(
+                user_id=user_id,
+                product="relay",
+                delivery="FRAMED",
+                status="active",
+                transport="TCP",
+                domain="exact.example.test",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=1000,
+                yearly_price_sats=10000,
+                auto_renew=False,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        legacy_subscription_id = connection.execute(
+            subscription.insert().values(
+                user_id=user_id,
+                product="port",
+                delivery="FRAMED",
+                status="pending",
+                transport="TCP",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=500,
+                yearly_price_sats=5000,
+                auto_renew=False,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ).inserted_primary_key[0]
+        legacy_payment_id = connection.execute(
+            payment.insert().values(
+                subscription_id=legacy_subscription_id,
+                method="lightning",
+                status="paid",
+                billing_term="monthly",
+                period_days=30,
+                amount_sats=500,
+                markup_sats=0,
+                stablecoin_surcharge_sats=0,
+                created_at=created_at,
+            )
+        ).inserted_primary_key[0]
+
+    upgrade_database(engine, "0029")
+    assert database_revisions(engine) == ("0029", "0029")
+    upgraded_subscription = Table("subscription", MetaData(), autoload_with=engine)
+    upgraded_payment = Table("payment", MetaData(), autoload_with=engine)
+    with engine.connect() as connection:
+        legacy_subscription = connection.execute(
+            select(upgraded_subscription).where(
+                upgraded_subscription.c.id == legacy_subscription_id
+            )
+        ).one()
+        legacy_payment = connection.execute(
+            select(upgraded_payment).where(upgraded_payment.c.id == legacy_payment_id)
+        ).one()
+    assert (
+        legacy_subscription.upgrade_from_subscription_id,
+        legacy_subscription.upgrade_credit_sats,
+        legacy_subscription.upgrade_source_period_end,
+    ) == (None, 0, None)
+    assert (legacy_payment.service_price_sats, legacy_payment.discount_sats) == (0, 0)
+    assert any(
+        fk["name"] == "fk_subscription_upgrade_from_subscription"
+        and fk["constrained_columns"] == ["upgrade_from_subscription_id"]
+        and fk["referred_table"] == "subscription"
+        for fk in inspect(engine).get_foreign_keys("subscription")
+    )
+    assert {
+        constraint["name"] for constraint in inspect(engine).get_unique_constraints("subscription")
+    } >= {"uq_subscription_upgrade_from_subscription"}
+
+    with engine.begin() as connection:
+        target_subscription_id = connection.execute(
+            upgraded_subscription.insert().values(
+                user_id=user_id,
+                product="relay",
+                delivery="FRAMED",
+                status="pending",
+                transport="TCP",
+                domain="wildcard.example.test",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=1000,
+                yearly_price_sats=10000,
+                auto_renew=False,
+                upgrade_from_subscription_id=source_subscription_id,
+                upgrade_credit_sats=125,
+                upgrade_source_period_end=created_at,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        ).inserted_primary_key[0]
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            upgraded_subscription.insert().values(
+                user_id=user_id,
+                product="relay",
+                delivery="FRAMED",
+                status="pending",
+                transport="TCP",
+                domain="duplicate-wildcard.example.test",
+                domain_is_managed=False,
+                billing_term="monthly",
+                monthly_price_sats=1000,
+                yearly_price_sats=10000,
+                auto_renew=False,
+                upgrade_from_subscription_id=source_subscription_id,
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+
+    with engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys = ON")
+        connection.commit()
+        with pytest.raises(IntegrityError), connection.begin():
+            connection.execute(
+                upgraded_subscription.insert().values(
+                    user_id=user_id,
+                    product="relay",
+                    delivery="FRAMED",
+                    status="pending",
+                    transport="TCP",
+                    domain="invalid-source.example.test",
+                    domain_is_managed=False,
+                    billing_term="monthly",
+                    monthly_price_sats=1000,
+                    yearly_price_sats=10000,
+                    auto_renew=False,
+                    upgrade_from_subscription_id=source_subscription_id + 1000,
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+            )
+        connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        connection.commit()
+
+    with engine.begin() as connection:
+        connection.execute(
+            upgraded_subscription.update()
+            .where(upgraded_subscription.c.id == target_subscription_id)
+            .values(upgrade_from_subscription_id=None, upgrade_credit_sats=0)
+        )
+    downgrade_database(engine, "0028")
+    assert database_revisions(engine) == ("0028", "0029")
+    downgraded_subscription = Table("subscription", MetaData(), autoload_with=engine)
+    downgraded_payment = Table("payment", MetaData(), autoload_with=engine)
+    assert {
+        "upgrade_from_subscription_id",
+        "upgrade_credit_sats",
+        "upgrade_source_period_end",
+    }.isdisjoint(downgraded_subscription.c.keys())
+    assert {"service_price_sats", "discount_sats"}.isdisjoint(downgraded_payment.c.keys())
+
+    upgrade_database(engine)
+    upgraded_subscription = Table("subscription", MetaData(), autoload_with=engine)
+    with engine.begin() as connection:
+        connection.execute(
+            upgraded_subscription.update()
+            .where(upgraded_subscription.c.id == target_subscription_id)
+            .values(upgrade_from_subscription_id=source_subscription_id)
+        )
+    with pytest.raises(RuntimeError, match="Relay wildcard upgrades or discounted payments exist"):
+        downgrade_database(engine, "0028")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_sqlite_0008_backfills_unique_uuid4_public_ids_and_enforces_immutability(
@@ -1771,7 +2083,7 @@ def test_sqlite_0009_backfills_billing_snapshots_and_supports_rolling_inserts(
     assert (rolling_payment.billing_term, rolling_payment.period_days) == ("monthly", 30)
 
     downgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0027")
+    assert database_revisions(engine) == ("0008", "0029")
     assert "billing_term" not in {
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
@@ -1815,7 +2127,7 @@ def test_sqlite_downgrade_rejects_wireguard_subscriptions(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="cannot downgrade while WireGuard subscriptions exist"):
         downgrade_database(engine, "0004")
 
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
     assert "delivery" in {column["name"] for column in inspect(engine).get_columns("subscription")}
     assert inspect(engine).has_table("wireguardpeer")
 
@@ -1826,10 +2138,10 @@ def test_sqlite_downgrade_and_upgrade_round_trip(tmp_path) -> None:
     downgrade_database(engine, "base")
 
     assert inspect(engine).get_table_names() == ["alembic_version"]
-    assert database_revisions(engine) == (None, "0027")
+    assert database_revisions(engine) == (None, "0029")
 
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypatch) -> None:
@@ -1848,7 +2160,7 @@ def test_sqlite_failed_migration_rolls_back_ddl_and_can_retry(tmp_path, monkeypa
 
     assert not inspect(engine).has_table("injected_migration_failure")
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0027", "0027")
+    assert database_revisions(engine) == ("0029", "0029")
 
 
 def test_all_persisted_datetimes_are_timezone_aware_in_metadata() -> None:
@@ -1884,15 +2196,15 @@ def test_current_cli_can_check_head(tmp_path, monkeypatch, capsys) -> None:
 
     assert cli.main(["upgrade"]) == 0
     assert cli.main(["current", "--check"]) == 0
-    assert "current: 0027\nhead: 0027" in capsys.readouterr().out
+    assert "current: 0029\nhead: 0029" in capsys.readouterr().out
 
     cli.main(["downgrade", "base"])
     capsys.readouterr()
     assert cli.main(["current", "--check"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "current: unversioned\nhead: 0027\n"
+    assert captured.out == "current: unversioned\nhead: 0029\n"
     assert captured.err == (
-        "error: database revision is unversioned, expected migration head 0027\n"
+        "error: database revision is unversioned, expected migration head 0029\n"
     )
     assert "Traceback" not in captured.err
 
@@ -1921,8 +2233,8 @@ def test_current_cli_check_subprocess_exits_without_traceback(tmp_path) -> None:
     )
 
     assert result.returncode == 1
-    assert result.stdout == "current: unversioned\nhead: 0027\n"
+    assert result.stdout == "current: unversioned\nhead: 0029\n"
     assert result.stderr == (
-        "error: database revision is unversioned, expected migration head 0027\n"
+        "error: database revision is unversioned, expected migration head 0029\n"
     )
     assert "Traceback" not in result.stderr

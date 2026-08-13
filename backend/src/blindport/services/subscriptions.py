@@ -257,6 +257,9 @@ def reap_expired_domain_claims(session: Session) -> int:
         "domain_claim_expires_at": None,
         "domain_renewal_grace_expires_at": None,
         "auto_renew": False,
+        "upgrade_from_subscription_id": None,
+        "upgrade_credit_sats": 0,
+        "upgrade_source_period_end": None,
         "updated_at": now,
     }
     candidates = session.exec(
@@ -483,6 +486,8 @@ def _relay_domain_conflict(
     session: Session,
     domain: str,
     scope: RelayHostnameScope,
+    *,
+    exclude_subscription_id: int | None = None,
 ) -> bool:
     """Check live Relay claims while the caller holds the custom-domain lock."""
     wildcard_domains = session.exec(
@@ -490,6 +495,7 @@ def _relay_domain_conflict(
             Subscription.product == ProductType.RELAY,
             Subscription.relay_hostname_scope == RelayHostnameScope.WILDCARD,
             Subscription.domain.is_not(None),  # type: ignore[union-attr]
+            Subscription.id != exclude_subscription_id,
         )
     ).all()
     live_wildcard_domains = [
@@ -509,6 +515,7 @@ def _relay_domain_conflict(
                     Subscription.product == ProductType.RELAY,
                     Subscription.relay_hostname_scope == RelayHostnameScope.EXACT,
                     Subscription.domain.like(f"%.{domain}"),  # type: ignore[union-attr]
+                    Subscription.id != exclude_subscription_id,
                 )
             ).first()
             is not None
@@ -598,6 +605,8 @@ def create_subscription(
     *,
     commit: bool = True,
     reap_domains: bool = True,
+    relay_conflict_exclude_subscription_id: int | None = None,
+    allow_one_additional_subscription: bool = False,
 ) -> Subscription:
     """Create a pending subscription, optionally leaving its transaction to the caller."""
     require_product_billing_term(product, delivery, billing_term)
@@ -646,10 +655,12 @@ def create_subscription(
             )
         ).all()
     )
-    if active_count >= settings.ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS:
+    allowed_subscriptions = settings.ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS + int(
+        allow_one_additional_subscription
+    )
+    if active_count >= allowed_subscriptions:
         raise AccountLimitError(
-            "account has reached the non-cancelled subscription limit "
-            f"({settings.ACCOUNT_MAX_NON_CANCELLED_SUBSCRIPTIONS})"
+            f"account has reached the non-cancelled subscription limit ({allowed_subscriptions})"
         )
     if product == ProductType.RELAY:
         pending_relay_claims = len(
@@ -685,7 +696,12 @@ def create_subscription(
         existing = session.exec(select(Subscription).where(Subscription.domain == domain)).first()
         if existing is not None:
             raise ValueError("domain already has a subscription")
-        if _relay_domain_conflict(session, domain or "", relay_hostname_scope):
+        if _relay_domain_conflict(
+            session,
+            domain or "",
+            relay_hostname_scope,
+            exclude_subscription_id=relay_conflict_exclude_subscription_id,
+        ):
             raise ValueError("domain conflicts with an existing Relay hostname scope")
         now = _utcnow()
         domain_claim_expires_at = now + _domain_claim_ttl(domain_is_managed)
@@ -749,6 +765,111 @@ def create_subscription(
     if commit:
         session.refresh(sub)
     return sub
+
+
+def has_pending_upgrade(session: Session, source: Subscription) -> bool:
+    """Return whether an active source is reserved for a pending wildcard upgrade."""
+    if source.id is None:
+        return False
+    return (
+        session.exec(
+            select(Subscription.id).where(
+                Subscription.upgrade_from_subscription_id == source.id,
+                Subscription.status == SubscriptionStatus.PENDING,
+            )
+        ).first()
+        is not None
+    )
+
+
+def create_wildcard_upgrade(
+    session: Session,
+    user: User,
+    source: Subscription,
+    billing_term: BillingTerm,
+) -> Subscription:
+    """Create a pending wildcard claim linked to one active exact Relay source."""
+    if user.id is None or source.id is None:
+        raise ValueError("subscription is unavailable")
+    reap_expired_domain_claims(session)
+    session.exec(
+        select(User)
+        .where(User.id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    source = session.exec(
+        select(Subscription)
+        .where(Subscription.id == source.id, Subscription.user_id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if source is None:
+        raise ValueError("subscription not found")
+    now = _utcnow()
+    if (
+        source.product != ProductType.RELAY
+        or source.relay_hostname_scope != RelayHostnameScope.EXACT
+        or source.status != SubscriptionStatus.ACTIVE
+        or not source.domain
+        or source.domain_is_managed
+        or (_aware(source.current_period_end) or now) <= now
+    ):
+        raise ValueError(
+            "only an active customer-owned exact Relay subscription with remaining service can upgrade"
+        )
+    labels = source.domain.split(".")
+    if len(labels) < 2:
+        raise ValueError("exact Relay hostname cannot upgrade to a wildcard base domain")
+    wildcard_base = ".".join(labels[1:])
+    _validate_wildcard_base_domain(wildcard_base)
+    if has_pending_upgrade(session, source):
+        raise ValueError("subscription already has a pending wildcard upgrade")
+    source_open_payment = session.exec(
+        select(Payment.id).where(
+            Payment.subscription_id == source.id,
+            Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+        )
+    ).first()
+    if source_open_payment is not None:
+        raise ValueError("subscription has an open payment and cannot upgrade")
+    target = create_subscription(
+        session,
+        user,
+        ProductType.RELAY,
+        domain=wildcard_base,
+        relay_hostname_scope=RelayHostnameScope.WILDCARD,
+        billing_term=billing_term,
+        commit=False,
+        reap_domains=False,
+        relay_conflict_exclude_subscription_id=source.id,
+        allow_one_additional_subscription=True,
+    )
+    source_price = (
+        source.monthly_price_sats
+        if source.billing_term == BillingTerm.MONTHLY
+        else source.yearly_price_sats
+    )
+    remaining_seconds = max(0, int((_aware(source.current_period_end) - now).total_seconds()))  # type: ignore[operator]
+    credit = (remaining_seconds * source_price) // (
+        billing_period_days(source.billing_term) * 86_400
+    )
+    target_price = (
+        target.monthly_price_sats
+        if billing_term == BillingTerm.MONTHLY
+        else target.yearly_price_sats
+    )
+    target.upgrade_from_subscription_id = source.id
+    target.upgrade_credit_sats = min(credit, target_price)
+    target.upgrade_source_period_end = source.current_period_end
+    session.add(target)
+    try:
+        session.commit()
+    except IntegrityError as error:
+        session.rollback()
+        raise ValueError("subscription already has a pending wildcard upgrade") from error
+    session.refresh(target)
+    return target
 
 
 def cancel_pending_subscription(session: Session, sub: Subscription) -> Subscription:
@@ -842,6 +963,9 @@ def cancel_pending_subscription(session: Session, sub: Subscription) -> Subscrip
             domain_claim_expires_at=None,
             domain_renewal_grace_expires_at=None,
             auto_renew=False,
+            upgrade_from_subscription_id=None,
+            upgrade_credit_sats=0,
+            upgrade_source_period_end=None,
             updated_at=_utcnow(),
         )
         .execution_options(synchronize_session=False)

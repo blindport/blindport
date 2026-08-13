@@ -49,6 +49,7 @@ from ..core.schemas import (
     CreateAnnouncementRequest,
     CreatePaymentRequest,
     CreateSubscriptionRequest,
+    CreateWildcardUpgradeRequest,
     DomainVerificationResponse,
     MeResponse,
     NotificationEmailRequest,
@@ -162,7 +163,12 @@ def signup(
     return SignupResponse(token=display, user_id=user.id or 0)
 
 
-def _sub_to_response(sub: Subscription) -> SubscriptionResponse:
+def _sub_to_response(
+    sub: Subscription,
+    *,
+    session: Session | None = None,
+    upgrade_source_public_id: UUID | None = None,
+) -> SubscriptionResponse:
     challenge_name = None
     challenge_value = None
     record_type = None
@@ -238,6 +244,19 @@ def _sub_to_response(sub: Subscription) -> SubscriptionResponse:
         current_period_start=sub.current_period_start,
         current_period_end=sub.current_period_end,
         auto_renew=sub.auto_renew,
+        upgrade_from_subscription_id=(
+            upgrade_source_public_id
+            or (
+                source.public_id
+                if session is not None
+                and sub.upgrade_from_subscription_id is not None
+                and (source := session.get(Subscription, sub.upgrade_from_subscription_id))
+                is not None
+                else None
+            )
+        ),
+        upgrade_credit_sats=sub.upgrade_credit_sats,
+        upgrade_source_period_end=sub.upgrade_source_period_end,
     )
 
 
@@ -253,7 +272,7 @@ def me(
         user_id=user.id or 0,
         is_admin=user.is_admin,
         created_at=user.created_at,
-        subscriptions=[_sub_to_response(s) for s in subs],
+        subscriptions=[_sub_to_response(s, session=session) for s in subs],
     )
 
 
@@ -684,7 +703,7 @@ def put_client_order(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
     return AgentOrderResponse(
         order_key=result.order.order_key,
-        subscription=_sub_to_response(result.subscription),
+        subscription=_sub_to_response(result.subscription, session=session),
         payment=(
             _payment_to_response(result.payment, result.subscription)
             if result.payment is not None
@@ -719,7 +738,40 @@ def create_subscription(
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    return _sub_to_response(sub)
+    return _sub_to_response(sub, session=session)
+
+
+@router.post(
+    "/subscriptions/{source_public_id}/wildcard-upgrade",
+    response_model=SubscriptionResponse,
+)
+def create_wildcard_upgrade(
+    source_public_id: UUID,
+    body: CreateWildcardUpgradeRequest,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> SubscriptionResponse:
+    source = session.exec(
+        select(Subscription).where(
+            Subscription.public_id == source_public_id,
+            Subscription.user_id == user.id,
+        )
+    ).first()
+    if source is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "subscription not found")
+    try:
+        target = subs_svc.create_wildcard_upgrade(session, user, source, body.billing_term)
+    except subs_svc.AccountLimitError as error:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(error)) from error
+    except (ProductUnavailableError, NoCapacityError) as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    return _sub_to_response(
+        target,
+        session=session,
+        upgrade_source_public_id=source.public_id,
+    )
 
 
 @router.get("/subscriptions", response_model=list[SubscriptionResponse])
@@ -730,7 +782,7 @@ def list_subscriptions(
     subs_svc.reap_expired_domain_claims(session)
     rows = session.exec(select(Subscription).where(Subscription.user_id == user.id)).all()
     subs_svc.expire_elapsed_subscriptions(session, rows)
-    return [_sub_to_response(s) for s in rows]
+    return [_sub_to_response(s, session=session) for s in rows]
 
 
 @router.delete("/subscriptions/{public_id}", response_model=SubscriptionResponse)
@@ -755,7 +807,7 @@ def cancel_subscription(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
     except ValueError as error:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
-    return _sub_to_response(cancelled)
+    return _sub_to_response(cancelled, session=session)
 
 
 def _domain_verifier_dependency() -> Callable[[], DomainVerifier]:
@@ -811,7 +863,7 @@ def verify_domain(
     return DomainVerificationResponse(
         verified=result.verified,
         detail=result.detail,
-        subscription=_sub_to_response(sub),
+        subscription=_sub_to_response(sub, session=session),
     )
 
 
@@ -854,6 +906,10 @@ def toggle_auto_renew(
             subs_svc.require_product_billing_term(sub.product, sub.delivery, sub.billing_term)
         except ValueError as error:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+    if enable and subs_svc.has_pending_upgrade(session, sub):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "subscription has a pending wildcard upgrade"
+        )
     sub.auto_renew = enable
     session.add(sub)
     session.commit()
@@ -873,6 +929,12 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         stablecoin_checkout_url = payments_svc.stablecoin_checkout_url(p, subscription)
     except payments_svc.PaymentProviderError as error:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+    standard_period_days = subs_svc.billing_period_days(p.billing_term)
+    stablecoin_minimum_topup_sats = 0
+    if p.method == PaymentMethod.STABLECOIN_SWAP and not (
+        p.service_price_sats == 0 and p.stablecoin_surcharge_sats == 0
+    ):
+        stablecoin_minimum_topup_sats = p.markup_sats - p.stablecoin_surcharge_sats
     return PaymentResponse(
         id=p.id or 0,
         subscription_id=subscription.public_id,
@@ -881,6 +943,14 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         amount_sats=p.amount_sats,
         base_amount_sats=p.amount_sats - p.markup_sats,
         markup_sats=p.markup_sats,
+        service_price_sats=(
+            p.service_price_sats if p.service_price_sats else p.amount_sats - p.markup_sats
+        ),
+        discount_sats=p.discount_sats,
+        standard_period_days=standard_period_days,
+        bonus_days=p.period_days - standard_period_days,
+        stablecoin_surcharge_sats=p.stablecoin_surcharge_sats,
+        stablecoin_minimum_topup_sats=stablecoin_minimum_topup_sats,
         billing_term=p.billing_term,
         period_days=p.period_days,
         invoice=p.invoice,

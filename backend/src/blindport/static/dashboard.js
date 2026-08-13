@@ -350,7 +350,8 @@ document.getElementById("newSubForm").addEventListener("submit", async (event) =
 
 function selectedPaymentTerm(card) {
   if (card.dataset.delivery === "wireguard") return "yearly";
-  return card.querySelector('input[name^="paymentTerm-"]:checked')?.value || "monthly";
+  return card.querySelector('input[name^="paymentTerm-"]:checked')?.value ||
+    card.dataset.billingTerm || "monthly";
 }
 
 function updatePaymentTermControl(card) {
@@ -376,8 +377,9 @@ function updatePaymentTermControl(card) {
 }
 
 function selectedPaymentAmount(card, term) {
+  const credit = Number.parseInt(card.dataset.upgradeCredit || "0", 10);
   const value = term === "yearly" ? card.dataset.yearlyPrice : card.dataset.monthlyPrice;
-  return Number.parseInt(value, 10);
+  return Math.max(0, Number.parseInt(value, 10) - credit);
 }
 
 function describeNwcBudget(budget) {
@@ -489,8 +491,21 @@ function renderManualPayment(payment, status) {
       throw new Error("Stablecoin checkout is unavailable for this payment");
     }
     const breakdown = document.getElementById("payBreakdown");
-    breakdown.textContent =
-      `${payment.base_amount_sats} sats service price + ${payment.markup_sats} sats stablecoin surcharge`;
+    let breakdownText = `${payment.service_price_sats} sats service price`;
+    if (payment.discount_sats > 0) {
+      breakdownText +=
+        ` - ${payment.discount_sats} sats upgrade credit = ${payment.base_amount_sats} sats amount due`;
+    }
+    const breakdownParts = [breakdownText];
+    if (payment.stablecoin_surcharge_sats > 0) {
+      breakdownParts.push(`${payment.stablecoin_surcharge_sats} sats stablecoin surcharge`);
+    }
+    if (payment.stablecoin_minimum_topup_sats > 0) {
+      breakdownParts.push(
+        `${payment.stablecoin_minimum_topup_sats} sats provider minimum top-up`,
+      );
+    }
+    breakdown.textContent = breakdownParts.join(" + ");
     breakdown.hidden = false;
     payUri.href = payment.stablecoin_checkout_url;
     payUri.target = "_blank";
@@ -517,10 +532,12 @@ function renderManualPayment(payment, status) {
         : `Paste this BOLT11 invoice into Lightning Swap, then choose ${assetName}.`;
       notice.textContent =
         "Lightning Swap is an external provider. Send one transaction using the exact asset, network, and amount shown there.";
-      status.textContent =
-        prepared
-          ? `Prepared ${assetName} order. Waiting for payment (${payment.period_days} service days).`
-          : `Waiting for payment through Lightning Swap (${payment.period_days} service days).`;
+      const servicePeriod = payment.bonus_days > 0
+        ? `${payment.period_days} service days, including ${payment.bonus_days} bonus days`
+        : `${payment.period_days} service days`;
+      status.textContent = prepared
+        ? `Prepared ${assetName} order. Waiting for payment (${servicePeriod}).`
+        : `Waiting for payment through Lightning Swap (${servicePeriod}).`;
     } else {
       instructions.textContent = "Continue with Boltz to review the prefilled checkout.";
       notice.textContent =
@@ -553,6 +570,11 @@ async function startPaymentFlow(subId, term, trigger, method) {
       headers: authHeaders(),
       body: JSON.stringify({ subscription_id: subId, method, billing_term: term }),
     });
+    if (payment.status === "paid") {
+      status.textContent = "Upgrade credit applied. Activating the wildcard endpoint.";
+      window.setTimeout(() => window.location.reload(), 500);
+      return;
+    }
     renderManualPayment(payment, status);
     const paid = await pollPayment(payment, status);
     if (!paid) {
@@ -679,6 +701,28 @@ document.querySelectorAll(".subscription-card").forEach((card) => {
   updatePaymentTermControl(card);
   card.querySelectorAll('input[name^="paymentTerm-"]').forEach((input) => {
     input.addEventListener("change", () => updatePaymentTermControl(card));
+  });
+});
+
+document.querySelectorAll(".wildcardUpgradeBtn").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const card = button.closest(".subscription-card");
+    const status = card.querySelector(".cardStatus");
+    const term = selectedPaymentTerm(card);
+    button.disabled = true;
+    status.textContent = "Creating wildcard upgrade.";
+    try {
+      await jsonFetch(`/api/v1/subscriptions/${encodeURIComponent(button.dataset.subId)}/wildcard-upgrade`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ billing_term: term }),
+      });
+      status.textContent = "Wildcard upgrade created. Reloading.";
+      window.setTimeout(() => window.location.reload(), 500);
+    } catch (error) {
+      status.textContent = `Wildcard upgrade error: ${error.message}`;
+      button.disabled = false;
+    }
   });
 });
 

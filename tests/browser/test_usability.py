@@ -479,6 +479,84 @@ def test_dashboard_wildcard_relay_order_uses_wildcard_price_and_scope(
         context.close()
 
 
+def test_dashboard_creates_prorated_wildcard_upgrade(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        created = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"product": "relay", "domain": "app.browser-upgrade.example"},
+        )
+        assert created.ok, created.text()
+        subscription = created.json()
+
+        now = datetime.now(UTC)
+        with sqlite3.connect(browser_server.database) as database:
+            database.execute(
+                "UPDATE subscription SET status = ?, current_period_start = ?, "
+                "current_period_end = ?, domain_verified_at = ? WHERE public_id = ?",
+                (
+                    "ACTIVE",
+                    (now - timedelta(days=15)).isoformat(),
+                    (now + timedelta(days=15)).isoformat(),
+                    now.isoformat(),
+                    subscription["id"].replace("-", ""),
+                ),
+            )
+    finally:
+        request.dispose()
+
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        button = card.get_by_role("button", name="Upgrade to wildcard")
+        assert button.is_visible()
+        with page.expect_response(
+            lambda response: response.url.endswith("/wildcard-upgrade")
+            and response.request.method == "POST"
+        ) as upgrade_response_info:
+            button.click()
+        upgrade_response = upgrade_response_info.value
+        assert upgrade_response.ok, upgrade_response.text()
+        assert upgrade_response.request.post_data_json == {"billing_term": "monthly"}
+        upgrade = upgrade_response.json()
+        assert upgrade["domain"] == "browser-upgrade.example"
+        assert upgrade["relay_hostname_scope"] == "wildcard"
+        assert 1499 <= upgrade["upgrade_credit_sats"] <= 1500
+
+        page.reload(wait_until="networkidle")
+        source_card = page.locator(
+            f'.subscription-card[data-sub-id="{subscription["id"]}"]'
+        )
+        assert source_card.get_by_text(
+            "Wildcard upgrade pending", exact=False
+        ).is_visible()
+        target_card = page.locator(f'.subscription-card[data-sub-id="{upgrade["id"]}"]')
+        assert target_card.get_by_text("Replacing", exact=False).is_visible()
+        assert target_card.get_by_text("Wildcard credit", exact=True).is_visible()
+        assert target_card.get_by_role("button", name="Check DNS").is_visible()
+        assert target_card.locator(".upgradeDue").text_content() in {"6000", "6001"}
+        _assert_layout(page)
+    finally:
+        context.close()
+
+
 @pytest.mark.parametrize("width", [320, 1440])
 def test_service_terms_are_readable_without_horizontal_overflow(
     browser: Browser,
@@ -503,7 +581,7 @@ def test_service_terms_are_readable_without_horizontal_overflow(
             assert page.get_by_role(
                 "heading", name="Address reputation and service limits"
             ).is_visible()
-            assert page.locator("main > article > section").count() == 9
+            assert page.locator("main > article > section").count() == 10
             footer = page.locator(".site-footer")
             footer_link = footer.get_by_role("link", name="Terms", exact=True)
             assert footer_link.get_attribute("href") == "/terms"
@@ -1097,10 +1175,13 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         assert payment["invoice"] not in payment["stablecoin_checkout_url"]
         assert payment["base_amount_sats"] == 75000
         assert payment["markup_sats"] == 7500
+        assert payment["stablecoin_surcharge_sats"] == 7500
+        assert payment["stablecoin_minimum_topup_sats"] == 0
+        assert (payment["standard_period_days"], payment["bonus_days"]) == (365, 0)
         assert payment["amount_sats"] == 82500
         assert page.locator("#payAmount").text_content() == "82500"
         assert (
-            "75000 sats service price + 7500 sats"
+            "75000 sats service price + 7500 sats stablecoin surcharge"
             in page.locator("#payBreakdown").text_content()
         )
         assert page.locator("#payUri").text_content() == "Continue with Lightning Swap"
@@ -1190,9 +1271,11 @@ def test_dashboard_payment_controls_require_successful_dns_check(
     payment_requests = []
     page.on(
         "request",
-        lambda request: payment_requests.append(request)
-        if request.url.endswith("/api/v1/payments") and request.method == "POST"
-        else None,
+        lambda request: (
+            payment_requests.append(request)
+            if request.url.endswith("/api/v1/payments") and request.method == "POST"
+            else None
+        ),
     )
 
     def verify_domain(route) -> None:
@@ -1612,8 +1695,10 @@ def test_inline_nwc_insufficient_budget_keeps_a_recovery_control(
         form = card.locator(".inline-nwc-form")
         form.locator(".inlineNwcUri").fill("nostr+walletconnect://insufficient-budget")
         with page.expect_response(
-            lambda response: response.url.endswith("/api/v1/me/nwc")
-            and response.request.method == "POST"
+            lambda response: (
+                response.url.endswith("/api/v1/me/nwc")
+                and response.request.method == "POST"
+            )
         ) as nwc_response:
             form.get_by_role("button", name="Connect and pay").click()
         assert nwc_response.value.ok

@@ -346,6 +346,14 @@ class Subscription(SQLModel, table=True):
     current_period_start: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     current_period_end: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     auto_renew: bool = False  # tied to NWC
+    # A pending wildcard target can replace one active exact Relay subscription.
+    upgrade_from_subscription_id: int | None = Field(
+        default=None, foreign_key="subscription.id", unique=True
+    )
+    upgrade_credit_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    upgrade_source_period_end: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
 
@@ -483,6 +491,11 @@ class Payment(SQLModel, table=True):
     period_days: int = Field(default=30, sa_column_kwargs={"server_default": text("30")})
     amount_sats: int
     markup_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    service_price_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    discount_sats: int = Field(default=0, sa_column_kwargs={"server_default": text("0")})
+    stablecoin_surcharge_sats: int = Field(
+        default=0, sa_column_kwargs={"server_default": text("0")}
+    )
     stablecoin_provider: str | None = Field(default=None, max_length=32)
     stablecoin_checkout_origin: str | None = Field(default=None, max_length=2048)
     stablecoin_asset: str | None = Field(default=None, max_length=64)

@@ -46,7 +46,9 @@
           {% for s in subscriptions %}
             {% set legacy_ip = s.product.value == "ip" and (s.delivery.value != "wireguard" or s.billing_term.value != "yearly") %}
             {% set dns_payment_blocked = s.product.value == "relay" and s.status.value == "pending" and not s.domain_is_managed and not s.domain_verified_at %}
-            <article class="subscription-card" data-sub-id="{{ s.public_id }}" data-sub-status="{{ s.status.value }}" data-delivery="{{ s.delivery.value }}" data-monthly-price="{{ s.monthly_price_sats }}" data-yearly-price="{{ s.yearly_price_sats }}" data-dns-payment-blocked="{{ 'true' if dns_payment_blocked else 'false' }}">
+            {% set upgrade_pending = s.id in pending_upgrade_source_ids %}
+            {% set upgrade_source = upgrade_sources.get(s.upgrade_from_subscription_id) if s.upgrade_from_subscription_id else none %}
+            <article class="subscription-card" data-sub-id="{{ s.public_id }}" data-sub-status="{{ s.status.value }}" data-delivery="{{ s.delivery.value }}" data-billing-term="{{ s.billing_term.value }}" data-monthly-price="{{ s.monthly_price_sats }}" data-yearly-price="{{ s.yearly_price_sats }}" data-upgrade-credit="{{ s.upgrade_credit_sats }}" data-dns-payment-blocked="{{ 'true' if dns_payment_blocked else 'false' }}">
               <header>
                 <div>
                   <p class="endpoint-kind">{% if s.product.value == "ip" %}{{ "Historical framed IP" if legacy_ip else "Routed dedicated /32" }}{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
@@ -66,6 +68,8 @@
               <dl class="sub-details sub-details-compact">
                 <div><dt>Price</dt><dd><span class="cardPrice">{{ card_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days<span class="cardUsd">{% if card_usd %} (about {{ card_usd }} USD){% endif %}</span></dd></div>
                 {% if s.current_period_end %}<div><dt>Active until</dt><dd>{{ s.current_period_end }}</dd></div>{% endif %}
+                {% if upgrade_source %}<div><dt>Upgrade</dt><dd>Replacing <code>{{ upgrade_source.domain }}</code> after payment</dd></div>{% endif %}
+                {% if upgrade_source %}<div><dt>Wildcard credit</dt><dd>{{ s.upgrade_credit_sats }} sats, due <span class="upgradeDue">{{ card_sats - s.upgrade_credit_sats }}</span> sats</dd></div>{% endif %}
                 <div><dt>Transport</dt><dd>{% if s.product.value == "port" %}{{ s.transport.value | upper }}{% elif s.delivery.value == "wireguard" %}WireGuard /32{% else %}TCP tunnel{% endif %}</dd></div>
                 {% if s.product.value == "port" and s.assigned_port and port_hostname_suffix %}
                   <div><dt>CNAME target</dt><dd><code>{{ s.public_id }}.{{ port_hostname_suffix }}</code></dd></div>
@@ -80,7 +84,9 @@
                   <p class="warning">Annual routed-IP payments are currently unavailable.</p>
                 {% elif s.delivery.value == "wireguard" and s.status.value in ("pending", "expired", "active") %}
                   <p class="payment-term-summary">One routed dedicated /32 over WireGuard renews annual-only for 365 service days at {{ s.yearly_price_sats }} sats.</p>
-                {% elif s.status.value in ("pending", "expired", "active") and (lightning_enabled or stablecoin_enabled or (nwc_enabled and user.has_nwc)) and yearly_billing_enabled %}
+                {% elif upgrade_source %}
+                  <p class="payment-term-summary">{{ 365 if s.billing_term.value == "yearly" else 30 }} wildcard service days at {{ card_sats }} sats, less {{ s.upgrade_credit_sats }} sats remaining-service credit.</p>
+                {% elif s.status.value in ("pending", "expired", "active") and not upgrade_pending and (lightning_enabled or stablecoin_enabled or (nwc_enabled and user.has_nwc)) and yearly_billing_enabled %}
                   <fieldset class="payment-term-control">
                     <legend>Service term</legend>
                     <div class="segmented">
@@ -115,6 +121,8 @@
                       {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}" disabled>Pay with Lightning</button>{% endif %}
                     </div>
                   </div>
+                {% elif upgrade_pending %}
+                  <p class="warning">Wildcard upgrade pending. This exact route remains active until the wildcard payment settles.</p>
                 {% elif not legacy_ip and s.status.value in ("pending", "expired") and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">{% if s.status.value == "expired" %}Renew{% else %}Pay{% endif %} with Lightning</button>
                 {% elif not legacy_ip and s.status.value == "active" and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
@@ -122,11 +130,11 @@
                 {% elif s.status.value == "active" %}
                   <p class="success-text">Endpoint active</p>
                 {% endif %}
-                {% if not legacy_ip and stablecoin_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with stablecoin</button>{% endif %}
-                {% if not legacy_ip and nwc_enabled and user.has_nwc and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% if not legacy_ip and not upgrade_pending and stablecoin_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with stablecoin</button>{% endif %}
+                {% if not legacy_ip and not upgrade_pending and nwc_enabled and user.has_nwc and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <button type="button" class="nwcPayBtn button-secondary" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with connected wallet</button>
                 {% endif %}
-                {% if not legacy_ip and nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% if not legacy_ip and not upgrade_pending and nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <form class="inline-nwc-form" data-sub-id="{{ s.public_id }}">
                     <label for="inlineNwcUri-{{ s.public_id }}">Pay with Nostr Wallet Connect</label>
                     <p class="field-help">Paste the complete connection URI from your wallet. It is encrypted after validation. Set the wallet budget above the service price to allow for possible routing fees.</p>
@@ -137,6 +145,7 @@
                     <label class="terms-consent"><input class="inlineNwcAutoRenew" type="checkbox"> <span>Renew this endpoint automatically using this wallet connection.</span></label>
                   </form>
                 {% endif %}
+                {% if s.product.value == "relay" and s.relay_hostname_scope.value == "exact" and not s.domain_is_managed and s.status.value == "active" and not upgrade_pending %}<button type="button" class="wildcardUpgradeBtn button-secondary" data-sub-id="{{ s.public_id }}">Upgrade to wildcard</button>{% endif %}
                 {% if s.status.value == "pending" %}<button type="button" class="cancelSubBtn button-secondary button-danger" data-sub-id="{{ s.public_id }}">Cancel order</button>{% endif %}
                 <p class="cardStatus field-help" role="status" aria-live="polite"></p>
               </div>

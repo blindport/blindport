@@ -372,6 +372,13 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         for subscription in framed_subscriptions
         if subscription.status == SubscriptionStatus.ACTIVE
     ]
+    pending_upgrade_source_ids = {
+        subscription.upgrade_from_subscription_id
+        for subscription in visible_subscriptions
+        if subscription.status == SubscriptionStatus.PENDING
+        and subscription.upgrade_from_subscription_id is not None
+    }
+    subscriptions_by_id = {subscription.id: subscription for subscription in visible_subscriptions}
     client_mappings: list[dict[str, str]] = []
     for subscription in client_subscriptions:
         if (
@@ -410,6 +417,8 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
                 for subscription in visible_subscriptions
                 if subscription.status == SubscriptionStatus.ACTIVE
             ],
+            pending_upgrade_source_ids=pending_upgrade_source_ids,
+            upgrade_sources=subscriptions_by_id,
             framed_subscriptions=framed_subscriptions,
             client_subscriptions=client_subscriptions,
             wireguard_subscriptions=wireguard_subscriptions,
