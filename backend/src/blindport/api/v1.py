@@ -925,10 +925,7 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
     if p.method == PaymentMethod.LIGHTNING and p.invoice:
         lightning_uri = f"lightning:{p.invoice}"
         qr_svg = qr.render_svg(p.invoice.upper())
-    try:
-        stablecoin_checkout_url = payments_svc.stablecoin_checkout_url(p, subscription)
-    except payments_svc.PaymentProviderError as error:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(error)) from error
+    stablecoin_checkout_url = payments_svc.stablecoin_checkout_url(p, subscription)
     standard_period_days = subs_svc.billing_period_days(p.billing_term)
     stablecoin_minimum_topup_sats = 0
     if p.method == PaymentMethod.STABLECOIN_SWAP and not (
@@ -960,7 +957,13 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         stablecoin_provider=p.stablecoin_provider,
         stablecoin_checkout_url=stablecoin_checkout_url,
         stablecoin_asset=p.stablecoin_asset,
-        stablecoin_checkout_prefilled=p.stablecoin_order_id is not None,
+        stablecoin_checkout_prefilled=payments_svc.has_prepared_stablecoin_deposit(p),
+        stablecoin_deposit_amount=p.stablecoin_deposit_amount,
+        stablecoin_deposit_address=p.stablecoin_deposit_address,
+        stablecoin_deposit_network=p.stablecoin_deposit_network,
+        stablecoin_deposit_tag=p.stablecoin_deposit_tag,
+        stablecoin_required_confirmations=p.stablecoin_required_confirmations,
+        stablecoin_order_expires_at=p.stablecoin_order_expires_at,
         nwc_state=p.nwc_state,
         nwc_attempt_count=p.nwc_attempt_count,
         nwc_error_code=p.nwc_error_code,
@@ -975,10 +978,12 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
 )
 def create_payment(
     body: CreatePaymentRequest,
+    response: Response,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
     verifier_factory: Callable[[], DomainVerifier] = Depends(_domain_verifier_dependency),
 ) -> PaymentResponse | JSONResponse:
+    response.headers["Cache-Control"] = "no-store"
     _enforce_public_rate_limit(
         session,
         RateLimitScope.PAYMENT_CREATE,
@@ -1023,6 +1028,7 @@ def create_payment(
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
             content=conflict.model_dump(mode="json"),
+            headers={"Cache-Control": "no-store"},
         )
     except subs_svc.AccountLimitError as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(e)) from e
@@ -1230,9 +1236,11 @@ def unsuspend_account(
 @router.get("/payments/{payment_id}", response_model=PaymentResponse)
 def get_payment(
     payment_id: int,
+    response: Response,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> PaymentResponse:
+    response.headers["Cache-Control"] = "no-store"
     p = session.get(Payment, payment_id)
     if not p:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "payment not found")
@@ -1251,9 +1259,11 @@ def get_payment(
 
 @router.get("/payments", response_model=list[PaymentResponse])
 def list_open_payments(
+    response: Response,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> list[PaymentResponse]:
+    response.headers["Cache-Control"] = "no-store"
     rows = session.exec(
         select(Payment)
         .join(Subscription)

@@ -506,6 +506,11 @@ class Payment(SQLModel, table=True):
     stablecoin_order_token_ciphertext: str | None = Field(default=None, max_length=8192)
     stablecoin_order_token_key_version: str | None = Field(default=None, max_length=32)
     stablecoin_order_status: str | None = Field(default=None, max_length=32)
+    stablecoin_deposit_amount: str | None = Field(default=None, max_length=128)
+    stablecoin_deposit_address: str | None = Field(default=None, max_length=512)
+    stablecoin_deposit_network: str | None = Field(default=None, max_length=32)
+    stablecoin_deposit_tag: str | None = Field(default=None, max_length=512)
+    stablecoin_required_confirmations: int | None = None
     stablecoin_order_expires_at: datetime | None = Field(
         default=None, sa_type=DateTime(timezone=True)
     )

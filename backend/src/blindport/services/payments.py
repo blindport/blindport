@@ -7,7 +7,7 @@ import hmac
 import math
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, update
@@ -27,9 +27,7 @@ from ..adapters.factory import (
 from ..config import settings
 from ..core.credentials import (
     CredentialCipher,
-    CredentialError,
     CredentialPurpose,
-    EncryptedCredential,
 )
 from ..core.models import (
     AgentOrder,
@@ -263,6 +261,18 @@ def _credential_cipher() -> CredentialCipher:
     return CredentialCipher(settings.CREDENTIAL_ENCRYPTION_KEY)
 
 
+def has_prepared_stablecoin_deposit(payment: Payment) -> bool:
+    """Return whether a prepared order has complete customer deposit instructions."""
+    return (
+        payment.stablecoin_order_id is not None
+        and payment.stablecoin_deposit_amount is not None
+        and payment.stablecoin_deposit_address is not None
+        and payment.stablecoin_deposit_network is not None
+        and payment.stablecoin_required_confirmations is not None
+        and payment.stablecoin_order_expires_at is not None
+    )
+
+
 def stablecoin_checkout_url(payment: Payment, subscription: Subscription) -> str | None:
     """Build the external checkout URL from the durable payment snapshot."""
     if (
@@ -272,21 +282,8 @@ def stablecoin_checkout_url(payment: Payment, subscription: Subscription) -> str
     ):
         return None
     if payment.stablecoin_provider == "lightning_swap":
-        if payment.stablecoin_order_token_ciphertext and payment.stablecoin_order_token_key_version:
-            try:
-                token = _credential_cipher().decrypt(
-                    subscription.public_id,
-                    EncryptedCredential(
-                        payment.stablecoin_order_token_ciphertext,
-                        payment.stablecoin_order_token_key_version,
-                    ),
-                    purpose=CredentialPurpose.LIGHTNING_SWAP_ORDER,
-                )
-            except CredentialError as error:
-                raise PaymentProviderError(
-                    "Lightning Swap checkout access is unavailable"
-                ) from error
-            return f"{payment.stablecoin_checkout_origin}/o/{quote(token, safe='')}"
+        if has_prepared_stablecoin_deposit(payment):
+            return None
         return payment.stablecoin_checkout_origin
     if (
         payment.stablecoin_provider != "boltz"
@@ -545,6 +542,11 @@ def ensure_stablecoin_order(
     payment.stablecoin_order_token_ciphertext = encrypted.ciphertext
     payment.stablecoin_order_token_key_version = encrypted.key_version
     payment.stablecoin_order_status = order.status
+    payment.stablecoin_deposit_amount = order.deposit_amount
+    payment.stablecoin_deposit_address = order.deposit_address
+    payment.stablecoin_deposit_network = order.network
+    payment.stablecoin_deposit_tag = order.deposit_tag
+    payment.stablecoin_required_confirmations = order.required_confirmations
     payment.stablecoin_order_expires_at = order.expires_at
     current_expiry = _aware(payment.expires_at)
     payment.expires_at = (

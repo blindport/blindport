@@ -491,8 +491,6 @@ def test_stablecoin_credit_rounds_up_for_annual_and_boundary_amounts(app_client)
 def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(
     app_client, monkeypatch
 ) -> None:
-    from decimal import Decimal
-
     from blindport.core.credentials import CredentialCipher, CredentialPurpose, EncryptedCredential
     from blindport.core.models import Payment, Subscription
     from blindport.db import engine
@@ -528,7 +526,7 @@ def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(
                 status="NEW",
                 asset=asset,
                 network="SOL",
-                deposit_amount=Decimal("5.25"),
+                deposit_amount="5.2500",
                 deposit_address="deposit-address",
                 deposit_tag=None,
                 required_confirmations=1,
@@ -556,7 +554,14 @@ def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(
     assert created["amount_sats"] == 7200
     assert created["markup_sats"] == 5700
     assert created["stablecoin_checkout_prefilled"] is True
-    assert created["stablecoin_checkout_url"] == "https://swap.example/o/provider-order-token"
+    assert created["stablecoin_checkout_url"] is None
+    assert created["stablecoin_deposit_amount"] == "5.2500"
+    assert created["stablecoin_deposit_address"] == "deposit-address"
+    assert created["stablecoin_deposit_network"] == "SOL"
+    assert created["stablecoin_deposit_tag"] is None
+    assert created["stablecoin_required_confirmations"] == 1
+    assert created["stablecoin_order_expires_at"] is not None
+    assert "provider-order-token" not in str(created)
     assert restored["id"] == created["id"]
     assert len(calls) == 1
     assert calls[0][1:3] == (7200, "USDCSOL")
@@ -570,6 +575,13 @@ def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(
         assert payment.stablecoin_api_order_enabled is True
         assert payment.stablecoin_order_token_ciphertext != "provider-order-token"
         assert payment.stablecoin_order_token_key_version
+        assert (
+            payment.stablecoin_deposit_amount,
+            payment.stablecoin_deposit_address,
+            payment.stablecoin_deposit_network,
+            payment.stablecoin_deposit_tag,
+            payment.stablecoin_required_confirmations,
+        ) == ("5.2500", "deposit-address", "SOL", None, 1)
         decrypted = CredentialCipher(payments.settings.CREDENTIAL_ENCRYPTION_KEY).decrypt(
             stored_subscription.public_id,
             EncryptedCredential(
@@ -581,11 +593,7 @@ def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(
         assert decrypted == "provider-order-token"
 
 
-def test_lightning_swap_checkout_returns_502_when_order_token_cannot_be_decrypted(
-    app_client, monkeypatch
-) -> None:
-    from decimal import Decimal
-
+def test_lightning_swap_checkout_ignores_corrupt_order_token(app_client, monkeypatch) -> None:
     from blindport.core.models import Payment
     from blindport.db import engine
     from blindport.services import payments
@@ -616,7 +624,7 @@ def test_lightning_swap_checkout_returns_502_when_order_token_cannot_be_decrypte
                 status="NEW",
                 asset=asset,
                 network="SOL",
-                deposit_amount=Decimal("5.25"),
+                deposit_amount="5.2500",
                 deposit_address="deposit-address",
                 deposit_tag=None,
                 required_confirmations=1,
@@ -643,9 +651,36 @@ def test_lightning_swap_checkout_returns_502_when_order_token_cannot_be_decrypte
 
     response = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token))
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "Lightning Swap checkout access is unavailable"}
+    assert response.status_code == 200
+    assert response.json()["stablecoin_checkout_url"] is None
+    assert response.json()["stablecoin_deposit_address"] == "deposit-address"
     assert "provider-order-token" not in response.text
+
+
+def test_payment_responses_are_private_and_conflicts_preserve_header(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    sub = client.post(
+        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
+    ).json()
+    created = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": sub["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert created.headers["Cache-Control"] == "no-store"
+    payment = created.json()
+    fetched = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token))
+    listed = client.get("/api/v1/payments", headers=_auth(token))
+    conflict = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": sub["id"], "method": "nwc"},
+        headers=_auth(token),
+    )
+    assert fetched.headers["Cache-Control"] == "no-store"
+    assert listed.headers["Cache-Control"] == "no-store"
+    assert conflict.status_code == 409
+    assert conflict.headers["Cache-Control"] == "no-store"
 
 
 def test_lightning_swap_api_mode_settles_without_provider_credentials(

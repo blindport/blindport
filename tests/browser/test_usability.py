@@ -12,13 +12,13 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
 import pytest
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
-
 
 ONION_HOST = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaam2dqd.onion"
 
@@ -154,11 +154,8 @@ def _capture_failure(page: Page, path: Path) -> Iterator[None]:
             page.locator(selector)
             for selector in ("#accountToken", "#payBolt11", "#qrBox")
         ]
-        try:
+        with suppress(Exception):
             page.screenshot(path=path, full_page=True, mask=masks)
-        except Exception:
-            # Preserve the test failure when the page closed before capture completed.
-            pass
         raise
 
 
@@ -1230,6 +1227,92 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         _assert_layout(page)
         assert errors == []
         popup.close()
+    finally:
+        context.close()
+
+
+def test_dashboard_prepared_stablecoin_checkout_renders_deposit_instructions(
+    browser: Browser,
+    browser_server: BrowserServer,
+    playwright_runtime: Playwright,
+) -> None:
+    account = _signup(playwright_runtime, browser_server.base_url)
+    request = playwright_runtime.request.new_context(base_url=browser_server.base_url)
+    try:
+        subscription = request.post(
+            "/api/v1/subscriptions",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"product": "ip"},
+        ).json()
+        payment = request.post(
+            "/api/v1/payments",
+            headers={"Authorization": f"Bearer {account['token']}"},
+            data={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
+        ).json()
+    finally:
+        request.dispose()
+
+    with sqlite3.connect(browser_server.database) as connection:
+        connection.execute(
+            """UPDATE payment SET stablecoin_api_order_enabled = 1, stablecoin_order_id = ?,
+            stablecoin_deposit_amount = ?, stablecoin_deposit_address = ?,
+            stablecoin_deposit_network = ?, stablecoin_deposit_tag = ?,
+            stablecoin_required_confirmations = ?, stablecoin_order_expires_at = ? WHERE id = ?""",
+            (
+                "PREPAREDORDER1234567890123456789012",
+                "5.2500",
+                "prepared-deposit-address",
+                "SOL",
+                "memo-123",
+                1,
+                (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+                payment["id"],
+            ),
+        )
+
+    context = browser.new_context(viewport={"width": 320, "height": 800})
+    context.grant_permissions(
+        ["clipboard-read", "clipboard-write"], origin=browser_server.base_url
+    )
+    context.add_cookies(
+        [
+            {
+                "name": "blindport_token",
+                "value": account["token"],
+                "url": browser_server.base_url,
+                "sameSite": "Lax",
+            }
+        ]
+    )
+    page = context.new_page()
+    try:
+        page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        assert page.locator("#stablecoinDepositDetails").is_visible()
+        assert page.locator("#stablecoinDepositAmount").text_content() == "5.2500"
+        assert (
+            page.locator("#stablecoinDepositAssetNetwork").text_content()
+            == "USDC on Solana (SOL)"
+        )
+        assert (
+            page.locator("#stablecoinDepositAddress").text_content()
+            == "prepared-deposit-address"
+        )
+        assert page.locator("#stablecoinDepositTag").text_content() == "memo-123"
+        assert page.locator("#stablecoinRequiredConfirmations").text_content() == "1"
+        assert page.locator("#payUri").is_hidden()
+        assert page.locator("#payInvoiceDetails").is_hidden()
+        assert page.locator("#copyInvoiceBtn").is_hidden()
+        page.locator("#copyDepositAmountBtn").click()
+        assert page.evaluate("navigator.clipboard.readText()") == "5.2500"
+        page.locator("#copyDepositAddressBtn").click()
+        assert (
+            page.evaluate("navigator.clipboard.readText()")
+            == "prepared-deposit-address"
+        )
+        page.locator("#copyDepositTagBtn").click()
+        assert page.evaluate("navigator.clipboard.readText()") == "memo-123"
+        assert "PREPAREDORDER" not in page.content()
+        _assert_layout(page)
     finally:
         context.close()
 

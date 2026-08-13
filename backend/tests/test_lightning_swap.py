@@ -71,9 +71,35 @@ def test_create_order_signs_exact_compact_body_and_returns_validated_order() -> 
 
     assert order.order_id == "ORDER123"
     assert order.public_token == "checkout-token-123"
-    assert order.deposit_amount == Decimal("4.25")
+    assert order.deposit_amount == "4.25"
     assert order.deposit_tag is None
     assert order.expires_at.tzinfo is not None
+
+
+@pytest.mark.parametrize(
+    ("order_id", "accepted"),
+    [("A" * 32, True), ("A" * 33, False)],
+)
+def test_create_order_enforces_persisted_order_id_length(order_id: str, accepted: bool) -> None:
+    response = _order_response()
+    data = response["data"]
+    assert isinstance(data, dict)
+    data["id"] = order_id
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response, request=request)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
+        client = LightningSwapClient(_ORIGIN, _KEY, _SECRET, http_client)
+        if accepted:
+            assert (
+                client.create_order(_INVOICE, 1234, "USDCSOL", "request-123").order_id == order_id
+            )
+        else:
+            with pytest.raises(
+                LightningSwapError, match="Lightning Swap order response is invalid"
+            ):
+                client.create_order(_INVOICE, 1234, "USDCSOL", "request-123")
 
 
 @pytest.mark.parametrize(

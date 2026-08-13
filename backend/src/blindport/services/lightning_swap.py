@@ -23,8 +23,9 @@ _MAX_IDEMPOTENCY_KEY_LENGTH = 255
 _MAX_TOKEN_LENGTH = 512
 _MAX_ID_LENGTH = 32
 _MAX_TEXT_LENGTH = 512
+_MAX_AMOUNT_LENGTH = 128
 _XML_DECLARATION = re.compile(rb"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
-_ORDER_ID = re.compile(r"[A-Z0-9]{1,128}\Z")
+_ORDER_ID = re.compile(r"[A-Z0-9]{1,32}\Z")
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class LightningSwapOrder:
     status: str
     asset: str
     network: str
-    deposit_amount: Decimal
+    deposit_amount: str
     deposit_address: str
     deposit_tag: str | None
     required_confirmations: int
@@ -239,6 +240,18 @@ def _response_field(data: dict[str, Any], name: str) -> Any:
     return data[name]
 
 
+def _decimal_text(value: object) -> tuple[str, Decimal]:
+    if isinstance(value, str):
+        text = _bounded_ascii(value, _MAX_AMOUNT_LENGTH)
+    elif isinstance(value, int | Decimal) and not isinstance(value, bool):
+        text = str(value)
+        if len(text) > _MAX_AMOUNT_LENGTH:
+            raise ValueError
+    else:
+        raise ValueError
+    return text, _decimal(text)
+
+
 class LightningSwapClient:
     """Authenticated fixed-order adapter for the Lightning Swap API."""
 
@@ -332,7 +345,7 @@ class LightningSwapClient:
         raw: bytes, invoice: str, amount_btc: Decimal, asset: str
     ) -> LightningSwapOrder:
         try:
-            payload = json.loads(raw)
+            payload = json.loads(raw, parse_float=Decimal)
             if not isinstance(payload, dict) or payload.get("code") != 0:
                 raise ValueError
             data = _response_field(payload, "data")
@@ -346,14 +359,14 @@ class LightningSwapClient:
             order_id = _bounded_ascii(_response_field(data, "id"), _MAX_ID_LENGTH)
             if _ORDER_ID.fullmatch(order_id) is None:
                 raise ValueError
-            status = _bounded_ascii(_response_field(data, "status"), _MAX_TEXT_LENGTH)
+            status = _bounded_ascii(_response_field(data, "status"), _MAX_ID_LENGTH)
             from_code = _bounded_ascii(_response_field(source, "code"), _MAX_ASSET_LENGTH)
             to_code = _bounded_ascii(_response_field(target, "code"), _MAX_ASSET_LENGTH)
             target_address = _bounded_ascii(_response_field(target, "address"), _MAX_INVOICE_LENGTH)
             target_amount = _decimal(_response_field(target, "amount"))
-            deposit_amount = _decimal(_response_field(source, "amount"))
+            deposit_amount, _ = _decimal_text(_response_field(source, "amount"))
             deposit_address = _bounded_ascii(_response_field(source, "address"), _MAX_TEXT_LENGTH)
-            network = _bounded_ascii(_response_field(source, "network"), _MAX_TEXT_LENGTH)
+            network = _bounded_ascii(_response_field(source, "network"), _MAX_ASSET_LENGTH)
             confirmations = _response_field(source, "reqConfirmations")
             timing = _response_field(data, "time")
             if not isinstance(timing, dict):
