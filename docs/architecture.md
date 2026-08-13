@@ -137,6 +137,10 @@ configuration cannot change their checkout mode.
 Migration `0028` separates the configured stablecoin surcharge from provider-minimum
 top-ups so credited days can be validated at settlement. Migration `0029` adds linked
 Relay upgrade and immutable service-price and discount snapshots.
+Migration `0030` persists the validated deposit amount, address, network, optional tag,
+and confirmation requirement returned when the order is created. The payment API
+returns those instructions and the existing order expiry directly, sets the external
+checkout URL to null, and never decrypts the provider bearer token for a browser.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment

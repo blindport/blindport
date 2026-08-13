@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus owner-edge routing for framed dedicated IP inventory.
 - Proportional bonus service time for Lightning Swap minimum top-ups, and
   prorated exact Relay to wildcard upgrades with DNS-gated atomic activation.
+- Direct Lightning Swap deposit instructions for prepared orders without exposing
+  provider bearer tokens in browser URLs.
 
 ### Changed
 

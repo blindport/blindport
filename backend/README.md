@@ -66,7 +66,10 @@ Stablecoin checkout is separately gated by `STABLECOIN_PAYMENTS_ENABLED` and als
 requires the customer to paste the displayed BOLT11 and select
 `LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL` (USDC on Solana). When both file-backed API
 credentials are configured, Blindport creates an idempotent provider order and returns
-its prepared `/o/<token>` page; the bearer token is AES-GCM encrypted at rest.
+the provider's exact deposit amount, asset, network, address, optional tag,
+confirmation requirement, and expiry. Prepared responses set
+`stablecoin_checkout_url` to `null`; the bearer order token is AES-GCM encrypted at
+rest and never returned to the browser.
 `STABLECOIN_SWAP_MARKUP_BPS=1000` applies a 10 percent satoshi surcharge with round-up.
 The final amount is at least `STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`; API mode also
 applies `STABLECOIN_SWAP_MIN_MARGIN_BPS=2000` to the live pair minimum. Blindport relies

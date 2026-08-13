@@ -725,7 +725,7 @@ longer than the minimum payable duration plus this safety interval.
 Optional stablecoin checkout uses its own invoice expiry,
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS` (1,200 seconds by default), which plus
 the safety interval must remain shorter than the resource reservation. Apply
-migrations through `0029`, then deploy the new code to every API and reconciler replica
+migrations through `0030`, then deploy the new code to every API and reconciler replica
 with the kill switch still false. If stablecoin checkout was previously enabled,
 first let every open stablecoin invoice settle or expire. Migration `0026` marks
 legacy rows as Boltz payments but cannot safely reconstruct a historical custom
@@ -747,8 +747,10 @@ a whole day. Set both file-backed API credentials, set
 fetches the public pair minimum, adds `STABLECOIN_SWAP_MIN_MARGIN_BPS=2000`, and uses
 the larger result; feed failure falls back to the hard floor. The provider create call
 is idempotent, and the returned order token is encrypted using the credential key.
-Users must send the exact displayed asset and amount in one transaction within the
-provider's ten-minute order window. Set
+The API and dashboard show the persisted exact amount, asset, network, address,
+optional tag, confirmation requirement, and expiry instead of exposing the bearer
+token in a provider URL. Users must send the exact displayed deposit in one
+transaction before expiry. Set
 `STABLECOIN_CHECKOUT_PROVIDER=boltz` to retain the prefilled Boltz checkout; its
 `BOLTZ_WEB_URL` must also be an HTTPS origin and `STABLECOIN_SWAP_DEFAULT_ASSET`
 selects the initial USDC or USDT0 asset. Blindport consumes no provider callback, and
@@ -756,7 +758,8 @@ LND settlement remains the only authority. For rollback, disable the kill switch
 Migration `0026` cannot be removed while stablecoin payment rows remain; migration
 `0027` cannot be removed while API-created provider orders remain; migration `0028`
 cannot be removed while bonus-day payments remain; and migration `0029` cannot be
-removed while linked Relay upgrades or discounted payments remain.
+removed while linked Relay upgrades or discounted payments remain. Migration `0030`
+cannot be removed while API-created orders or any persisted deposit instruction exists.
 
 When `BTC_USD_PRICE_ENABLED=true`, each backend process requests
 `https://mempool.space/api/v1/prices` every five minutes. The cache accepts only

@@ -79,7 +79,8 @@ checkout. New installs use Lightning Swap, as recommended by Megalithic's guide:
 the default manual flow opens the external provider and requires the customer to
 paste the displayed surcharged LND invoice, then choose the configured stablecoin
 network. Operators may add file-backed Lightning Swap API credentials to create a
-prepared order page with the invoice, asset, network, and exact amount already bound.
+prepared order whose exact amount, asset, network, address, optional tag,
+confirmation requirement, and expiry are shown directly in Blindport.
 Boltz remains an optional prefilled checkout provider. Blindport receives Lightning
 bitcoin and activates service only after LND reports settlement; provider order state
 is advisory and no callback can activate service. Legacy persisted Cashu payment rows
@@ -234,9 +235,10 @@ snapshots the selected provider and checkout origin on each payment. Boltz recei
 a prefilled external URL. Lightning Swap defaults to USDC on Solana and a 5,000-sat
 invoice floor; API-enabled deployments also apply a 20 percent margin to the pair's
 live minimum and create an idempotent prepared provider order. Its bearer order token
-is encrypted at rest. Without API credentials, the customer pastes the visible BOLT11
-into the manual provider flow. Provider state is advisory and LND settlement remains
-authoritative.
+is encrypted at rest and never placed in a browser URL. Prepared payment API responses
+return the deposit instruction fields with `stablecoin_checkout_url` set to `null`.
+Without API credentials, the customer pastes the visible BOLT11 into the manual
+provider flow. Provider state is advisory and LND settlement remains authoritative.
 The hosted UI may show a cached approximate USD value from mempool.space for
 orientation; satoshi prices remain authoritative when that optional feed is stale
 or unavailable.

@@ -207,7 +207,7 @@ connection with a wallet-enforced budget and expiry that cover the selected rene
 term plus fees.
 
 Optional stablecoin checkout can run manually without a provider secret. Apply migrations
-through `0029`,
+through `0030`,
 then roll out the new application code to every API and reconciler replica while
 keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.
 Before migrating an installation that previously enabled stablecoin checkout, let
@@ -231,11 +231,12 @@ percent safety margin. Disable the feature flag first during a
 rollback. The flag blocks new checkout creation and removes the UI control;
 reconciliation still settles or expires invoices issued before disablement so
 customer payments and resource holds are not stranded. Do not deploy application code
-from before migration `0029` during this rollout. Migration `0026` cannot be removed
+from before migration `0030` during this rollout. Migration `0026` cannot be removed
 while stablecoin payment rows remain, and migration `0027` cannot be removed while
 Lightning Swap API-mode payments remain. Migration `0028` cannot be removed while
 bonus-day payments remain. Migration `0029` cannot be removed while linked Relay
-upgrades or discounted payments remain.
+upgrades or discounted payments remain. Migration `0030` cannot be removed while
+API-created orders or any persisted deposit instruction exists.
 
 Megalithic's guide recommends Lightning Swap. Without API credentials, Blindport opens
 its external origin and the customer pastes the displayed BOLT11 before choosing USDC
@@ -247,7 +248,9 @@ set both `_FILE` variables. Also set
 while API ordering is configured. Provider orders
 use the invoice UUID for idempotency, and order bearer tokens are encrypted in the
 payment row. Never print either API credential or an order token. Blindport accepts no
-provider callback; only the LND payment hash settles service.
+provider callback; only the LND payment hash settles service. A prepared payment
+response contains the persisted exact amount, asset, network, address, optional tag,
+confirmation requirement, and expiry, and its external checkout URL is null.
 
 ```sh
 install -o 10001 -g 10001 -m 0400 /path/to/lightning-swap-api-key secrets/lightning-swap-api-key
