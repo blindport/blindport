@@ -52,9 +52,18 @@ adapter.
 Port and Relay subscriptions snapshot monthly and yearly prices at creation and
 keep a preferred billing term. New IP subscriptions always select yearly
 WireGuard delivery. A payment independently snapshots the selected term, charged
-amount, markup, and fixed period length (30 service days monthly or 365 service days yearly). The
-payment snapshot is authoritative at settlement, including after configuration,
+amount, markup, and period length (30 service days monthly or 365 service days yearly).
+Lightning Swap provider minimum top-ups receive proportionally rounded-up bonus time;
+the payment snapshot is authoritative at settlement, including after configuration,
 price, or preference changes.
+An exact customer-owned Relay upgrade creates a linked pending wildcard subscription
+at the exact hostname's immediate parent. Remaining exact time is valued using the
+source subscription's snapshotted monthly or yearly daily rate, rounded down to
+satoshis, capped at the selected wildcard price, and snapshotted as a payment discount.
+The exact claim remains authorized and cannot renew while the upgrade is pending.
+Settlement activates the verified wildcard and releases the exact claim in the same
+transaction. A fully credited upgrade uses a zero-amount paid record without creating
+an external invoice.
 Historical framed or monthly IP records cannot create new payments or automatic
 renewals. Yearly issuance is feature-gated during rollout. The gate remains disabled while
 old replicas are present because those replicas do not understand a payment's
@@ -125,6 +134,9 @@ those rows therefore cannot generate a new external checkout URL.
 Migration `0027` adds API-order snapshots and encrypted token storage. Historical and
 already-issued manual payments default to API ordering disabled, so later credential
 configuration cannot change their checkout mode.
+Migration `0028` separates the configured stablecoin surcharge from provider-minimum
+top-ups so credited days can be validated at settlement. Migration `0029` adds linked
+Relay upgrade and immutable service-price and discount snapshots.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public-relay egress policy for wallet-provided connection URIs.
 - Provider-edge Port assignments with a stable hostname and explicit ingress IPs,
   plus owner-edge routing for framed dedicated IP inventory.
+- Proportional bonus service time for Lightning Swap minimum top-ups, and
+  prorated exact Relay to wildcard upgrades with DNS-gated atomic activation.
 
 ### Changed
 

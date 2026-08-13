@@ -60,6 +60,12 @@ CDN-proxied records are not supported in the hosted beta. Future registrar or
 authoritative-DNS integrations can automate the same subscription and verification API
 flow.
 
+An active exact customer-owned Relay can be upgraded to a wildcard at the exact
+hostname's immediate parent. The unused exact term is valued at its snapshotted
+daily rate and applied as a noncash discount to the selected wildcard term. The
+exact route stays active until wildcard DNS is verified and the upgrade payment
+settles, then the wildcard replaces it atomically.
+
 Unpaid managed names are held for 30 minutes and customer-owned names for one
 hour. One account may hold at most two unpaid Relay claims, and the background
 reconciler releases elapsed claims, limiting no-cost name reservation abuse.
@@ -82,7 +88,9 @@ remain readable, but Cashu runtime support has been removed.
 Blindport Port and Relay support fixed monthly (30 service days) and yearly (365
 service days) terms. New Blindport IP subscriptions use 365 service days only.
 Prices are snapshotted when a subscription is created, and each payment snapshots
-its amount, any stablecoin surcharge, and exact service period before settlement.
+its amount, stablecoin surcharge, and service period before settlement. Lightning
+Swap provider minimum top-ups earn proportional bonus service time, rounded up to
+a whole service day.
 Yearly issuance is controlled by `BILLING_YEARLY_ENABLED`; Blindport IP sales have
 no capacity while that gate is disabled.
 Accounts can optionally store an encrypted address for ACCOUNT lifecycle mail,

@@ -725,7 +725,7 @@ longer than the minimum payable duration plus this safety interval.
 Optional stablecoin checkout uses its own invoice expiry,
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS` (1,200 seconds by default), which plus
 the safety interval must remain shorter than the resource reservation. Apply
-migrations through `0027`, then deploy the new code to every API and reconciler replica
+migrations through `0029`, then deploy the new code to every API and reconciler replica
 with the kill switch still false. If stablecoin checkout was previously enabled,
 first let every open stablecoin invoice settle or expire. Migration `0026` marks
 legacy rows as Boltz payments but cannot safely reconstruct a historical custom
@@ -739,8 +739,9 @@ up. New installs use `STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and must keep
 provider. Manual fallback opens the provider without a BOLT11 in the URL, and the
 customer pastes the invoice before selecting `LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL`
 (USDC on Solana). The final invoice is the maximum of service price plus markup and
-`STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`; the difference remains a surcharge, not extra
-service time. Set both file-backed API credentials, set
+`STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`. The configured markup remains a surcharge;
+any additional provider-minimum top-up earns proportional service time rounded up to
+a whole day. Set both file-backed API credentials, set
 `CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key`, and include
 `compose.lightning-swap-api.yaml` to enable prepared orders. API mode
 fetches the public pair minimum, adds `STABLECOIN_SWAP_MIN_MARGIN_BPS=2000`, and uses
@@ -753,7 +754,9 @@ provider's ten-minute order window. Set
 selects the initial USDC or USDT0 asset. Blindport consumes no provider callback, and
 LND settlement remains the only authority. For rollback, disable the kill switch first.
 Migration `0026` cannot be removed while stablecoin payment rows remain; migration
-`0027` cannot be removed while API-created provider orders remain.
+`0027` cannot be removed while API-created provider orders remain; migration `0028`
+cannot be removed while bonus-day payments remain; and migration `0029` cannot be
+removed while linked Relay upgrades or discounted payments remain.
 
 When `BTC_USD_PRICE_ENABLED=true`, each backend process requests
 `https://mempool.space/api/v1/prices` every five minutes. The cache accepts only

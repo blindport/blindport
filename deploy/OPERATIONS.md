@@ -207,7 +207,7 @@ connection with a wallet-enforced budget and expiry that cover the selected rene
 term plus fees.
 
 Optional stablecoin checkout can run manually without a provider secret. Apply migrations
-through `0027`,
+through `0029`,
 then roll out the new application code to every API and reconciler replica while
 keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.
 Before migrating an installation that previously enabled stablecoin checkout, let
@@ -223,14 +223,19 @@ checked-in default remains false. The default `STABLECOIN_SWAP_MARKUP_BPS=1000`
 adds 10 percent to the LND invoice and
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS=1200` leaves time for the external swap
 within the 1,800-second reservation. Lightning Swap also uses a 5,000-sat hard floor.
+The configured surcharge remains a checkout cost. Any additional amount required by
+the hard or dynamic provider floor earns proportional service time rounded up to a
+whole day.
 When API ordering is enabled, the configured `USDCSOL` live minimum receives a 20
 percent safety margin. Disable the feature flag first during a
 rollback. The flag blocks new checkout creation and removes the UI control;
 reconciliation still settles or expires invoices issued before disablement so
 customer payments and resource holds are not stranded. Do not deploy application code
-from before migration `0027` during this rollout. Migration `0026` cannot be removed
+from before migration `0029` during this rollout. Migration `0026` cannot be removed
 while stablecoin payment rows remain, and migration `0027` cannot be removed while
-Lightning Swap API-mode payments remain.
+Lightning Swap API-mode payments remain. Migration `0028` cannot be removed while
+bonus-day payments remain. Migration `0029` cannot be removed while linked Relay
+upgrades or discounted payments remain.
 
 Megalithic's guide recommends Lightning Swap. Without API credentials, Blindport opens
 its external origin and the customer pastes the displayed BOLT11 before choosing USDC
