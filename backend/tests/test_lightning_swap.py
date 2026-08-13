@@ -58,9 +58,10 @@ def test_create_order_signs_exact_compact_body_and_returns_validated_order() -> 
         assert request.headers["Content-Type"] == "application/json; charset=UTF-8"
         assert request.headers["X-API-KEY"] == _KEY
         assert request.headers["Idempotency-Key"] == "request-123"
-        assert request.headers["X-API-SIGN"] == hmac.new(
-            _SECRET.encode(), expected, hashlib.sha256
-        ).hexdigest()
+        assert (
+            request.headers["X-API-SIGN"]
+            == hmac.new(_SECRET.encode(), expected, hashlib.sha256).hexdigest()
+        )
         return httpx.Response(200, json=_order_response(), request=request)
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
@@ -100,7 +101,9 @@ def test_fetch_rates_requires_xml_and_calculates_current_like_usdcsol_floor() ->
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Accept"] == "application/xml, text/xml"
-        return httpx.Response(200, content=xml, headers={"Content-Type": "application/xml"}, request=request)
+        return httpx.Response(
+            200, content=xml, headers={"Content-Type": "application/xml"}, request=request
+        )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as client:
         payout = fetch_minimum_payout_sats(_ORIGIN, "USDCSOL", client)
@@ -135,9 +138,18 @@ def test_fetch_rates_rejects_invalid_http_responses(
 
 
 def test_minimum_payout_uses_decimal_ceiling_and_zero_floor() -> None:
-    rate = LightningSwapRate("USDCSOL", Decimal("3"), Decimal("0.00000001"), Decimal("0"), Decimal("1"), Decimal("2"))
+    rate = LightningSwapRate(
+        "USDCSOL", Decimal("3"), Decimal("0.00000001"), Decimal("0"), Decimal("1"), Decimal("2")
+    )
     assert minimum_payout_sats(rate) == 1
-    fee_exceeds_payout = LightningSwapRate("USDCSOL", Decimal("1"), Decimal("0.000001"), Decimal("0.000002"), Decimal("1"), Decimal("2"))
+    fee_exceeds_payout = LightningSwapRate(
+        "USDCSOL",
+        Decimal("1"),
+        Decimal("0.000001"),
+        Decimal("0.000002"),
+        Decimal("1"),
+        Decimal("2"),
+    )
     assert minimum_payout_sats(fee_exceeds_payout) == 0
 
 
@@ -145,7 +157,9 @@ def test_create_order_rejects_response_mismatch_and_redacts_provider_values() ->
     leaked_message = f"provider said {_SECRET} {_INVOICE} checkout-token-123"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": 42, "msg": leaked_message, "data": {}}, request=request)
+        return httpx.Response(
+            200, json={"code": 42, "msg": leaked_message, "data": {}}, request=request
+        )
 
     with httpx.Client(transport=httpx.MockTransport(handler)) as http_client:
         adapter = LightningSwapClient(_ORIGIN, _KEY, _SECRET, http_client)

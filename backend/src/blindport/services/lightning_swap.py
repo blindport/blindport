@@ -118,7 +118,11 @@ def parse_rates_xml(raw: bytes) -> dict[str, LightningSwapRate]:
                 raise ValueError
             from_asset = _rate_field(record, "from")
             target_asset = _rate_field(record, "to")
-            if target_asset != "BTCLN" or not from_asset.isascii() or len(from_asset) > _MAX_ASSET_LENGTH:
+            if (
+                target_asset != "BTCLN"
+                or not from_asset.isascii()
+                or len(from_asset) > _MAX_ASSET_LENGTH
+            ):
                 raise ValueError
             if from_asset in rates:
                 raise ValueError
@@ -189,9 +193,7 @@ def _content_type(response: httpx.Response) -> str:
     return response.headers.get("Content-Type", "").partition(";")[0].strip().lower()
 
 
-def fetch_minimum_payout_sats(
-    origin: str, asset: str, client: httpx.Client | None = None
-) -> int:
+def fetch_minimum_payout_sats(origin: str, asset: str, client: httpx.Client | None = None) -> int:
     """Fetch the fixed-rate feed and calculate the selected asset's payout floor."""
     base_url = _canonical_origin(origin)
     owns_client = client is None
@@ -207,7 +209,9 @@ def fetch_minimum_payout_sats(
             if response.status_code != 200:
                 raise LightningSwapError("Lightning Swap rates request failed")
             if _content_type(response) not in {"application/xml", "text/xml"}:
-                raise LightningSwapError("Lightning Swap rates response has an invalid content type")
+                raise LightningSwapError(
+                    "Lightning Swap rates response has an invalid content type"
+                )
             body = _response_bytes(response)
         finally:
             response.close()
@@ -274,7 +278,11 @@ class LightningSwapClient:
             invoice = _bounded_ascii(invoice, _MAX_INVOICE_LENGTH)
             asset = _bounded_ascii(asset, _MAX_ASSET_LENGTH)
             idempotency_key = _bounded_ascii(idempotency_key, _MAX_IDEMPOTENCY_KEY_LENGTH)
-            if isinstance(amount_sats, bool) or not isinstance(amount_sats, int) or amount_sats <= 0:
+            if (
+                isinstance(amount_sats, bool)
+                or not isinstance(amount_sats, int)
+                or amount_sats <= 0
+            ):
                 raise ValueError
         except ValueError as error:
             raise LightningSwapError("Lightning Swap order request is invalid") from error
@@ -307,7 +315,9 @@ class LightningSwapClient:
                 if response.is_redirect or response.status_code != 200:
                     raise LightningSwapError("Lightning Swap order request failed")
                 if _content_type(response) != "application/json":
-                    raise LightningSwapError("Lightning Swap order response has an invalid content type")
+                    raise LightningSwapError(
+                        "Lightning Swap order response has an invalid content type"
+                    )
                 raw = _response_bytes(response)
             finally:
                 response.close()

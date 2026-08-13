@@ -28,16 +28,10 @@ def upgrade() -> None:
         ),
     )
     op.add_column("payment", sa.Column("stablecoin_order_id", sa.String(length=32)))
-    op.add_column(
-        "payment", sa.Column("stablecoin_order_token_ciphertext", sa.String(length=8192))
-    )
-    op.add_column(
-        "payment", sa.Column("stablecoin_order_token_key_version", sa.String(length=32))
-    )
+    op.add_column("payment", sa.Column("stablecoin_order_token_ciphertext", sa.String(length=8192)))
+    op.add_column("payment", sa.Column("stablecoin_order_token_key_version", sa.String(length=32)))
     op.add_column("payment", sa.Column("stablecoin_order_status", sa.String(length=32)))
-    op.add_column(
-        "payment", sa.Column("stablecoin_order_expires_at", sa.DateTime(timezone=True))
-    )
+    op.add_column("payment", sa.Column("stablecoin_order_expires_at", sa.DateTime(timezone=True)))
 
 
 def downgrade() -> None:
