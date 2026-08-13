@@ -58,8 +58,7 @@ def downgrade() -> None:
         postgresql.ENUM(name="paymentmethod").drop(bind, checkfirst=False)
         postgresql.ENUM(*_OLD_METHODS, name="paymentmethod").create(bind, checkfirst=False)
         op.execute(
-            "ALTER TABLE payment ALTER COLUMN method TYPE paymentmethod "
-            "USING method::paymentmethod"
+            "ALTER TABLE payment ALTER COLUMN method TYPE paymentmethod USING method::paymentmethod"
         )
     else:
         with op.batch_alter_table("payment") as batch_op:
