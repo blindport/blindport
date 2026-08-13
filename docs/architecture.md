@@ -119,28 +119,24 @@ PostgreSQL row lock around issuance and expiry, and a conditional invoice-bindin
 update.
 
 Stablecoin checkout reuses this LND outbox. Each payment snapshots its selected
-provider, checkout origin, asset, and whether provider API ordering was enabled at
-creation. Boltz receives a prefilled web URL from the bound BOLT11 invoice. Lightning
-Swap manual payments expose its origin and require invoice paste; API-enabled payments
-reuse the durable invoice UUID as the provider idempotency key and bind one prepared
-order. The order ID and state are stored, while its bearer token is AES-256-GCM
-encrypted with the subscription public UUID and a dedicated purpose. The public rate
-feed raises the API-order floor above the pair minimum with a safety margin; a local
-hard floor remains available when that advisory feed fails. Provider order state is
-advisory; LND invoice settlement is the only activation authority.
+provider, checkout origin, and asset. Boltz receives a prefilled web URL from the
+bound BOLT11 invoice. Lightning Swap opens a new tab at its snapshotted origin with
+`/?invoice=<percent-encoded BOLT11>`, which prefills the invoice in the provider UI.
+`STABLECOIN_SWAP_MIN_INVOICE_SATS` is a conservative static floor, and a floor top-up
+receives proportionally rounded-up bonus service time. LND invoice settlement is the
+only activation authority.
 Migration `0026` marks legacy stablecoin rows as Boltz payments but leaves their
 origin and asset unset because historical custom configuration is not recoverable;
 those rows therefore cannot generate a new external checkout URL.
-Migration `0027` adds API-order snapshots and encrypted token storage. Historical and
-already-issued manual payments default to API ordering disabled, so later credential
-configuration cannot change their checkout mode.
+Migration `0027` retains historical API-order snapshots and encrypted-token storage as
+inert compatibility columns. Deployed data prevents a lossy downgrade, but runtime no
+longer creates or reads orders.
 Migration `0028` separates the configured stablecoin surcharge from provider-minimum
 top-ups so credited days can be validated at settlement. Migration `0029` adds linked
 Relay upgrade and immutable service-price and discount snapshots.
-Migration `0030` persists the validated deposit amount, address, network, optional tag,
-and confirmation requirement returned when the order is created. The payment API
-returns those instructions and the existing order expiry directly, sets the external
-checkout URL to null, and never decrypts the provider bearer token for a browser.
+Migration `0030` retains historical deposit instruction columns as inert compatibility
+columns. Deployed data prevents a lossy downgrade, but runtime no longer returns those
+fields.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment

@@ -62,18 +62,15 @@ Stablecoin checkout is separately gated by `STABLECOIN_PAYMENTS_ENABLED` and als
 `stablecoin_swap` in `PAYMENT_ENABLED_METHODS`. New installs use
 `STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and
 `LIGHTNING_SWAP_WEB_URL=https://lightning-swap.com`; `boltz` remains available with
-`BOLTZ_WEB_URL`. Megalithic's guide recommends Lightning Swap. The manual fallback
-requires the customer to paste the displayed BOLT11 and select
-`LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL` (USDC on Solana). When both file-backed API
-credentials are configured, Blindport creates an idempotent provider order and returns
-the provider's exact deposit amount, asset, network, address, optional tag,
-confirmation requirement, and expiry. Prepared responses set
-`stablecoin_checkout_url` to `null`; the bearer order token is AES-GCM encrypted at
-rest and never returned to the browser.
+`BOLTZ_WEB_URL`. Megalithic's guide recommends Lightning Swap. Blindport opens a new
+tab at the snapshotted Lightning Swap origin with
+`/?invoice=<percent-encoded BOLT11>`, prefilled in the provider UI, before the customer
+selects `LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL` (USDC on Solana).
 `STABLECOIN_SWAP_MARKUP_BPS=1000` applies a 10 percent satoshi surcharge with round-up.
-The final amount is at least `STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`; API mode also
-applies `STABLECOIN_SWAP_MIN_MARGIN_BPS=2000` to the live pair minimum. Blindport relies
-only on LND settlement for activation and never trusts provider callbacks.
+The final amount is at least `STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`, a conservative
+static floor. Any minimum top-up earns proportional service time rounded up to a whole
+day. Blindport relies only on LND settlement for activation and never trusts provider
+callbacks.
 
 The optional Bitcoin/USD display cache reads the fixed mempool.space price endpoint in the
 background. It never changes invoices or settlement amounts, retains a last-good value for 30

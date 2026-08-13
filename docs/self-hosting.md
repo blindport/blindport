@@ -118,10 +118,6 @@ network policy are configured and tested.
    docker compose --env-file .env -f compose.yaml ps
    ```
 
-   Prepared Lightning Swap orders additionally require the provider credential files
-   and `-f compose.lightning-swap-api.yaml` on every Compose command. Leave that overlay
-   out for the manual stablecoin checkout.
-
 For split deployment, migrate and start `deploy/split/control` first, then start
 `deploy/split/relay`. Verify readiness and exercise one real path for every
 enabled product before opening sales.

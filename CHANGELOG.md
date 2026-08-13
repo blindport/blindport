@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Annual-only bidirectional routed Blindport IP, with durable assignment history,
   reviewed paid TCP/25 exceptions, and fail-closed nftables policy reconciliation.
-- Optional stablecoin checkout through Lightning Swap or Boltz, with manual fallback,
-  prepared API orders, per-payment provider snapshots, a conservative satoshi floor,
-  a dedicated kill switch, and LND-only settlement.
+- Optional stablecoin checkout through Lightning Swap or Boltz, with prefilled external
+  invoice links, per-payment provider snapshots, a conservative satoshi floor, a
+  dedicated kill switch, and LND-only settlement.
 - Approximate cached Bitcoin/USD price labels, bounded unpaid Relay name holds,
   and structured recovery when another payment method is already pending.
 - A reusable Blindport logo system with profile, favicon, app icon, and social
@@ -25,8 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus owner-edge routing for framed dedicated IP inventory.
 - Proportional bonus service time for Lightning Swap minimum top-ups, and
   prorated exact Relay to wildcard upgrades with DNS-gated atomic activation.
-- Direct Lightning Swap deposit instructions for prepared orders without exposing
-  provider bearer tokens in browser URLs.
 
 ### Changed
 
@@ -35,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker agent examples use an environment token and named identity volume.
 - TCP tunnels apply bounded backpressure instead of closing a stream when a slow
   public receiver fills the per-stream queue.
+- Lightning Swap checkout now uses a percent-encoded BOLT11 query parameter in a new
+  provider tab and no longer requires provider API credentials or prepared orders.
 
 ## [0.2.3] - 2026-08-04
 

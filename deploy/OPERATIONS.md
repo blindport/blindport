@@ -206,8 +206,7 @@ Node or Bun service runs in production. Each user should create a dedicated wall
 connection with a wallet-enforced budget and expiry that cover the selected renewal
 term plus fees.
 
-Optional stablecoin checkout can run manually without a provider secret. Apply migrations
-through `0030`,
+Optional stablecoin checkout uses the external provider UI. Apply migrations through `0030`,
 then roll out the new application code to every API and reconciler replica while
 keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.
 Before migrating an installation that previously enabled stablecoin checkout, let
@@ -222,40 +221,25 @@ After every old replica is drained, set
 checked-in default remains false. The default `STABLECOIN_SWAP_MARKUP_BPS=1000`
 adds 10 percent to the LND invoice and
 `STABLECOIN_SWAP_INVOICE_EXPIRY_SECONDS=1200` leaves time for the external swap
-within the 1,800-second reservation. Lightning Swap also uses a 5,000-sat hard floor.
-The configured surcharge remains a checkout cost. Any additional amount required by
-the hard or dynamic provider floor earns proportional service time rounded up to a
-whole day.
-When API ordering is enabled, the configured `USDCSOL` live minimum receives a 20
-percent safety margin. Disable the feature flag first during a
+within the 1,800-second reservation. `STABLECOIN_SWAP_MIN_INVOICE_SATS=5000` is a
+conservative static floor. The configured surcharge remains a checkout cost. Any
+additional amount required by that floor earns proportional service time rounded up to
+a whole day. Disable the feature flag first during a
 rollback. The flag blocks new checkout creation and removes the UI control;
 reconciliation still settles or expires invoices issued before disablement so
 customer payments and resource holds are not stranded. Do not deploy application code
 from before migration `0030` during this rollout. Migration `0026` cannot be removed
-while stablecoin payment rows remain, and migration `0027` cannot be removed while
-Lightning Swap API-mode payments remain. Migration `0028` cannot be removed while
-bonus-day payments remain. Migration `0029` cannot be removed while linked Relay
-upgrades or discounted payments remain. Migration `0030` cannot be removed while
-API-created orders or any persisted deposit instruction exists.
+while stablecoin payment rows remain. Migrations `0027` and `0030`, including their
+API-order and deposit columns, are inert historical compatibility: deployed data
+prevents a lossy downgrade, but runtime no longer creates or reads orders or returns
+deposit fields. Migration `0028` cannot be removed while bonus-day payments remain.
+Migration `0029` cannot be removed while linked Relay upgrades or discounted payments
+remain.
 
-Megalithic's guide recommends Lightning Swap. Without API credentials, Blindport opens
-its external origin and the customer pastes the displayed BOLT11 before choosing USDC
-on Solana. For a prepared order, install both credential files, mount them at
-`/run/secrets/lightning-swap-api-key` and `/run/secrets/lightning-swap-api-secret`, and
-set both `_FILE` variables. Also set
-`CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key`. Include
-`compose.lightning-swap-api.yaml` in every migration, pull, start, and status command
-while API ordering is configured. Provider orders
-use the invoice UUID for idempotency, and order bearer tokens are encrypted in the
-payment row. Never print either API credential or an order token. Blindport accepts no
-provider callback; only the LND payment hash settles service. A prepared payment
-response contains the persisted exact amount, asset, network, address, optional tag,
-confirmation requirement, and expiry, and its external checkout URL is null.
-
-```sh
-install -o 10001 -g 10001 -m 0400 /path/to/lightning-swap-api-key secrets/lightning-swap-api-key
-install -o 10001 -g 10001 -m 0400 /path/to/lightning-swap-api-secret secrets/lightning-swap-api-secret
-```
+Megalithic's guide recommends Lightning Swap. Blindport opens a new tab at the
+snapshotted provider origin with `/?invoice=<percent-encoded BOLT11>`, so the provider
+UI receives the LND invoice prefilled before the customer chooses USDC on Solana. Only
+the LND payment hash settles service; provider callbacks cannot activate it.
 
 Managed names have a 30-minute unpaid hold, customer-owned names have a one-hour
 DNS and payment hold, and one account may retain at most two unpaid Relay claims.
@@ -445,10 +429,6 @@ docker compose --env-file .env -f compose.yaml --profile tools run --rm migrate
 docker compose --env-file .env -f compose.yaml up -d
 docker compose --env-file .env -f compose.yaml ps
 ```
-
-Append `-f compose.lightning-swap-api.yaml` to each command above when prepared
-Lightning Swap ordering is configured. Omitting that overlay keeps the manual checkout
-available and does not require the provider credential files.
 
 ## Split control host
 

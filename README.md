@@ -76,15 +76,13 @@ opaque sessions; passkey authentication never reveals the bearer token. The prim
 payment path is direct Lightning through LND. Nostr Wallet Connect is optional
 wallet control over BOLT11 invoices. Operators may separately enable a stablecoin
 checkout. New installs use Lightning Swap, as recommended by Megalithic's guide:
-the default manual flow opens the external provider and requires the customer to
-paste the displayed surcharged LND invoice, then choose the configured stablecoin
-network. Operators may add file-backed Lightning Swap API credentials to create a
-prepared order whose exact amount, asset, network, address, optional tag,
-confirmation requirement, and expiry are shown directly in Blindport.
-Boltz remains an optional prefilled checkout provider. Blindport receives Lightning
-bitcoin and activates service only after LND reports settlement; provider order state
-is advisory and no callback can activate service. Legacy persisted Cashu payment rows
-remain readable, but Cashu runtime support has been removed.
+Blindport opens a new provider tab using the snapshotted origin and
+`/?invoice=<percent-encoded BOLT11>`, which prefills the LND invoice in the provider
+UI before the customer selects the configured stablecoin network. Boltz remains an
+optional prefilled checkout provider. Blindport receives Lightning bitcoin and
+activates service only after LND reports settlement; no provider callback can activate
+service. Legacy persisted Cashu payment rows remain readable, but Cashu runtime
+support has been removed.
 
 Blindport Port and Relay support fixed monthly (30 service days) and yearly (365
 service days) terms. New Blindport IP subscriptions use 365 service days only.
@@ -232,13 +230,11 @@ by all API replicas; see [`docs/operating.md`](docs/operating.md).
 
 Stablecoin checkout uses the same durable invoice and settlement path. Blindport
 snapshots the selected provider and checkout origin on each payment. Boltz receives
-a prefilled external URL. Lightning Swap defaults to USDC on Solana and a 5,000-sat
-invoice floor; API-enabled deployments also apply a 20 percent margin to the pair's
-live minimum and create an idempotent prepared provider order. Its bearer order token
-is encrypted at rest and never placed in a browser URL. Prepared payment API responses
-return the deposit instruction fields with `stablecoin_checkout_url` set to `null`.
-Without API credentials, the customer pastes the visible BOLT11 into the manual
-provider flow. Provider state is advisory and LND settlement remains authoritative.
+a prefilled external URL. Lightning Swap defaults to USDC on Solana and opens a new
+tab at the snapshotted origin with the percent-encoded BOLT11 in its `invoice` query
+parameter, prefilled for the provider UI. `STABLECOIN_SWAP_MIN_INVOICE_SATS` is a
+conservative static floor; any resulting minimum top-up earns proportional service
+time rounded up to a whole day. LND settlement remains authoritative.
 The hosted UI may show a cached approximate USD value from mempool.space for
 orientation; satoshi prices remain authoritative when that optional feed is stale
 or unavailable.

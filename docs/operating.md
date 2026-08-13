@@ -736,30 +736,23 @@ separate configuration rollout add `stablecoin_swap` to
 `STABLECOIN_SWAP_MARKUP_BPS=1000` charges a 10 percent satoshi markup, rounded
 up. New installs use `STABLECOIN_CHECKOUT_PROVIDER=lightning_swap` and must keep
 `LIGHTNING_SWAP_WEB_URL` on an HTTPS origin. Megalithic's guide recommends this
-provider. Manual fallback opens the provider without a BOLT11 in the URL, and the
-customer pastes the invoice before selecting `LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL`
-(USDC on Solana). The final invoice is the maximum of service price plus markup and
-`STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`. The configured markup remains a surcharge;
-any additional provider-minimum top-up earns proportional service time rounded up to
-a whole day. Set both file-backed API credentials, set
-`CREDENTIAL_ENCRYPTION_KEY_FILE=/run/secrets/credential-encryption-key`, and include
-`compose.lightning-swap-api.yaml` to enable prepared orders. API mode
-fetches the public pair minimum, adds `STABLECOIN_SWAP_MIN_MARGIN_BPS=2000`, and uses
-the larger result; feed failure falls back to the hard floor. The provider create call
-is idempotent, and the returned order token is encrypted using the credential key.
-The API and dashboard show the persisted exact amount, asset, network, address,
-optional tag, confirmation requirement, and expiry instead of exposing the bearer
-token in a provider URL. Users must send the exact displayed deposit in one
-transaction before expiry. Set
+provider. Blindport opens a new tab at the snapshotted provider origin with
+`/?invoice=<percent-encoded BOLT11>`, which prefills the invoice in the provider UI
+before the customer selects `LIGHTNING_SWAP_DEFAULT_ASSET=USDCSOL` (USDC on Solana).
+The final invoice is the maximum of service price plus markup and
+`STABLECOIN_SWAP_MIN_INVOICE_SATS=5000`, a conservative static floor. The configured
+markup remains a surcharge; any floor top-up earns proportional service time rounded
+up to a whole day. Set
 `STABLECOIN_CHECKOUT_PROVIDER=boltz` to retain the prefilled Boltz checkout; its
 `BOLTZ_WEB_URL` must also be an HTTPS origin and `STABLECOIN_SWAP_DEFAULT_ASSET`
 selects the initial USDC or USDT0 asset. Blindport consumes no provider callback, and
 LND settlement remains the only authority. For rollback, disable the kill switch first.
-Migration `0026` cannot be removed while stablecoin payment rows remain; migration
-`0027` cannot be removed while API-created provider orders remain; migration `0028`
-cannot be removed while bonus-day payments remain; and migration `0029` cannot be
-removed while linked Relay upgrades or discounted payments remain. Migration `0030`
-cannot be removed while API-created orders or any persisted deposit instruction exists.
+Migration `0026` cannot be removed while stablecoin payment rows remain. Migrations
+`0027` and `0030`, including their API-order and deposit columns, are inert historical
+compatibility because deployed data prevents a lossy downgrade; runtime no longer
+creates or reads orders or returns deposit fields. Migration `0028` cannot be removed
+while bonus-day payments remain, and migration `0029` cannot be removed while linked
+Relay upgrades or discounted payments remain.
 
 When `BTC_USD_PRICE_ENABLED=true`, each backend process requests
 `https://mempool.space/api/v1/prices` every five minutes. The cache accepts only
