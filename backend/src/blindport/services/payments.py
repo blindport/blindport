@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import math
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
@@ -25,10 +24,6 @@ from ..adapters.factory import (
     get_nwc_adapter,
 )
 from ..config import settings
-from ..core.credentials import (
-    CredentialCipher,
-    CredentialPurpose,
-)
 from ..core.models import (
     AgentOrder,
     BillingTerm,
@@ -45,11 +40,6 @@ from ..core.models import (
     User,
 )
 from . import subscriptions as subs
-from .lightning_swap import (
-    LightningSwapClient,
-    LightningSwapError,
-    fetch_minimum_payout_sats,
-)
 from .notifications import queue_notification
 from .nwc_credentials import decrypt_nwc_credential
 
@@ -253,27 +243,7 @@ def stablecoin_credited_days(
     return standard_period_days + bonus_days
 
 
-def _lightning_swap_api_enabled() -> bool:
-    return bool(settings.LIGHTNING_SWAP_API_KEY and settings.LIGHTNING_SWAP_API_SECRET)
-
-
-def _credential_cipher() -> CredentialCipher:
-    return CredentialCipher(settings.CREDENTIAL_ENCRYPTION_KEY)
-
-
-def has_prepared_stablecoin_deposit(payment: Payment) -> bool:
-    """Return whether a prepared order has complete customer deposit instructions."""
-    return (
-        payment.stablecoin_order_id is not None
-        and payment.stablecoin_deposit_amount is not None
-        and payment.stablecoin_deposit_address is not None
-        and payment.stablecoin_deposit_network is not None
-        and payment.stablecoin_required_confirmations is not None
-        and payment.stablecoin_order_expires_at is not None
-    )
-
-
-def stablecoin_checkout_url(payment: Payment, subscription: Subscription) -> str | None:
+def stablecoin_checkout_url(payment: Payment) -> str | None:
     """Build the external checkout URL from the durable payment snapshot."""
     if (
         payment.method != PaymentMethod.STABLECOIN_SWAP
@@ -282,9 +252,9 @@ def stablecoin_checkout_url(payment: Payment, subscription: Subscription) -> str
     ):
         return None
     if payment.stablecoin_provider == "lightning_swap":
-        if has_prepared_stablecoin_deposit(payment):
+        if not payment.invoice:
             return None
-        return payment.stablecoin_checkout_origin
+        return f"{payment.stablecoin_checkout_origin}/?{urlencode({'invoice': payment.invoice})}"
     if (
         payment.stablecoin_provider != "boltz"
         or not payment.invoice
@@ -315,24 +285,14 @@ def _stablecoin_checkout_snapshot() -> tuple[str, str, str | None]:
     )
 
 
-def _stablecoin_amounts(
-    base_amount_sats: int, provider: str, origin: str, asset: str | None
-) -> tuple[int, int, int]:
+def _stablecoin_amounts(base_amount_sats: int, provider: str) -> tuple[int, int, int]:
     stablecoin_surcharge_sats = stablecoin_markup_sats(base_amount_sats)
     amount_sats = base_amount_sats + stablecoin_surcharge_sats
-    if provider != "lightning_swap" or asset is None:
+    if provider != "lightning_swap":
         return amount_sats, amount_sats - base_amount_sats, stablecoin_surcharge_sats
-    dynamic_floor = 0
-    if _lightning_swap_api_enabled():
-        with suppress(LightningSwapError):
-            provider_floor = fetch_minimum_payout_sats(origin, asset)
-            dynamic_floor = (
-                provider_floor * (10_000 + settings.STABLECOIN_SWAP_MIN_MARGIN_BPS) + 9_999
-            ) // 10_000
     amount_sats = max(
         amount_sats,
         settings.STABLECOIN_SWAP_MIN_INVOICE_SATS,
-        dynamic_floor,
     )
     return amount_sats, amount_sats - base_amount_sats, stablecoin_surcharge_sats
 
@@ -492,69 +452,6 @@ def _release_failed_nwc_payment(
         session.add(subscription)
     session.commit()
     return _reload_payment(session, payment_id)
-
-
-def ensure_stablecoin_order(
-    session: Session, payment: Payment, subscription: Subscription
-) -> Payment:
-    """Idempotently create and bind a Lightning Swap order when API access is configured."""
-    if (
-        payment.method != PaymentMethod.STABLECOIN_SWAP
-        or payment.stablecoin_provider != "lightning_swap"
-        or not payment.stablecoin_api_order_enabled
-    ):
-        return payment
-    if payment.id is None:
-        raise ValueError("payment has no id")
-    payment = _lock_payment(session, payment.id)
-    if payment.stablecoin_order_id or payment.status != PaymentStatus.PENDING:
-        return payment
-    if not _lightning_swap_api_enabled():
-        session.rollback()
-        raise PaymentProviderError("Lightning Swap API credentials are unavailable")
-    if not payment.invoice or not payment.invoice_idempotency_key or not payment.stablecoin_asset:
-        raise RuntimeError("stablecoin payment is not ready for provider order creation")
-    try:
-        with LightningSwapClient(
-            payment.stablecoin_checkout_origin or settings.LIGHTNING_SWAP_WEB_URL,
-            settings.LIGHTNING_SWAP_API_KEY,
-            settings.LIGHTNING_SWAP_API_SECRET,
-            request_timeout_seconds=settings.LIGHTNING_SWAP_REQUEST_TIMEOUT_SECONDS,
-        ) as client:
-            order = client.create_order(
-                payment.invoice,
-                payment.amount_sats,
-                payment.stablecoin_asset,
-                payment.invoice_idempotency_key,
-            )
-    except LightningSwapError as error:
-        session.rollback()
-        raise PaymentProviderError("Lightning Swap order creation is unavailable") from error
-    if order.expires_at <= _utcnow() + timedelta(seconds=settings.PAYMENT_MIN_PAYABLE_SECONDS):
-        session.rollback()
-        raise PaymentProviderError("Lightning Swap returned an order that expires too soon")
-    encrypted = _credential_cipher().encrypt(
-        subscription.public_id,
-        order.public_token,
-        purpose=CredentialPurpose.LIGHTNING_SWAP_ORDER,
-    )
-    payment.stablecoin_order_id = order.order_id
-    payment.stablecoin_order_token_ciphertext = encrypted.ciphertext
-    payment.stablecoin_order_token_key_version = encrypted.key_version
-    payment.stablecoin_order_status = order.status
-    payment.stablecoin_deposit_amount = order.deposit_amount
-    payment.stablecoin_deposit_address = order.deposit_address
-    payment.stablecoin_deposit_network = order.network
-    payment.stablecoin_deposit_tag = order.deposit_tag
-    payment.stablecoin_required_confirmations = order.required_confirmations
-    payment.stablecoin_order_expires_at = order.expires_at
-    current_expiry = _aware(payment.expires_at)
-    payment.expires_at = (
-        min(current_expiry, order.expires_at) if current_expiry else order.expires_at
-    )
-    session.add(payment)
-    session.commit()
-    return _reload_payment(session, payment.id)
 
 
 def _verify_nwc_result(
@@ -955,8 +852,6 @@ def create_payment(
         amount_sats, markup_sats, stablecoin_surcharge_sats = _stablecoin_amounts(
             base_amount_sats,
             stablecoin_provider,
-            stablecoin_checkout_origin,
-            stablecoin_asset,
         )
         if stablecoin_provider == "lightning_swap" and markup_sats > stablecoin_surcharge_sats:
             period_days = stablecoin_credited_days(
@@ -980,11 +875,6 @@ def create_payment(
         stablecoin_provider=stablecoin_provider,
         stablecoin_checkout_origin=stablecoin_checkout_origin,
         stablecoin_asset=stablecoin_asset,
-        stablecoin_api_order_enabled=(
-            method == PaymentMethod.STABLECOIN_SWAP
-            and stablecoin_provider == "lightning_swap"
-            and _lightning_swap_api_enabled()
-        ),
         status=PaymentStatus.PENDING,
     )
     session.add(payment)
@@ -1005,8 +895,6 @@ def create_payment(
                 session, payment, subscription, eligibility_deadline, invoice_expiry
             )
             payment = ensure_lightning_invoice(session, payment)
-            if method == PaymentMethod.STABLECOIN_SWAP:
-                payment = ensure_stablecoin_order(session, payment, subscription)
             return payment
         elif method == PaymentMethod.NWC:
             user = session.get(User, subscription.user_id)
@@ -1278,9 +1166,4 @@ def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
     expires_at = _aware(payment.expires_at)
     if expires_at is not None and expires_at <= _utcnow():
         return _expire_payment(session, payment)
-    if payment.method == PaymentMethod.STABLECOIN_SWAP:
-        subscription = session.get(Subscription, payment.subscription_id)
-        if subscription is None:
-            raise RuntimeError("payment subscription disappeared")
-        payment = ensure_stablecoin_order(session, payment, subscription)
     return _reload_payment(session, payment.id)  # type: ignore[arg-type]

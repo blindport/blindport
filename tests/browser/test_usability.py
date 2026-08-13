@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -1167,9 +1168,14 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         payment = payment_response.json()
         assert payment["stablecoin_provider"] == "lightning_swap"
         assert payment["stablecoin_asset"] == "USDCSOL"
-        assert payment["stablecoin_checkout_prefilled"] is False
-        assert payment["stablecoin_checkout_url"] == "https://lightning-swap.example"
-        assert payment["invoice"] not in payment["stablecoin_checkout_url"]
+        checkout = urlsplit(payment["stablecoin_checkout_url"])
+        assert (checkout.scheme, checkout.netloc, checkout.path) == (
+            "https",
+            "lightning-swap.example",
+            "/",
+        )
+        assert parse_qs(checkout.query) == {"invoice": [payment["invoice"]]}
+        assert payment["invoice"] not in checkout.path
         assert payment["base_amount_sats"] == 75000
         assert payment["markup_sats"] == 7500
         assert payment["stablecoin_surcharge_sats"] == 7500
@@ -1184,7 +1190,7 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         assert page.locator("#payUri").text_content() == "Continue with Lightning Swap"
         assert (
             page.locator("#payUri").get_attribute("href")
-            == "https://lightning-swap.example"
+            == payment["stablecoin_checkout_url"]
         )
         assert page.locator("#payUri").get_attribute("target") == "_blank"
         assert (
@@ -1195,11 +1201,12 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
             page.locator("#payUri").click()
         popup = popup_info.value
         popup.wait_for_url("https://lightning-swap.example/**")
-        assert popup.url == "https://lightning-swap.example/"
-        assert payment["invoice"] not in popup.url
+        popup_checkout = urlsplit(popup.url)
+        assert parse_qs(popup_checkout.query) == {"invoice": [payment["invoice"]]}
+        assert payment["invoice"] not in popup_checkout.path
         assert page.locator("#stablecoinNotice").is_visible()
         assert page.locator("#stablecoinInstructions").text_content() == (
-            "Paste this BOLT11 invoice into Lightning Swap, then choose USDC on Solana."
+            "This BOLT11 invoice is prefilled in Lightning Swap. Choose USDC on Solana."
         )
         assert page.locator("#stablecoinNotice").text_content() == (
             "Lightning Swap is an external provider. Send one transaction using the exact asset, "
@@ -1231,7 +1238,7 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         context.close()
 
 
-def test_dashboard_prepared_stablecoin_checkout_renders_deposit_instructions(
+def test_dashboard_historical_prepared_columns_use_manual_invoice_checkout(
     browser: Browser,
     browser_server: BrowserServer,
     playwright_runtime: Playwright,
@@ -1287,31 +1294,14 @@ def test_dashboard_prepared_stablecoin_checkout_renders_deposit_instructions(
     page = context.new_page()
     try:
         page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
-        assert page.locator("#stablecoinDepositDetails").is_visible()
-        assert page.locator("#stablecoinDepositAmount").text_content() == "5.2500"
-        assert (
-            page.locator("#stablecoinDepositAssetNetwork").text_content()
-            == "USDC on Solana (SOL)"
-        )
-        assert (
-            page.locator("#stablecoinDepositAddress").text_content()
-            == "prepared-deposit-address"
-        )
-        assert page.locator("#stablecoinDepositTag").text_content() == "memo-123"
-        assert page.locator("#stablecoinRequiredConfirmations").text_content() == "1"
-        assert page.locator("#payUri").is_hidden()
-        assert page.locator("#payInvoiceDetails").is_hidden()
-        assert page.locator("#copyInvoiceBtn").is_hidden()
-        page.locator("#copyDepositAmountBtn").click()
-        assert page.evaluate("navigator.clipboard.readText()") == "5.2500"
-        page.locator("#copyDepositAddressBtn").click()
-        assert (
-            page.evaluate("navigator.clipboard.readText()")
-            == "prepared-deposit-address"
-        )
-        page.locator("#copyDepositTagBtn").click()
-        assert page.evaluate("navigator.clipboard.readText()") == "memo-123"
-        assert "PREPAREDORDER" not in page.content()
+        pay_uri = page.locator("#payUri")
+        checkout = urlsplit(pay_uri.get_attribute("href") or "")
+        assert parse_qs(checkout.query) == {"invoice": [payment["invoice"]]}
+        assert pay_uri.get_attribute("target") == "_blank"
+        assert pay_uri.get_attribute("rel") == "noopener noreferrer external"
+        assert page.locator("#payInvoiceDetails").is_visible()
+        assert page.locator("#copyInvoiceBtn").is_visible()
+        assert "prepared-deposit-address" not in page.content()
         _assert_layout(page)
     finally:
         context.close()

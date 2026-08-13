@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -265,7 +265,7 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     )
 
 
-def test_lightning_swap_checkout_snapshots_origin_without_invoice_leakage(
+def test_lightning_swap_checkout_prefills_encoded_invoice_and_snapshots_origin(
     app_client, monkeypatch
 ) -> None:
     from blindport.services import payments
@@ -289,20 +289,27 @@ def test_lightning_swap_checkout_snapshots_origin_without_invoice_leakage(
 
     assert created["stablecoin_provider"] == "lightning_swap"
     assert created["stablecoin_asset"] == "USDCSOL"
-    assert created["stablecoin_checkout_prefilled"] is False
     assert created["bonus_days"] == 0
     assert created["period_days"] == created["standard_period_days"] == 365
     assert created["markup_sats"] == created["stablecoin_surcharge_sats"]
     assert created["stablecoin_minimum_topup_sats"] == 0
-    assert created["stablecoin_checkout_url"] == "https://lightning-swap.example"
-    assert created["invoice"] not in created["stablecoin_checkout_url"]
+    assert created["stablecoin_checkout_url"] != (
+        f"https://lightning-swap.example/{created['invoice']}"
+    )
     checkout = urlsplit(created["stablecoin_checkout_url"])
-    assert (checkout.path, checkout.query, checkout.fragment) == ("", "", "")
+    assert (checkout.scheme, checkout.netloc, checkout.path, checkout.fragment) == (
+        "https",
+        "lightning-swap.example",
+        "/",
+        "",
+    )
+    assert parse_qs(checkout.query) == {"invoice": [created["invoice"]]}
+    assert created["invoice"] not in checkout.path
 
     monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_WEB_URL", "https://changed.example")
     restored = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token)).json()
     assert restored["stablecoin_provider"] == "lightning_swap"
-    assert restored["stablecoin_checkout_url"] == "https://lightning-swap.example"
+    assert restored["stablecoin_checkout_url"] == created["stablecoin_checkout_url"]
     conflict = client.post(
         "/api/v1/payments",
         json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
@@ -311,7 +318,29 @@ def test_lightning_swap_checkout_snapshots_origin_without_invoice_leakage(
     assert conflict.status_code == 200
     assert conflict.json()["id"] == created["id"]
     assert conflict.json()["stablecoin_provider"] == "lightning_swap"
-    assert conflict.json()["stablecoin_checkout_url"] == "https://lightning-swap.example"
+    assert conflict.json()["stablecoin_checkout_url"] == created["stablecoin_checkout_url"]
+
+
+def test_lightning_swap_checkout_percent_encodes_reserved_invoice_characters() -> None:
+    from blindport.core.models import Payment, PaymentMethod
+    from blindport.services.payments import stablecoin_checkout_url
+
+    invoice = "lnbc1test+reserved?value=one&next=two"
+    payment = Payment(
+        subscription_id=1,
+        method=PaymentMethod.STABLECOIN_SWAP,
+        amount_sats=5000,
+        stablecoin_provider="lightning_swap",
+        stablecoin_checkout_origin="https://lightning-swap.example",
+        invoice=invoice,
+    )
+
+    checkout_url = stablecoin_checkout_url(payment)
+
+    assert checkout_url is not None
+    checkout = urlsplit(checkout_url)
+    assert parse_qs(checkout.query) == {"invoice": [invoice]}
+    assert "+reserved?value=one&next=two" not in checkout.query
 
 
 def test_lightning_swap_manual_checkout_uses_conservative_local_floor(
@@ -322,8 +351,6 @@ def test_lightning_swap_manual_checkout_uses_conservative_local_floor(
     client, _ = app_client
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -349,7 +376,6 @@ def test_lightning_swap_manual_checkout_uses_conservative_local_floor(
         91,
     )
     assert created["stablecoin_asset"] == "USDCSOL"
-    assert created["stablecoin_checkout_prefilled"] is False
 
 
 def test_lightning_swap_floor_topup_grants_bonus_days_and_settles_idempotently(
@@ -362,8 +388,6 @@ def test_lightning_swap_floor_topup_grants_bonus_days_and_settles_idempotently(
     client, factory = app_client
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
     token = client.post("/api/v1/signup").json()["token"]
@@ -412,8 +436,6 @@ def test_legacy_stablecoin_snapshot_with_zero_surcharge_settles_standard_period(
     client, factory = app_client
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -446,8 +468,6 @@ def test_tampered_lightning_swap_bonus_snapshot_cannot_settle(app_client, monkey
     client, factory = app_client
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
     token = client.post("/api/v1/signup").json()["token"]
@@ -488,173 +508,53 @@ def test_stablecoin_credit_rounds_up_for_annual_and_boundary_amounts(app_client)
     assert stablecoin_credited_days(1651, 1500, 150, 30) == 31
 
 
-def test_lightning_swap_api_order_is_prefilled_encrypted_and_idempotent(
+def test_historical_prepared_lightning_swap_columns_do_not_suppress_manual_checkout(
     app_client, monkeypatch
 ) -> None:
-    from blindport.core.credentials import CredentialCipher, CredentialPurpose, EncryptedCredential
-    from blindport.core.models import Payment, Subscription
     from blindport.db import engine
     from blindport.services import payments
-    from blindport.services.lightning_swap import LightningSwapOrder
 
     client, _ = app_client
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_WEB_URL", "https://swap.example")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "api-key")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "api-secret")
-    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
-    monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_MARGIN_BPS", 2000)
-    monkeypatch.setattr(payments, "fetch_minimum_payout_sats", lambda origin, asset: 6000)
-    calls: list[tuple[str, int, str, str]] = []
-
-    class FakeSwapClient:
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def create_order(self, invoice, amount_sats, asset, idempotency_key):
-            calls.append((invoice, amount_sats, asset, idempotency_key))
-            return LightningSwapOrder(
-                public_token="provider-order-token",
-                order_id="ABC123",
-                status="NEW",
-                asset=asset,
-                network="SOL",
-                deposit_amount="5.2500",
-                deposit_address="deposit-address",
-                deposit_tag=None,
-                required_confirmations=1,
-                expires_at=datetime.now(UTC) + timedelta(minutes=10),
-            )
-
-    monkeypatch.setattr(payments, "LightningSwapClient", FakeSwapClient)
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
         "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
     ).json()
-
     created = client.post(
         "/api/v1/payments",
         json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
         headers=_auth(token),
     ).json()
-    restored = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
-        headers=_auth(token),
-    ).json()
 
-    assert created["base_amount_sats"] == 1500
-    assert created["amount_sats"] == 7200
-    assert created["markup_sats"] == 5700
-    assert created["stablecoin_checkout_prefilled"] is True
-    assert created["stablecoin_checkout_url"] is None
-    assert created["stablecoin_deposit_amount"] == "5.2500"
-    assert created["stablecoin_deposit_address"] == "deposit-address"
-    assert created["stablecoin_deposit_network"] == "SOL"
-    assert created["stablecoin_deposit_tag"] is None
-    assert created["stablecoin_required_confirmations"] == 1
-    assert created["stablecoin_order_expires_at"] is not None
-    assert "provider-order-token" not in str(created)
-    assert restored["id"] == created["id"]
-    assert len(calls) == 1
-    assert calls[0][1:3] == (7200, "USDCSOL")
-
-    with Session(engine) as session:
-        payment = session.get(Payment, created["id"])
-        stored_subscription = session.exec(
-            select(Subscription).where(Subscription.public_id == UUID(subscription["id"]))
-        ).one()
-        assert payment is not None
-        assert payment.stablecoin_api_order_enabled is True
-        assert payment.stablecoin_order_token_ciphertext != "provider-order-token"
-        assert payment.stablecoin_order_token_key_version
-        assert (
-            payment.stablecoin_deposit_amount,
-            payment.stablecoin_deposit_address,
-            payment.stablecoin_deposit_network,
-            payment.stablecoin_deposit_tag,
-            payment.stablecoin_required_confirmations,
-        ) == ("5.2500", "deposit-address", "SOL", None, 1)
-        decrypted = CredentialCipher(payments.settings.CREDENTIAL_ENCRYPTION_KEY).decrypt(
-            stored_subscription.public_id,
-            EncryptedCredential(
-                payment.stablecoin_order_token_ciphertext,
-                payment.stablecoin_order_token_key_version,
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE payment SET stablecoin_api_order_enabled = true, "
+                "stablecoin_order_id = :order_id, stablecoin_deposit_amount = :amount, "
+                "stablecoin_deposit_address = :address, stablecoin_deposit_network = :network, "
+                "stablecoin_required_confirmations = :confirmations, "
+                "stablecoin_order_expires_at = :expires_at WHERE id = :payment_id"
             ),
-            purpose=CredentialPurpose.LIGHTNING_SWAP_ORDER,
+            {
+                "order_id": "PREPAREDORDER12345678901234567890",
+                "amount": "5.2500",
+                "address": "prepared-deposit-address",
+                "network": "SOL",
+                "confirmations": 1,
+                "expires_at": datetime.now(UTC) + timedelta(minutes=10),
+                "payment_id": created["id"],
+            },
         )
-        assert decrypted == "provider-order-token"
-
-
-def test_lightning_swap_checkout_ignores_corrupt_order_token(app_client, monkeypatch) -> None:
-    from blindport.core.models import Payment
-    from blindport.db import engine
-    from blindport.services import payments
-    from blindport.services.lightning_swap import LightningSwapOrder
-
-    client, _ = app_client
-    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
-    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "api-key")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "api-secret")
-    monkeypatch.setattr(payments, "fetch_minimum_payout_sats", lambda origin, asset: 5000)
-
-    class FakeSwapClient:
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args) -> None:
-            del args
-
-        def create_order(self, invoice, amount_sats, asset, idempotency_key):
-            del invoice, amount_sats, idempotency_key
-            return LightningSwapOrder(
-                public_token="provider-order-token",
-                order_id="ABC123",
-                status="NEW",
-                asset=asset,
-                network="SOL",
-                deposit_amount="5.2500",
-                deposit_address="deposit-address",
-                deposit_tag=None,
-                required_confirmations=1,
-                expires_at=datetime.now(UTC) + timedelta(minutes=10),
-            )
-
-    monkeypatch.setattr(payments, "LightningSwapClient", FakeSwapClient)
-    token = client.post("/api/v1/signup").json()["token"]
-    subscription = client.post(
-        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
-    ).json()
-    created = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
-        headers=_auth(token),
-    ).json()
-
-    with Session(engine) as session:
-        payment = session.get(Payment, created["id"])
-        assert payment is not None
-        payment.stablecoin_order_token_key_version = "0" * 32
-        session.add(payment)
-        session.commit()
 
     response = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token))
 
     assert response.status_code == 200
-    assert response.json()["stablecoin_checkout_url"] is None
-    assert response.json()["stablecoin_deposit_address"] == "deposit-address"
-    assert "provider-order-token" not in response.text
+    restored = response.json()
+    assert parse_qs(urlsplit(restored["stablecoin_checkout_url"]).query) == {
+        "invoice": [created["invoice"]]
+    }
+    assert "stablecoin_deposit_address" not in restored
 
 
 def test_payment_responses_are_private_and_conflicts_preserve_header(app_client) -> None:
@@ -681,123 +581,6 @@ def test_payment_responses_are_private_and_conflicts_preserve_header(app_client)
     assert listed.headers["Cache-Control"] == "no-store"
     assert conflict.status_code == 409
     assert conflict.headers["Cache-Control"] == "no-store"
-
-
-def test_lightning_swap_api_mode_settles_without_provider_credentials(
-    app_client, monkeypatch
-) -> None:
-    from blindport.core.models import Payment
-    from blindport.db import engine
-    from blindport.services import payments
-
-    client, factory = app_client
-    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
-    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
-    token = client.post("/api/v1/signup").json()["token"]
-    subscription = client.post(
-        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
-    ).json()
-    created = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
-        headers=_auth(token),
-    ).json()
-
-    with Session(engine) as session:
-        payment = session.get(Payment, created["id"])
-        assert payment is not None
-        payment.stablecoin_api_order_enabled = True
-        session.add(payment)
-        session.commit()
-
-    factory.get_lightning_adapter().mark_paid(created["payment_hash"])
-    settled = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token))
-
-    assert settled.status_code == 200
-    assert settled.json()["status"] == "paid"
-
-
-def test_expired_lightning_swap_api_mode_does_not_create_provider_order(
-    app_client, monkeypatch
-) -> None:
-    from blindport.core.models import Payment
-    from blindport.db import engine
-    from blindport.services import payments
-
-    client, _ = app_client
-    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
-    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
-    token = client.post("/api/v1/signup").json()["token"]
-    subscription = client.post(
-        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
-    ).json()
-    created = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
-        headers=_auth(token),
-    ).json()
-
-    with Session(engine) as session:
-        payment = session.get(Payment, created["id"])
-        assert payment is not None
-        payment.stablecoin_api_order_enabled = True
-        payment.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-        session.add(payment)
-        session.commit()
-
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "api-key")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "api-secret")
-
-    class UnexpectedSwapClient:
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-            raise AssertionError("expired payment must not create a provider order")
-
-    monkeypatch.setattr(payments, "LightningSwapClient", UnexpectedSwapClient)
-    expired = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token))
-
-    assert expired.status_code == 200
-    assert expired.json()["status"] == "expired"
-
-
-def test_lightning_swap_manual_payment_does_not_change_mode_when_api_is_enabled(
-    app_client, monkeypatch
-) -> None:
-    from blindport.services import payments
-
-    client, _ = app_client
-    monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
-    monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_WEB_URL", "https://swap.example")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
-    token = client.post("/api/v1/signup").json()["token"]
-    subscription = client.post(
-        "/api/v1/subscriptions", json={"product": "port"}, headers=_auth(token)
-    ).json()
-    created = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": subscription["id"], "method": "stablecoin_swap"},
-        headers=_auth(token),
-    ).json()
-    assert created["stablecoin_checkout_prefilled"] is False
-
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "api-key")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "api-secret")
-
-    class UnexpectedSwapClient:
-        def __init__(self, *args, **kwargs) -> None:
-            del args, kwargs
-            raise AssertionError("manual payment must not create a provider order")
-
-    monkeypatch.setattr(payments, "LightningSwapClient", UnexpectedSwapClient)
-    restored = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token)).json()
-    assert restored["stablecoin_checkout_prefilled"] is False
-    assert restored["stablecoin_checkout_url"] == "https://swap.example"
 
 
 def test_stablecoin_markup_rounds_up_without_floating_point(app_client, monkeypatch) -> None:

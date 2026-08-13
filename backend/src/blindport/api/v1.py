@@ -925,7 +925,7 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
     if p.method == PaymentMethod.LIGHTNING and p.invoice:
         lightning_uri = f"lightning:{p.invoice}"
         qr_svg = qr.render_svg(p.invoice.upper())
-    stablecoin_checkout_url = payments_svc.stablecoin_checkout_url(p, subscription)
+    stablecoin_checkout_url = payments_svc.stablecoin_checkout_url(p)
     standard_period_days = subs_svc.billing_period_days(p.billing_term)
     stablecoin_minimum_topup_sats = 0
     if p.method == PaymentMethod.STABLECOIN_SWAP and not (
@@ -957,13 +957,6 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         stablecoin_provider=p.stablecoin_provider,
         stablecoin_checkout_url=stablecoin_checkout_url,
         stablecoin_asset=p.stablecoin_asset,
-        stablecoin_checkout_prefilled=payments_svc.has_prepared_stablecoin_deposit(p),
-        stablecoin_deposit_amount=p.stablecoin_deposit_amount,
-        stablecoin_deposit_address=p.stablecoin_deposit_address,
-        stablecoin_deposit_network=p.stablecoin_deposit_network,
-        stablecoin_deposit_tag=p.stablecoin_deposit_tag,
-        stablecoin_required_confirmations=p.stablecoin_required_confirmations,
-        stablecoin_order_expires_at=p.stablecoin_order_expires_at,
         nwc_state=p.nwc_state,
         nwc_attempt_count=p.nwc_attempt_count,
         nwc_error_code=p.nwc_error_code,

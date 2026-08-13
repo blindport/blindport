@@ -457,18 +457,7 @@ function preparePaymentPanel(method) {
   document.getElementById("copyInvoiceBtn").hidden = stablecoin;
   document.getElementById("stablecoinNotice").hidden = !stablecoin;
   document.getElementById("stablecoinInstructions").hidden = !stablecoin;
-  document.getElementById("stablecoinDepositDetails").hidden = true;
-  document.getElementById("stablecoinDepositTagRow").hidden = true;
-  document.getElementById("stablecoinDepositAmount").textContent = "";
-  document.getElementById("stablecoinDepositAssetNetwork").textContent = "";
-  document.getElementById("stablecoinDepositAddress").textContent = "";
-  document.getElementById("stablecoinDepositTag").textContent = "";
-  document.getElementById("stablecoinRequiredConfirmations").textContent = "";
-  document.getElementById("stablecoinOrderExpiresAt").textContent = "";
   document.getElementById("copyInvoiceBtn").textContent = "Copy invoice";
-  document.getElementById("copyDepositAmountBtn").textContent = "Copy";
-  document.getElementById("copyDepositAddressBtn").textContent = "Copy";
-  document.getElementById("copyDepositTagBtn").textContent = "Copy";
   document.getElementById("paymentSatsAmount").hidden = false;
   document.getElementById("payBreakdown").hidden = true;
   document.getElementById("payBolt11").textContent = "";
@@ -526,55 +515,23 @@ function renderManualPayment(payment, status) {
     const notice = document.getElementById("stablecoinNotice");
     const instructions = document.getElementById("stablecoinInstructions");
     if (lightningSwap) {
-      const prepared = payment.stablecoin_checkout_prefilled;
       const assetName = payment.stablecoin_asset === "USDCSOL"
         ? "USDC on Solana"
         : payment.stablecoin_asset;
-      if (prepared) {
-        const depositAmount = payment.stablecoin_deposit_amount;
-        const depositAddress = payment.stablecoin_deposit_address;
-        const depositNetwork = payment.stablecoin_deposit_network;
-        const confirmations = payment.stablecoin_required_confirmations;
-        if (!depositAmount || !depositAddress || !depositNetwork || confirmations === null) {
-          throw new Error("Prepared stablecoin deposit instructions are unavailable");
-        }
-        document.getElementById("paymentSatsAmount").hidden = true;
-        payUri.hidden = true;
-        invoiceDetails.hidden = true;
-        document.getElementById("copyInvoiceBtn").hidden = true;
-        document.getElementById("stablecoinDepositDetails").hidden = false;
-        document.getElementById("stablecoinDepositAmount").textContent = depositAmount;
-        document.getElementById("stablecoinDepositAssetNetwork").textContent =
-          `${assetName} (${depositNetwork})`;
-        document.getElementById("stablecoinDepositAddress").textContent = depositAddress;
-        const tagRow = document.getElementById("stablecoinDepositTagRow");
-        tagRow.hidden = !payment.stablecoin_deposit_tag;
-        document.getElementById("stablecoinDepositTag").textContent =
-          payment.stablecoin_deposit_tag || "";
-        document.getElementById("stablecoinRequiredConfirmations").textContent = String(confirmations);
-        document.getElementById("stablecoinOrderExpiresAt").textContent =
-          payment.stablecoin_order_expires_at
-            ? new Date(payment.stablecoin_order_expires_at).toLocaleString()
-            : "Unavailable";
-        instructions.textContent = "Send the exact deposit details shown below.";
-      } else {
-        if (!payment.stablecoin_checkout_url) {
-          throw new Error("Stablecoin checkout is unavailable for this payment");
-        }
-        payUri.href = payment.stablecoin_checkout_url;
-        payUri.target = "_blank";
-        payUri.rel = "noopener noreferrer external";
-        payUri.textContent = "Continue with Lightning Swap";
-        instructions.textContent = `Paste this BOLT11 invoice into Lightning Swap, then choose ${assetName}.`;
+      if (!payment.stablecoin_checkout_url) {
+        throw new Error("Stablecoin checkout is unavailable for this payment");
       }
+      payUri.href = payment.stablecoin_checkout_url;
+      payUri.target = "_blank";
+      payUri.rel = "noopener noreferrer external";
+      payUri.textContent = "Continue with Lightning Swap";
+      instructions.textContent = `This BOLT11 invoice is prefilled in Lightning Swap. Choose ${assetName}.`;
       notice.textContent =
         "Lightning Swap is an external provider. Send one transaction using the exact asset, network, and amount shown there.";
       const servicePeriod = payment.bonus_days > 0
         ? `${payment.period_days} service days, including ${payment.bonus_days} bonus days`
         : `${payment.period_days} service days`;
-      status.textContent = prepared
-        ? `Prepared ${assetName} order. Waiting for payment (${servicePeriod}).`
-        : `Waiting for payment through Lightning Swap (${servicePeriod}).`;
+      status.textContent = `Waiting for payment through Lightning Swap (${servicePeriod}).`;
     } else {
       if (!payment.stablecoin_checkout_url) {
         throw new Error("Stablecoin checkout is unavailable for this payment");
@@ -662,23 +619,6 @@ document.getElementById("copyInvoiceBtn").addEventListener("click", async (event
     button.textContent = "Copy invoice";
   }, 2500);
 });
-
-function copyDepositDetail(buttonId, valueId) {
-  document.getElementById(buttonId).addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const value = document.getElementById(valueId).textContent;
-    if (!value) return;
-    const copied = await accounts.copyText(value);
-    button.textContent = copied ? "Copied" : "Copy failed";
-    window.setTimeout(() => {
-      button.textContent = "Copy";
-    }, 2500);
-  });
-}
-
-copyDepositDetail("copyDepositAmountBtn", "stablecoinDepositAmount");
-copyDepositDetail("copyDepositAddressBtn", "stablecoinDepositAddress");
-copyDepositDetail("copyDepositTagBtn", "stablecoinDepositTag");
 
 async function pollPayment(payment, status) {
   const expiresAt = Date.parse(payment.expires_at);

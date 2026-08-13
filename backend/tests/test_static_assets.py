@@ -142,9 +142,6 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert 'current.status === "failed"' in dashboard
     assert 'method === "stablecoin_swap"' in dashboard
     assert "payment.stablecoin_checkout_url" in dashboard
-    assert "payment.stablecoin_deposit_amount" in dashboard
-    assert "stablecoinDepositDetails" in dashboard
-    assert 'copyDepositDetail("copyDepositAmountBtn", "stablecoinDepositAmount")' in dashboard
     assert "error.payload?.existing_payment" in dashboard
     assert "Continue with the existing checkout" in dashboard
     assert 'window.open("about:blank", "_blank")' not in dashboard
@@ -263,9 +260,6 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
     assert 'id="stablecoinNotice"' in dashboard
     assert 'id="stablecoinInstructions"' in dashboard
-    assert 'id="stablecoinDepositDetails"' in dashboard
-    assert 'id="copyDepositAddressBtn"' in dashboard
-    assert 'id="copyDepositTagBtn"' in dashboard
     assert 'id="payInvoiceDetails"' in dashboard
     assert 'class="stablecoinPayBtn button-secondary"' in dashboard
     assert "install_script_url_shell" in dashboard
@@ -299,13 +293,7 @@ def test_templates_have_accessible_external_only_structure() -> None:
 
     dashboard_script = _asset("static/dashboard.js")
     assert 'payment.stablecoin_provider === "lightning_swap"' in dashboard_script
-    assert "payUri.hidden = true;" in dashboard_script
-    assert 'document.getElementById("stablecoinDepositDetails").hidden = false;' in dashboard_script
-    assert (
-        'copyDepositDetail("copyDepositAddressBtn", "stablecoinDepositAddress");'
-        in dashboard_script
-    )
-    assert "Paste this BOLT11 invoice into Lightning Swap" in dashboard_script
+    assert "This BOLT11 invoice is prefilled in Lightning Swap" in dashboard_script
     assert "Continue with Boltz to review the prefilled checkout." in dashboard_script
 
     login = templates[5]

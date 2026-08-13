@@ -434,19 +434,12 @@ class PaymentResponse(BaseModel):
     stablecoin_provider: str | None = None
     stablecoin_checkout_url: str | None = None
     stablecoin_asset: str | None = None
-    stablecoin_checkout_prefilled: bool = False
-    stablecoin_deposit_amount: str | None = None
-    stablecoin_deposit_address: str | None = None
-    stablecoin_deposit_network: str | None = None
-    stablecoin_deposit_tag: str | None = None
-    stablecoin_required_confirmations: int | None = None
-    stablecoin_order_expires_at: datetime | None = None
     nwc_state: str | None = None
     nwc_attempt_count: int = 0
     nwc_error_code: str | None = None
     expires_at: datetime | None = None
 
-    @field_validator("expires_at", "stablecoin_order_expires_at")
+    @field_validator("expires_at")
     @classmethod
     def normalize_expiry_timezone(cls, value: datetime | None) -> datetime | None:
         if value is not None and value.tzinfo is None:

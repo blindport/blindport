@@ -499,6 +499,8 @@ class Payment(SQLModel, table=True):
     stablecoin_provider: str | None = Field(default=None, max_length=32)
     stablecoin_checkout_origin: str | None = Field(default=None, max_length=2048)
     stablecoin_asset: str | None = Field(default=None, max_length=64)
+    # Historical Lightning Swap prepared-order columns remain mapped so deployed
+    # database schema metadata stays compatible. Runtime code never reads or writes them.
     stablecoin_api_order_enabled: bool = Field(
         default=False, sa_column_kwargs={"server_default": text("false")}
     )

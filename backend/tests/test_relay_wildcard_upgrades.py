@@ -526,8 +526,6 @@ def test_discounted_stablecoin_upgrade_floor_uses_full_wildcard_price(
     client, factory = app_client
     monkeypatch.setattr(payments.settings, "STABLECOIN_PAYMENTS_ENABLED", True)
     monkeypatch.setattr(payments.settings, "STABLECOIN_CHECKOUT_PROVIDER", "lightning_swap")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_KEY", "")
-    monkeypatch.setattr(payments.settings, "LIGHTNING_SWAP_API_SECRET", "")
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MARKUP_BPS", 1000)
     monkeypatch.setattr(payments.settings, "STABLECOIN_SWAP_MIN_INVOICE_SATS", 5000)
     token = client.post("/api/v1/signup").json()["token"]

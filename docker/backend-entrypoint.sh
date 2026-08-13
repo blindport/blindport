@@ -21,7 +21,4 @@ load_secret ADMIN_TOKEN
 load_secret LND_INVOICE_HMAC_KEY
 load_secret CREDENTIAL_ENCRYPTION_KEY
 load_secret SMTP_PASSWORD
-load_secret LIGHTNING_SWAP_API_KEY
-load_secret LIGHTNING_SWAP_API_SECRET
-
 exec "$@"
