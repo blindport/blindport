@@ -486,8 +486,8 @@ func TestBuildV2PlansBindsExactProviderEdgesAndOverride(t *testing.T) {
 		testV2Edge(now, "edge-b", "secondary.example:5443", provisioningV2Claim{Kind: protocol.ClaimPort, IP: "203.0.113.21", Port: 10000, Transport: protocol.TransportTCP}, testSubscriptionID1, instance, 7),
 	}
 	config := testV2Config(now, testSubscriptionID1, instance, 7, edges)
-	plans, err := buildV2MappingPlans([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:80"}}, &config, "secondary.example:5443")
-	if err != nil || len(plans) != 1 || plans[0].EdgeID != "edge-b" || plans[0].Claim.IP != "203.0.113.21" || plans[0].Entitlement != edges[1].Entitlement {
+	plans, err := buildV2MappingPlans([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:80", ProxyProtocol: "v2"}}, &config, "secondary.example:5443")
+	if err != nil || len(plans) != 1 || plans[0].EdgeID != "edge-b" || plans[0].Claim.IP != "203.0.113.21" || plans[0].Entitlement != edges[1].Entitlement || plans[0].ProxyProtocol != "v2" {
 		t.Fatalf("plans = %+v, %v", plans, err)
 	}
 	if _, err := buildV2MappingPlans([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:80"}}, &config, "other.example:5443"); err == nil {

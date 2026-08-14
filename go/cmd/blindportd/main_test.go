@@ -715,6 +715,33 @@ func TestSelectTCPUpstreamValidatesRelayDestination(t *testing.T) {
 	}
 }
 
+func TestSelectTCPUpstreamValidatesWildcardRelayDestination(t *testing.T) {
+	wildcard := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	deeper := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "api.public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	for _, test := range []struct {
+		name        string
+		claim       *protocol.Claim
+		destination string
+		wantErr     bool
+	}{
+		{"wildcard base", wildcard, "domain:public.example:443", false},
+		{"wildcard descendant", wildcard, "domain:a.public.example:443", false},
+		{"deeper wildcard descendant", deeper, "domain:v1.api.public.example:80", false},
+		{"boundary confusion", wildcard, "domain:badpublic.example:443", true},
+		{"unrelated", wildcard, "domain:other.example:443", true},
+		{"uppercase", wildcard, "domain:A.public.example:443", true},
+		{"invalid port", wildcard, "domain:a.public.example:8443", true},
+		{"internal wildcard key", wildcard, "domain:wildcard:public.example:443", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := selectTCPUpstream(test.destination, test.claim, "tls:443", "solver:80")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("selectTCPUpstream(%q) error = %v", test.destination, err)
+			}
+		})
+	}
+}
+
 func TestRelayDispatchesChallengeAndTLSStreamsToDistinctUpstreams(t *testing.T) {
 	normal := listenLocal(t)
 	challenge := listenLocal(t)
@@ -779,6 +806,46 @@ func TestRelayDispatchesChallengeAndTLSStreamsToDistinctUpstreams(t *testing.T) 
 	}
 	if err := <-normalDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTCPStreamWritesProxyHeaderBeforePayload(t *testing.T) {
+	upstream := listenLocal(t)
+	received := make(chan []byte, 1)
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buffer := make([]byte, 28+len("payload"))
+		if _, err := io.ReadFull(conn, buffer); err == nil {
+			received <- buffer
+		}
+	}()
+
+	agentRaw, relayRaw := net.Pipe()
+	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) {
+		handleIncomingManagedWithProxy(slog.Default(), stream, nil, upstream.Addr().String(), "", protocol.TransportTCP, nil, true)
+	})
+	relay := tunnel.New(relayRaw, nil)
+	go func() { _ = agent.Run() }()
+	go func() { _ = relay.Run() }()
+	defer upstream.Close()
+	defer agent.Close()
+	defer relay.Close()
+
+	stream, err := relay.OpenStreamWithDestinationAddress("tcp", "192.0.2.10:1234", "domain:service.example:443", "198.51.100.2:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(stream, "payload"); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	got := <-received
+	if got[12] != 0x21 || got[13] != 0x11 || !bytes.Equal(got[16:20], []byte{192, 0, 2, 10}) || !bytes.Equal(got[20:24], []byte{198, 51, 100, 2}) || string(got[28:]) != "payload" {
+		t.Fatalf("upstream bytes = %x", got)
 	}
 }
 

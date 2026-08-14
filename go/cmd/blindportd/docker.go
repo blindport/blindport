@@ -177,6 +177,7 @@ func parseDockerLabelsWithinScope(containerID string, labels map[string]string, 
 		upstream      string
 		httpChallenge string
 		tlsMode       string
+		proxyProtocol string
 		acmeTerms     string
 		hasSub        bool
 		hasAccount    bool
@@ -220,6 +221,8 @@ func parseDockerLabelsWithinScope(containerID string, labels map[string]string, 
 			pair.httpChallenge = value
 		case "tls_mode":
 			pair.tlsMode = value
+		case "proxy_protocol":
+			pair.proxyProtocol = value
 		case "acme_terms_accepted":
 			pair.acmeTerms = value
 		default:
@@ -260,6 +263,7 @@ func parseDockerLabelsWithinScope(containerID string, labels map[string]string, 
 			Upstream:              pair.upstream,
 			HTTPChallengeUpstream: pair.httpChallenge,
 			TLSMode:               pair.tlsMode,
+			ProxyProtocol:         pair.proxyProtocol,
 			Source:                fmt.Sprintf("container %s mapping %q", shortContainerID(containerID), name),
 		}
 		switch pair.acmeTerms {
@@ -352,6 +356,9 @@ func validateOrderDeclaration(item mapping) error {
 	if err := validateTLSMapping(item, item.Source); err != nil {
 		return err
 	}
+	if err := validateProxyProtocol(item.ProxyProtocol); err != nil {
+		return fmt.Errorf("%s: %w", item.Source, err)
+	}
 	switch item.Product {
 	case "relay":
 		if item.Domain == "" || item.Domain != strings.TrimSpace(item.Domain) {
@@ -376,6 +383,9 @@ func validateOrderDeclaration(item mapping) error {
 	if item.Transport == "udp" && item.Product != "port" {
 		return fmt.Errorf("%s: UDP transport is only valid for port", item.Source)
 	}
+	if item.Transport == "udp" && item.ProxyProtocol != "" {
+		return fmt.Errorf("%s: proxy_protocol is not valid for UDP", item.Source)
+	}
 	if item.BillingTerm != "monthly" && item.BillingTerm != "yearly" {
 		return fmt.Errorf("%s: billing_term must be monthly or yearly", item.Source)
 	}
@@ -394,7 +404,7 @@ func sameOrderDeclaration(a, b mapping) bool {
 	return a.AccountName == b.AccountName && a.OrderKey == b.OrderKey && a.Product == b.Product && a.Domain == b.Domain &&
 		a.Transport == b.Transport && a.BillingTerm == b.BillingTerm && a.Upstream == b.Upstream &&
 		a.HTTPChallengeUpstream == b.HTTPChallengeUpstream && a.TLSMode == b.TLSMode &&
-		a.ACMETermsAccepted == b.ACMETermsAccepted
+		a.ProxyProtocol == b.ProxyProtocol && a.ACMETermsAccepted == b.ACMETermsAccepted
 }
 
 func dockerMappingsForAccount(mappings []mapping, accountName string) []mapping {

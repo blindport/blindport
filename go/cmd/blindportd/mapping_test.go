@@ -71,6 +71,8 @@ func TestLoadStaticConfigRejectsInvalidDocuments(t *testing.T) {
 		"v2 missing TLS mode":     `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80"}]}`,
 		"automatic without terms": `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"automatic"}]}`,
 		"ambiguous automatic":     `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"automatic","acme_terms_accepted":true,"http_challenge_upstream":"solver:80"}]}`,
+		"v1 proxy protocol":       `{"version":1,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","proxy_protocol":"v2"}]}`,
+		"invalid proxy protocol":  `{"version":2,"mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"passthrough","proxy_protocol":"v1"}]}`,
 		"empty mappings":          `{"version":1,"mappings":[]}`,
 		"malformed ID":            `{"version":1,"mappings":[{"subscription_id":"1","upstream":"app:80"}]}`,
 		"noncanonical ID":         `{"version":1,"mappings":[{"subscription_id":"11111111-1111-4111-8111-11111111111A","upstream":"app:80"}]}`,
@@ -93,13 +95,13 @@ func TestLoadStaticConfigRejectsInvalidDocuments(t *testing.T) {
 func TestLoadStaticConfigVersion2TLSModes(t *testing.T) {
 	path := writeConfig(t, `{"version":2,"mappings":[
 {"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"app:80","tls_mode":"automatic","acme_terms_accepted":true},
-{"subscription_id":"22222222-2222-4222-8222-222222222222","upstream":"tls:443","tls_mode":"passthrough"}
+{"subscription_id":"22222222-2222-4222-8222-222222222222","upstream":"tls:443","tls_mode":"passthrough","proxy_protocol":"v2"}
 ]}`, 0o600)
 	mappings, err := loadStaticConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mappings) != 2 || mappings[0].TLSMode != tlsModeAutomatic || !mappings[0].ACMETermsAccepted || mappings[1].TLSMode != tlsModePassthrough {
+	if len(mappings) != 2 || mappings[0].TLSMode != tlsModeAutomatic || !mappings[0].ACMETermsAccepted || mappings[1].TLSMode != tlsModePassthrough || mappings[1].ProxyProtocol != "v2" {
 		t.Fatalf("version 2 mappings = %+v", mappings)
 	}
 }
@@ -107,7 +109,7 @@ func TestLoadStaticConfigVersion2TLSModes(t *testing.T) {
 func TestLoadStaticConfigDocumentVersion3(t *testing.T) {
 	path := writeConfig(t, `{"version":3,"accounts":[
 {"name":"public","token_file":"/run/secrets/blindport-public","state_dir":"/var/lib/blindport/accounts/public","mappings":[{"subscription_id":"11111111-1111-4111-8111-111111111111","upstream":"public:443"}]},
-{"name":"private.api","token_file":"/run/secrets/blindport-private","state_dir":"/var/lib/blindport/accounts/private-api","mappings":[{"subscription_id":"22222222-2222-4222-8222-222222222222","upstream":"private:8443","tls_mode":"automatic","acme_terms_accepted":true}]}
+{"name":"private.api","token_file":"/run/secrets/blindport-private","state_dir":"/var/lib/blindport/accounts/private-api","mappings":[{"subscription_id":"22222222-2222-4222-8222-222222222222","upstream":"private:8443","tls_mode":"automatic","acme_terms_accepted":true,"proxy_protocol":"v2"}]}
 ]}`, 0o600)
 
 	cfg, err := loadStaticConfigDocument(path)
@@ -118,7 +120,7 @@ func TestLoadStaticConfigDocumentVersion3(t *testing.T) {
 		t.Fatalf("version 3 config = %+v", cfg)
 	}
 	account, ok := cfg.Account("private.api")
-	if !ok || account.TokenFile != "/run/secrets/blindport-private" || account.Mappings[0].SubscriptionID != testSubscriptionID2 {
+	if !ok || account.TokenFile != "/run/secrets/blindport-private" || account.Mappings[0].SubscriptionID != testSubscriptionID2 || account.Mappings[0].ProxyProtocol != "v2" {
 		t.Fatalf("Account() = %+v, %v", account, ok)
 	}
 }
@@ -236,7 +238,7 @@ func TestValidateHostPort(t *testing.T) {
 }
 
 func TestBuildMappingPlansExpandsOneMappingAcrossRelayEndpoints(t *testing.T) {
-	mappings := []mapping{{SubscriptionID: testSubscriptionID123, Upstream: "traefik:443", HTTPChallengeUpstream: "solver:80"}}
+	mappings := []mapping{{SubscriptionID: testSubscriptionID123, Upstream: "traefik:443", HTTPChallengeUpstream: "solver:80", ProxyProtocol: "v2"}}
 	cfg := []provisioning{{
 		SubscriptionID: testSubscriptionID123,
 		Product:        "relay",
@@ -258,8 +260,19 @@ func TestBuildMappingPlansExpandsOneMappingAcrossRelayEndpoints(t *testing.T) {
 	if plans[0].Claim == plans[1].Claim {
 		t.Fatal("plans share a mutable claim pointer")
 	}
-	if plans[0].Claim.Domain != "service.example" || plans[0].Upstream != "traefik:443" || plans[0].HTTPChallengeUpstream != "solver:80" {
+	if plans[0].Claim.Domain != "service.example" || plans[0].Upstream != "traefik:443" || plans[0].HTTPChallengeUpstream != "solver:80" || plans[0].ProxyProtocol != "v2" {
 		t.Fatalf("plan = %+v", plans[0])
+	}
+}
+
+func TestBuildMappingPlansRejectsProxyProtocolForUDP(t *testing.T) {
+	mappings := []mapping{{SubscriptionID: testSubscriptionID123, Upstream: "app:8080", ProxyProtocol: "v2"}}
+	cfg := []provisioning{{
+		SubscriptionID: testSubscriptionID123, Product: "port", AssignedIP: "203.0.113.20", AssignedPort: 10000,
+		Transport: "udp", RelayEndpoint: "relay.example:5443",
+	}}
+	if _, err := buildMappingPlans(mappings, cfg, ""); err == nil || !strings.Contains(err.Error(), "proxy_protocol") {
+		t.Fatalf("buildMappingPlans() error = %v", err)
 	}
 }
 

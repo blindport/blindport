@@ -127,6 +127,43 @@ func TestDatagramStreamPreservesPacketBoundaries(t *testing.T) {
 	}
 }
 
+func TestOpenStreamPropagatesPhysicalDestinationAddress(t *testing.T) {
+	a, b := net.Pipe()
+	opened := make(chan *Stream, 1)
+	server := New(a, func(s *Stream) { opened <- s })
+	client := New(b, nil)
+	go func() { _ = server.Run() }()
+	go func() { _ = client.Run() }()
+	defer server.Close()
+	defer client.Close()
+
+	if _, err := client.OpenStreamWithDestinationAddress("tcp", "192.0.2.1:1234", "domain:service.example:443", "198.51.100.2:443"); err != nil {
+		t.Fatal(err)
+	}
+	peer := <-opened
+	if peer.Destination != "domain:service.example:443" || peer.DestinationAddress != "198.51.100.2:443" {
+		t.Fatalf("OPEN metadata = %+v", peer)
+	}
+}
+
+func TestOpenStreamLeavesPhysicalDestinationAddressEmpty(t *testing.T) {
+	a, b := net.Pipe()
+	opened := make(chan *Stream, 1)
+	server := New(a, func(s *Stream) { opened <- s })
+	client := New(b, nil)
+	go func() { _ = server.Run() }()
+	go func() { _ = client.Run() }()
+	defer server.Close()
+	defer client.Close()
+
+	if _, err := client.OpenStream("tcp", "192.0.2.1:1234", "domain:service.example:443"); err != nil {
+		t.Fatal(err)
+	}
+	if peer := <-opened; peer.DestinationAddress != "" {
+		t.Fatalf("DestinationAddress = %q, want empty", peer.DestinationAddress)
+	}
+}
+
 func TestStreamDrainsQueuedPayloadAfterPeerClose(t *testing.T) {
 	t.Run("TCP", func(t *testing.T) {
 		tunnelSide, peer := net.Pipe()

@@ -93,20 +93,26 @@ func (r *relay) handleHTTPChallengeConn(conn net.Conn) {
 		writeHTTPSRedirect(conn, host, req)
 		return
 	}
-	t, subscriptionID := r.getTunnelSubscription("domain:" + host)
+	key, ok := r.relayTunnelKey(host)
+	if !ok {
+		r.metrics.challenge[challengeNoTunnel].Add(1)
+		writeChallengeError(conn, http.StatusNotFound)
+		return
+	}
+	t, subscriptionID := r.getTunnelSubscription(key)
 	if t == nil {
 		r.metrics.challenge[challengeNoTunnel].Add(1)
 		writeChallengeError(conn, http.StatusNotFound)
 		return
 	}
-	stream, err := t.OpenStream("tcp", conn.RemoteAddr().String(), "domain:"+host+":80")
+	stream, err := t.OpenStreamWithDestinationAddress("tcp", conn.RemoteAddr().String(), "domain:"+host+":80", conn.LocalAddr().String())
 	if err != nil {
 		r.metrics.challenge[challengeUpstreamError].Add(1)
 		writeChallengeError(conn, http.StatusBadGateway)
 		return
 	}
 	defer stream.Close()
-	streamIndex := claimKindIndex(protocol.ClaimRelay)
+	streamIndex := claimKindIndexFromKey(key)
 	r.metrics.streams[streamIndex].active.Add(1)
 	r.metrics.streams[streamIndex].total.Add(1)
 	defer r.metrics.streams[streamIndex].active.Add(-1)

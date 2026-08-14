@@ -327,7 +327,10 @@ func buildV3MappingPlansWithMissing(mappings []mapping, config *provisioningV3, 
 			if item.HTTPChallengeUpstream != "" && claim.Kind != protocol.ClaimRelay {
 				return nil, errors.New("http challenge upstream is only valid for Relay")
 			}
-			plans = append(plans, workerPlan{AccountName: item.AccountName, SubscriptionID: item.SubscriptionID, RelayAddr: edge.Endpoint, EdgeID: edge.ID, Entitlement: edge.Entitlement, Upstream: item.Upstream, HTTPChallengeUpstream: item.HTTPChallengeUpstream, TLSMode: normalizedTLSMode(item.TLSMode), Claim: &claim})
+			if item.ProxyProtocol != "" && claim.Transport == protocol.TransportUDP {
+				return nil, errors.New("proxy_protocol is not valid for UDP")
+			}
+			plans = append(plans, workerPlan{AccountName: item.AccountName, SubscriptionID: item.SubscriptionID, RelayAddr: edge.Endpoint, EdgeID: edge.ID, Entitlement: edge.Entitlement, Upstream: item.Upstream, HTTPChallengeUpstream: item.HTTPChallengeUpstream, TLSMode: normalizedTLSMode(item.TLSMode), ProxyProtocol: item.ProxyProtocol, Claim: &claim})
 		}
 		if relayOverride != "" && matched == 0 {
 			return nil, errors.New("relay override does not match a signed v3 edge")

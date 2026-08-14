@@ -114,6 +114,12 @@ func (c *Conn) WriteFrame(f *protocol.Frame) error {
 // OpenStream creates a new outbound stream and informs the peer with an OPEN
 // frame. Returns the local Stream handle.
 func (c *Conn) OpenStream(proto, src, dst string) (*Stream, error) {
+	return c.OpenStreamWithDestinationAddress(proto, src, dst, "")
+}
+
+// OpenStreamWithDestinationAddress creates an outbound stream with the relay
+// listener address retained separately from its logical destination.
+func (c *Conn) OpenStreamWithDestinationAddress(proto, src, dst, destinationAddress string) (*Stream, error) {
 	transport, err := normalizeProtocol(proto)
 	if err != nil {
 		return nil, err
@@ -123,10 +129,11 @@ func (c *Conn) OpenStream(proto, src, dst string) (*Stream, error) {
 	s.configureTransport(transport)
 	s.Source = src
 	s.Destination = dst
+	s.DestinationAddress = destinationAddress
 	if err := c.addStream(s); err != nil {
 		return nil, err
 	}
-	if err := c.WriteFrame(&protocol.Frame{Type: protocol.TypeOpen, Stream: id, Proto: string(transport), Src: src, Dst: dst}); err != nil {
+	if err := c.WriteFrame(&protocol.Frame{Type: protocol.TypeOpen, Stream: id, Proto: string(transport), Src: src, Dst: dst, DstAddr: destinationAddress}); err != nil {
 		c.removeStream(id)
 		return nil, err
 	}
@@ -158,6 +165,7 @@ func (c *Conn) Run() error {
 			s.configureTransport(transport)
 			s.Source = f.Src
 			s.Destination = f.Dst
+			s.DestinationAddress = f.DstAddr
 			if err := c.addStream(s); err != nil {
 				return fmt.Errorf("invalid OPEN: %w", err)
 			}
@@ -312,31 +320,32 @@ func (c *Conn) ActiveStreamCount() int {
 
 // Stream is one logical bidirectional connection within a tunnel.
 type Stream struct {
-	conn          *Conn
-	ID            uint32
-	Protocol      protocol.Transport
-	Source        string
-	Destination   string
-	rxMu          sync.Mutex
-	rxBuf         []byte
-	rxBufSize     int64
-	rxQueue       [][]byte
-	rxQueued      int64
-	rxFrames      int
-	rxNotify      chan struct{}
-	doneCh        chan struct{}
-	closeOnce     sync.Once
-	rxClosed      atomic.Bool
-	txCloseOnce   sync.Once
-	txClosed      atomic.Bool
-	txMu          sync.Mutex
-	creditMu      sync.Mutex
-	txCredit      int64
-	txCreditCap   int64
-	creditNotify  chan struct{}
-	windowMu      sync.Mutex
-	windowPending uint32
-	windowSending bool
+	conn               *Conn
+	ID                 uint32
+	Protocol           protocol.Transport
+	Source             string
+	Destination        string
+	DestinationAddress string
+	rxMu               sync.Mutex
+	rxBuf              []byte
+	rxBufSize          int64
+	rxQueue            [][]byte
+	rxQueued           int64
+	rxFrames           int
+	rxNotify           chan struct{}
+	doneCh             chan struct{}
+	closeOnce          sync.Once
+	rxClosed           atomic.Bool
+	txCloseOnce        sync.Once
+	txClosed           atomic.Bool
+	txMu               sync.Mutex
+	creditMu           sync.Mutex
+	txCredit           int64
+	txCreditCap        int64
+	creditNotify       chan struct{}
+	windowMu           sync.Mutex
+	windowPending      uint32
+	windowSending      bool
 }
 
 func newStream(c *Conn, id uint32) *Stream {

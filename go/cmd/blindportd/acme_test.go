@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -72,7 +73,7 @@ func TestACMEChallengeIsSharedAcrossConcurrentRelayEdges(t *testing.T) {
 	}
 }
 
-func TestAutomaticTLSTerminatesAndForwardsPlaintext(t *testing.T) {
+func TestAutomaticTLSTerminatesAndForwardsProxyProtocolThenPlaintext(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	resource, roots := testACMEResource(t, "service.example", now.Add(-time.Hour), now.Add(24*time.Hour), 1)
 	dir := privateTempDir(t)
@@ -93,13 +94,14 @@ func TestAutomaticTLSTerminatesAndForwardsPlaintext(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		payload := make([]byte, len("plaintext request"))
+		payload := make([]byte, 28+len("plaintext request"))
 		if _, err := io.ReadFull(conn, payload); err != nil {
 			originDone <- err
 			return
 		}
-		if string(payload) != "plaintext request" {
-			originDone <- &testError{message: "origin did not receive plaintext"}
+		if payload[12] != 0x21 || payload[13] != 0x11 || !bytes.Equal(payload[16:20], []byte{192, 0, 2, 1}) ||
+			!bytes.Equal(payload[20:24], []byte{198, 51, 100, 2}) || string(payload[28:]) != "plaintext request" {
+			originDone <- &testError{message: "origin did not receive PROXY protocol followed by plaintext"}
 			return
 		}
 		_, err = io.WriteString(conn, "origin response")
@@ -107,7 +109,9 @@ func TestAutomaticTLSTerminatesAndForwardsPlaintext(t *testing.T) {
 	}()
 
 	agentRaw, relayRaw := net.Pipe()
-	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) { manager.handleStream(slog.Default(), stream, origin.Addr().String()) })
+	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) {
+		manager.handleStreamWithProxy(slog.Default(), stream, origin.Addr().String(), true)
+	})
 	relay := tunnel.New(relayRaw, nil)
 	agent.EnableTCPHalfClose()
 	relay.EnableTCPHalfClose()
@@ -115,7 +119,7 @@ func TestAutomaticTLSTerminatesAndForwardsPlaintext(t *testing.T) {
 	go func() { _ = relay.Run() }()
 	defer agent.Close()
 	defer relay.Close()
-	stream, err := relay.OpenStream("tcp", "192.0.2.1:1234", "domain:service.example:443")
+	stream, err := relay.OpenStreamWithDestinationAddress("tcp", "192.0.2.1:1234", "domain:service.example:443", "198.51.100.2:443")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -969,7 +969,10 @@ func buildV2MappingPlansWithMissing(mappings []mapping, config *provisioningV2, 
 			if item.TLSMode == tlsModeAutomatic && claim.Kind != protocol.ClaimRelay {
 				return nil, fmt.Errorf("subscription %s: automatic TLS is only valid for Blindport Relay", item.SubscriptionID)
 			}
-			plans = append(plans, workerPlan{SubscriptionID: item.SubscriptionID, RelayAddr: edge.Endpoint, EdgeID: edge.ID, Entitlement: edge.Entitlement, Upstream: item.Upstream, HTTPChallengeUpstream: item.HTTPChallengeUpstream, TLSMode: normalizedTLSMode(item.TLSMode), Claim: &claim})
+			if item.ProxyProtocol != "" && claim.Transport == protocol.TransportUDP {
+				return nil, fmt.Errorf("subscription %s: proxy_protocol is not valid for UDP", item.SubscriptionID)
+			}
+			plans = append(plans, workerPlan{SubscriptionID: item.SubscriptionID, RelayAddr: edge.Endpoint, EdgeID: edge.ID, Entitlement: edge.Entitlement, Upstream: item.Upstream, HTTPChallengeUpstream: item.HTTPChallengeUpstream, TLSMode: normalizedTLSMode(item.TLSMode), ProxyProtocol: item.ProxyProtocol, Claim: &claim})
 		}
 		if relayOverride != "" && matched == 0 {
 			return nil, fmt.Errorf("subscription %s: relay override does not match a signed v2 edge", item.SubscriptionID)

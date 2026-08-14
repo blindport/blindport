@@ -142,6 +142,7 @@ type Frame struct {
 	Proto        string       `json:"proto,omitempty"`
 	Src          string       `json:"src,omitempty"`
 	Dst          string       `json:"dst,omitempty"`
+	DstAddr      string       `json:"dst_addr,omitempty"`
 	Data         []byte       `json:"data,omitempty"`
 	Credit       uint32       `json:"credit,omitempty"`
 	Capabilities []Capability `json:"capabilities,omitempty"`

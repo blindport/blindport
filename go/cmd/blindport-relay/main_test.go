@@ -598,6 +598,42 @@ func TestRelayClaimScopeKeysAuthorizationAndSNILookup(t *testing.T) {
 	}
 }
 
+func TestForwardToRelayUsesLogicalWildcardDestination(t *testing.T) {
+	health := newRelayHealth(false, time.Minute, time.Minute)
+	r := &relay{
+		metrics:             &relayMetrics{health: health},
+		tunnels:             make(map[string]*tunnel.Conn),
+		tunnelSubscriptions: make(map[*tunnel.Conn]string),
+		allTunnels:          make(map[*tunnel.Conn]struct{}),
+	}
+	wildcardRaw, agentRaw := net.Pipe()
+	opened := make(chan *tunnel.Stream, 1)
+	wildcard := tunnel.New(wildcardRaw, nil)
+	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) {
+		opened <- stream
+		_ = stream.Close()
+	})
+	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	r.registerTunnel(claimKey(claim), claim.Kind, wildcard, testSubscriptionOne)
+	go func() { _ = wildcard.Run() }()
+	go func() { _ = agent.Run() }()
+	defer r.unregisterTunnel(claimKey(claim), claim.Kind, wildcard)
+	defer wildcard.Close()
+	defer agent.Close()
+
+	client, ingress := net.Pipe()
+	done := make(chan bool, 1)
+	go func() { done <- r.forwardToRelay(ingress, "a.public.example", "443") }()
+	_ = client.Close()
+	stream := <-opened
+	if stream.Destination != "domain:a.public.example:443" || stream.DestinationAddress == "" {
+		t.Fatalf("stream metadata = %+v", stream)
+	}
+	if !<-done {
+		t.Fatal("forwardToRelay returned false")
+	}
+}
+
 func TestParseRelayConfig(t *testing.T) {
 	cfg, err := parseRelayConfig("203.0.113.10,203.0.113.11", "80,443", "203.0.113.20", "10000-10007", "11000-11007")
 	if err != nil {

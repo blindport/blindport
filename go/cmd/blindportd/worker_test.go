@@ -27,6 +27,15 @@ func TestAutomaticTLSWorkerFailsClosedWithoutManager(t *testing.T) {
 	}
 }
 
+func TestSameWorkerPlanIncludesProxyProtocol(t *testing.T) {
+	base := workerPlan{SubscriptionID: testSubscriptionID1, RelayAddr: "edge.example:443", Upstream: "app:443"}
+	withProxy := base
+	withProxy.ProxyProtocol = "v2"
+	if sameWorkerPlan(base, withProxy) {
+		t.Fatal("worker plans with different proxy_protocol compare equal")
+	}
+}
+
 type workerEvent struct {
 	kind string
 	plan workerPlan

@@ -126,7 +126,7 @@ func (s *workerSupervisor) Shutdown() {
 
 func sameWorkerPlan(a, b workerPlan) bool {
 	if a.AccountName != b.AccountName || a.SubscriptionID != b.SubscriptionID || a.RelayAddr != b.RelayAddr || a.EdgeID != b.EdgeID || a.Upstream != b.Upstream ||
-		a.HTTPChallengeUpstream != b.HTTPChallengeUpstream || a.TLSMode != b.TLSMode || (a.Claim == nil) != (b.Claim == nil) {
+		a.HTTPChallengeUpstream != b.HTTPChallengeUpstream || a.TLSMode != b.TLSMode || a.ProxyProtocol != b.ProxyProtocol || (a.Claim == nil) != (b.Claim == nil) {
 		return false
 	}
 	return a.Claim == nil || *a.Claim == *b.Claim
@@ -206,7 +206,7 @@ func runWorkerWithEntitlementAndDNS(ctx context.Context, log *slog.Logger, plan 
 				}
 			}()
 		}
-		sessionDuration, err := runOnceManagedWithEntitlement(sessionCtx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, dialer, tlsConfig, helloTimeout, automatic, proof)
+		sessionDuration, err := runOnceManagedWithEntitlementAndProxy(sessionCtx, log, plan.RelayAddr, token, plan.Claim, plan.Upstream, plan.HTTPChallengeUpstream, plan.ProxyProtocol, dialer, tlsConfig, helloTimeout, automatic, proof)
 		close(sessionDone)
 		cancelSession()
 		<-watchDone

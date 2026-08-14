@@ -226,14 +226,29 @@ func TestHTTPChallengeNoTunnelDoesNotOpenGeneralProxy(t *testing.T) {
 	}
 }
 
-func TestHTTPChallengeDoesNotRouteWildcardClaims(t *testing.T) {
+func TestHTTPChallengeRoutesWildcardClaimDescendant(t *testing.T) {
 	r := newChallengeTestRelay(t, 10, 2)
 	wildcardRaw, wildcardPeer := net.Pipe()
 	defer wildcardPeer.Close()
+	destination := make(chan *tunnel.Stream, 1)
 	wildcard := tunnel.New(wildcardRaw, nil)
+	agent := tunnel.New(wildcardPeer, func(stream *tunnel.Stream) {
+		destination <- stream
+		request, err := http.ReadRequest(bufio.NewReader(stream))
+		if err != nil {
+			_ = stream.Close()
+			return
+		}
+		_ = request.Body.Close()
+		_, _ = io.WriteString(stream, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nproof")
+		_ = stream.Close()
+	})
+	go func() { _ = wildcard.Run() }()
+	go func() { _ = agent.Run() }()
 	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
 	r.registerTunnel(claimKey(claim), claim.Kind, wildcard)
 	defer r.unregisterTunnel(claimKey(claim), claim.Kind, wildcard)
+	defer agent.Close()
 
 	client, server := net.Pipe()
 	done := make(chan struct{})
@@ -249,8 +264,12 @@ func TestHTTPChallengeDoesNotRouteWildcardClaims(t *testing.T) {
 	_ = response.Body.Close()
 	_ = client.Close()
 	<-done
-	if response.StatusCode != http.StatusNotFound || r.metrics.challenge[challengeNoTunnel].Load() != 1 {
+	if response.StatusCode != http.StatusOK || r.metrics.challenge[challengeNoTunnel].Load() != 0 {
 		t.Fatalf("response/metric = %d/%d", response.StatusCode, r.metrics.challenge[challengeNoTunnel].Load())
+	}
+	stream := <-destination
+	if stream.Destination != "domain:a.public.example:80" || stream.DestinationAddress == "" || stream.Source != "192.0.2.10:1234" {
+		t.Fatalf("stream metadata = %+v", stream)
 	}
 }
 

@@ -21,8 +21,8 @@ func TestParseProvisioningV3ScopesAndWildcardPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseProvisioningV3() = %v", err)
 	}
-	plans, err := buildV3MappingPlans([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:443", TLSMode: tlsModePassthrough}}, parsed, "")
-	if err != nil || len(plans) != 1 || plans[0].Claim.Scope != protocol.RelayHostnameScopeWildcard {
+	plans, err := buildV3MappingPlans([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:443", TLSMode: tlsModePassthrough, ProxyProtocol: "v2"}}, parsed, "")
+	if err != nil || len(plans) != 1 || plans[0].Claim.Scope != protocol.RelayHostnameScopeWildcard || plans[0].ProxyProtocol != "v2" {
 		t.Fatalf("plans = %+v, %v", plans, err)
 	}
 	if _, err := buildV3MappingPlans([]mapping{{SubscriptionID: testSubscriptionID1, Upstream: "app:443", TLSMode: tlsModeAutomatic, ACMETermsAccepted: true}}, parsed, ""); err == nil {

@@ -30,6 +30,7 @@ type mapping struct {
 	Upstream              string `json:"upstream"`
 	HTTPChallengeUpstream string `json:"http_challenge_upstream,omitempty"`
 	TLSMode               string `json:"tls_mode,omitempty"`
+	ProxyProtocol         string `json:"proxy_protocol,omitempty"`
 	ACMETermsAccepted     bool   `json:"acme_terms_accepted,omitempty"`
 	Source                string `json:"-"`
 	OrderKey              string `json:"-"`
@@ -85,6 +86,7 @@ type workerPlan struct {
 	Upstream              string
 	HTTPChallengeUpstream string
 	TLSMode               string
+	ProxyProtocol         string
 	Claim                 *protocol.Claim
 }
 
@@ -180,8 +182,8 @@ func parseStaticConfigDocument(path string, data []byte) (staticConfigDocument, 
 	for i := range cfg.Mappings {
 		cfg.Mappings[i].Source = fmt.Sprintf("config %q mapping %d", path, i)
 		if cfg.Version == 1 {
-			if cfg.Mappings[i].TLSMode != "" || cfg.Mappings[i].ACMETermsAccepted {
-				return staticConfigDocument{}, fmt.Errorf("%s: TLS settings require config version 2", cfg.Mappings[i].Source)
+			if cfg.Mappings[i].TLSMode != "" || cfg.Mappings[i].ACMETermsAccepted || cfg.Mappings[i].ProxyProtocol != "" {
+				return staticConfigDocument{}, fmt.Errorf("%s: TLS and proxy settings require config version 2", cfg.Mappings[i].Source)
 			}
 			cfg.Mappings[i].TLSMode = tlsModePassthrough
 		} else if cfg.Mappings[i].TLSMode == "" {
@@ -316,10 +318,20 @@ func validateMappings(mappings []mapping) error {
 		if err := validateTLSMapping(item, source); err != nil {
 			return err
 		}
+		if err := validateProxyProtocol(item.ProxyProtocol); err != nil {
+			return fmt.Errorf("%s: %w", source, err)
+		}
 		if previous, ok := seen[item.SubscriptionID]; ok {
 			return fmt.Errorf("duplicate subscription_id %s in %s and %s", item.SubscriptionID, previous, source)
 		}
 		seen[item.SubscriptionID] = source
+	}
+	return nil
+}
+
+func validateProxyProtocol(value string) error {
+	if value != "" && value != "v2" {
+		return errors.New("proxy_protocol must be v2")
 	}
 	return nil
 }
@@ -444,6 +456,9 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 		if item.TLSMode == tlsModeAutomatic && claim.Kind != protocol.ClaimRelay {
 			return nil, fmt.Errorf("subscription %s: automatic TLS is only valid for Blindport Relay", item.SubscriptionID)
 		}
+		if item.ProxyProtocol != "" && claim.Transport == protocol.TransportUDP {
+			return nil, fmt.Errorf("subscription %s: proxy_protocol is not valid for UDP", item.SubscriptionID)
+		}
 		assignments, err := provisioningAssignments(row, relayOverride)
 		if err != nil {
 			return nil, fmt.Errorf("subscription %s: %w", item.SubscriptionID, err)
@@ -463,6 +478,7 @@ func buildMappingPlansWithMissing(mappings []mapping, cfg []provisioning, relayO
 				Upstream:              item.Upstream,
 				HTTPChallengeUpstream: item.HTTPChallengeUpstream,
 				TLSMode:               normalizedTLSMode(item.TLSMode),
+				ProxyProtocol:         item.ProxyProtocol,
 				Claim:                 &claimCopy,
 			})
 		}

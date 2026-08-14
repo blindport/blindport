@@ -143,6 +143,31 @@ func TestDiscoverDockerMappings(t *testing.T) {
 	}
 }
 
+func TestDockerProxyProtocolLabelValidation(t *testing.T) {
+	labels := map[string]string{
+		dockerMappingPrefix + "web.subscription":   testSubscriptionID1,
+		dockerMappingPrefix + "web.upstream":       "web:443",
+		dockerMappingPrefix + "web.proxy_protocol": "v2",
+	}
+	mappings, err := parseDockerLabels("container", labels)
+	if err != nil || len(mappings) != 1 || mappings[0].ProxyProtocol != "v2" {
+		t.Fatalf("parseDockerLabels() = %+v, %v", mappings, err)
+	}
+	labels[dockerMappingPrefix+"web.proxy_protocol"] = "v1"
+	if _, err := parseDockerLabels("container", labels); err == nil {
+		t.Fatal("invalid proxy_protocol label was accepted")
+	}
+	order := mapping{OrderKey: "udp", Product: "port", Transport: "udp", BillingTerm: "monthly", Upstream: "app:80", ProxyProtocol: "v2", Source: "test"}
+	if err := validateOrderDeclaration(order); err == nil || !strings.Contains(err.Error(), "proxy_protocol") {
+		t.Fatalf("validateOrderDeclaration() error = %v", err)
+	}
+	order.Transport = "tcp"
+	order.ProxyProtocol = "v1"
+	if err := validateOrderDeclaration(order); err == nil || !strings.Contains(err.Error(), "proxy_protocol") {
+		t.Fatalf("validateOrderDeclaration() error = %v", err)
+	}
+}
+
 func TestParseDockerOrderLabelsDefaultsAndFields(t *testing.T) {
 	mappings, err := parseDockerLabels("container-id", map[string]string{
 		dockerMappingPrefix + "web.product":                 "relay",

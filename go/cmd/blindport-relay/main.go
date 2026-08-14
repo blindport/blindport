@@ -955,7 +955,7 @@ func (r *relay) serveDedicatedIP(ctx context.Context, ln net.Listener, ip, port 
 			return
 		}
 		r.startIngressHandler(listenerDedicated, conn, func() {
-			r.forwardTo(conn, "ip:"+ip, port)
+			r.forwardTo(conn, "ip:"+ip, "ip:"+ip+":"+port)
 		})
 	}
 }
@@ -974,7 +974,7 @@ func (r *relay) servePort(ctx context.Context, ln net.Listener, ip string, port 
 			return
 		}
 		r.startIngressHandler(listenerPort, conn, func() {
-			r.forwardTo(conn, key, strconv.Itoa(int(port)))
+			r.forwardTo(conn, key, key+":"+strconv.Itoa(int(port)))
 		})
 	}
 }
@@ -1280,7 +1280,7 @@ func (r *relay) forwardToRelay(conn net.Conn, hostname, port string) bool {
 		_ = conn.Close()
 		return false
 	}
-	return r.forwardTo(conn, key, port)
+	return r.forwardTo(conn, key, "domain:"+strings.ToLower(hostname)+":"+port)
 }
 
 func (r *relay) relayTunnelKey(hostname string) (string, bool) {
@@ -1303,7 +1303,7 @@ func (r *relay) relayTunnelKey(hostname string) (string, bool) {
 	return "", false
 }
 
-func (r *relay) forwardTo(conn net.Conn, key, port string) bool {
+func (r *relay) forwardTo(conn net.Conn, key, destination string) bool {
 	defer conn.Close()
 	t, subscriptionID := r.getTunnelSubscription(key)
 	if t == nil {
@@ -1311,8 +1311,7 @@ func (r *relay) forwardTo(conn net.Conn, key, port string) bool {
 		return false
 	}
 	src := conn.RemoteAddr().String()
-	dst := key + ":" + port
-	stream, err := t.OpenStream("tcp", src, dst)
+	stream, err := t.OpenStreamWithDestinationAddress("tcp", src, destination, conn.LocalAddr().String())
 	if err != nil {
 		r.log.Warn("open ingress stream failed")
 		return false

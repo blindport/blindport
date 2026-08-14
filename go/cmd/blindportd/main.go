@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
+	"github.com/blindport/blindport/internal/proxyproto"
 	"github.com/blindport/blindport/internal/tcpproxy"
 	"github.com/blindport/blindport/internal/tunnel"
 	"github.com/go-acme/lego/v4/lego"
@@ -592,6 +593,10 @@ func runOnceManaged(ctx context.Context, log *slog.Logger, relayAddr, token stri
 }
 
 func runOnceManagedWithEntitlement(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream string, dialer contextDialer, tlsConfig *tls.Config, timeout time.Duration, automatic *acmeDomainManager, entitlement string) (time.Duration, error) {
+	return runOnceManagedWithEntitlementAndProxy(ctx, log, relayAddr, token, claim, upstream, httpChallengeUpstream, "", dialer, tlsConfig, timeout, automatic, entitlement)
+}
+
+func runOnceManagedWithEntitlementAndProxy(ctx context.Context, log *slog.Logger, relayAddr, token string, claim *protocol.Claim, upstream, httpChallengeUpstream, proxyProtocol string, dialer contextDialer, tlsConfig *tls.Config, timeout time.Duration, automatic *acmeDomainManager, entitlement string) (time.Duration, error) {
 	conn, err := dialRelay(ctx, dialer, relayAddr, tlsConfig)
 	if err != nil {
 		return 0, fmt.Errorf("dial relay: %w", err)
@@ -611,7 +616,7 @@ func runOnceManagedWithEntitlement(ctx context.Context, log *slog.Logger, relayA
 
 	expectedTransport := claimTransportForTunnel(claim)
 	t := tunnel.New(conn, func(s *tunnel.Stream) {
-		handleIncomingManaged(log, s, claim, upstream, httpChallengeUpstream, expectedTransport, automatic)
+		handleIncomingManagedWithProxy(log, s, claim, upstream, httpChallengeUpstream, expectedTransport, automatic, proxyProtocol == "v2")
 	})
 	if capabilities.halfClose {
 		t.EnableTCPHalfClose()
@@ -705,12 +710,21 @@ func handleIncoming(log *slog.Logger, s *tunnel.Stream, claim *protocol.Claim, u
 }
 
 func handleIncomingManaged(log *slog.Logger, s *tunnel.Stream, claim *protocol.Claim, upstream, httpChallengeUpstream string, expected protocol.Transport, automatic *acmeDomainManager) {
+	handleIncomingManagedWithProxy(log, s, claim, upstream, httpChallengeUpstream, expected, automatic, false)
+}
+
+func handleIncomingManagedWithProxy(log *slog.Logger, s *tunnel.Stream, claim *protocol.Claim, upstream, httpChallengeUpstream string, expected protocol.Transport, automatic *acmeDomainManager, proxyProtocol bool) {
 	if s.Protocol != expected {
 		log.Warn("relay opened stream with unexpected transport", "expected", expected, "received", s.Protocol)
 		_ = s.Close()
 		return
 	}
 	if expected == protocol.TransportUDP {
+		if proxyProtocol {
+			log.Warn("PROXY protocol is not valid for UDP")
+			_ = s.Close()
+			return
+		}
 		handleUDPAssociation(log, s, upstream)
 		return
 	}
@@ -719,7 +733,7 @@ func handleIncomingManaged(log *slog.Logger, s *tunnel.Stream, claim *protocol.C
 			_ = s.Close()
 			return
 		}
-		automatic.handleStream(log, s, upstream)
+		automatic.handleStreamWithProxy(log, s, upstream, proxyProtocol)
 		return
 	}
 	selected, err := selectTCPUpstream(s.Destination, claim, upstream, httpChallengeUpstream)
@@ -728,33 +742,61 @@ func handleIncomingManaged(log *slog.Logger, s *tunnel.Stream, claim *protocol.C
 		_ = s.Close()
 		return
 	}
-	handleTCPStream(log, s, selected)
+	handleTCPStreamWithProxy(log, s, selected, proxyProtocol)
 }
 
 func selectTCPUpstream(destination string, claim *protocol.Claim, upstream, httpChallengeUpstream string) (string, error) {
 	if claim == nil || claim.Kind != protocol.ClaimRelay {
 		return upstream, nil
 	}
-	prefix := "domain:" + claim.Domain + ":"
-	switch destination {
-	case prefix + "443":
+	if !relayDestinationAllowed(destination, claim, "443") && !relayDestinationAllowed(destination, claim, "80") {
+		return "", errors.New("destination is outside the claimed Blindport Relay ports")
+	}
+	switch {
+	case relayDestinationAllowed(destination, claim, "443"):
 		return upstream, nil
-	case prefix + "80":
+	case relayDestinationAllowed(destination, claim, "80"):
 		if httpChallengeUpstream == "" {
 			return "", errors.New("HTTP challenge upstream is disabled")
 		}
 		return httpChallengeUpstream, nil
-	default:
-		return "", errors.New("destination is outside the claimed Blindport Relay ports")
 	}
+	return "", errors.New("destination is outside the claimed Blindport Relay ports")
+}
+
+func relayDestinationAllowed(destination string, claim *protocol.Claim, port string) bool {
+	rest, ok := strings.CutPrefix(destination, "domain:")
+	if !ok {
+		return false
+	}
+	host, receivedPort, ok := strings.Cut(rest, ":")
+	if !ok || receivedPort != port || strings.Contains(host, ":") || host != strings.ToLower(host) ||
+		protocol.ValidateClaim(&protocol.Claim{Kind: protocol.ClaimRelay, Domain: host}) != nil {
+		return false
+	}
+	if claim.Scope == protocol.RelayHostnameScopeWildcard {
+		return host == claim.Domain || strings.HasSuffix(host, "."+claim.Domain)
+	}
+	return host == claim.Domain
 }
 
 func handleTCPStream(log *slog.Logger, s *tunnel.Stream, upstream string) {
+	handleTCPStreamWithProxy(log, s, upstream, false)
+}
+
+func handleTCPStreamWithProxy(log *slog.Logger, s *tunnel.Stream, upstream string, proxyProtocol bool) {
 	defer s.Close()
 	up, err := net.DialTimeout("tcp", upstream, 5*time.Second)
 	if err != nil {
 		log.Warn("dial upstream", "err", err, "upstream", upstream)
 		return
+	}
+	if proxyProtocol {
+		if err := proxyproto.WriteV2(up, s.Source, s.DestinationAddress); err != nil {
+			log.Warn("write PROXY protocol header", "err", err, "upstream", upstream)
+			_ = up.Close()
+			return
+		}
 	}
 	tcpproxy.Proxy(s, up)
 }

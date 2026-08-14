@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/blindport/blindport/internal/protocol"
+	"github.com/blindport/blindport/internal/proxyproto"
 	"github.com/blindport/blindport/internal/tcpproxy"
 	"github.com/blindport/blindport/internal/tunnel"
 	"github.com/go-acme/lego/v4/certificate"
@@ -685,6 +686,10 @@ func (m *acmeDomainManager) install(resource *certificate.Resource, now time.Tim
 }
 
 func (m *acmeDomainManager) handleStream(logger *slog.Logger, stream *tunnel.Stream, upstream string) {
+	m.handleStreamWithProxy(logger, stream, upstream, false)
+}
+
+func (m *acmeDomainManager) handleStreamWithProxy(logger *slog.Logger, stream *tunnel.Stream, upstream string, proxyProtocol bool) {
 	m.activeStreams.Add(1)
 	defer m.activeStreams.Add(-1)
 	defer stream.Close()
@@ -699,7 +704,7 @@ func (m *acmeDomainManager) handleStream(logger *slog.Logger, stream *tunnel.Str
 		m.serveChallenge(stream)
 		timer.Stop()
 	case prefix + "443":
-		m.serveTLS(logger, stream, upstream)
+		m.serveTLSWithProxy(logger, stream, upstream, proxyProtocol)
 	}
 }
 
@@ -741,6 +746,10 @@ func writeACMEResponse(w io.Writer, status int, body string) {
 }
 
 func (m *acmeDomainManager) serveTLS(logger *slog.Logger, stream *tunnel.Stream, upstream string) {
+	m.serveTLSWithProxy(logger, stream, upstream, false)
+}
+
+func (m *acmeDomainManager) serveTLSWithProxy(logger *slog.Logger, stream *tunnel.Stream, upstream string, proxyProtocol bool) {
 	snapshot := m.current.Load()
 	if snapshot == nil || !m.hasUsableCertificate(m.now()) {
 		return
@@ -775,6 +784,13 @@ func (m *acmeDomainManager) serveTLS(logger *slog.Logger, stream *tunnel.Stream,
 	if err != nil {
 		logger.Warn("dial plaintext upstream after automatic TLS termination", "upstream", upstream)
 		return
+	}
+	if proxyProtocol {
+		if err := proxyproto.WriteV2(up, stream.Source, stream.DestinationAddress); err != nil {
+			logger.Warn("write PROXY protocol header", "err", err, "upstream", upstream)
+			_ = up.Close()
+			return
+		}
 	}
 	tcpproxy.Proxy(tlsConn, up)
 }
