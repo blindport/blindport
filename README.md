@@ -38,10 +38,11 @@ The three products use distinct ingress identities:
   socket. An optional provider-edge topology mirrors that port through distinct
   provider-local public IPs and advertises one stable hostname. Shared addresses
   are separate inventory from dedicated Blindport IP addresses.
-- **Blindport Relay** leases one hostname. By default, `blindportd` obtains and
-  renews a Let's Encrypt certificate, terminates TLS on the customer host, and
-  forwards plaintext to the configured local app. Advanced passthrough keeps TLS
-  termination and certificate management in an existing origin server.
+- **Blindport Relay** leases one exact hostname or one customer-owned wildcard
+  base. By default, `blindportd` obtains and renews a Let's Encrypt certificate,
+  terminates TLS on the customer host, and forwards plaintext to the configured
+  local app. Advanced passthrough keeps TLS termination and certificate
+  management in an existing origin server.
 
 Automatic Relay TLS terminates in the customer agent, not at the Blindport edge.
 Blindport Port supports TCP or UDP. WireGuard is the only currently issued
@@ -52,13 +53,16 @@ Blindport Relay supports provider-managed names strictly below configured wildca
 suffixes, exact customer-owned names for 3,000 sats per 30 days, and customer-owned
 wildcard bases for 7,500 sats per 30 days. Exact customer names use one direct CNAME
 to a subscription-specific random target. Wildcard bases use a TXT ownership challenge
-and a wildcard CNAME to a Relay pool target, route strict descendant names, and require
-TLS passthrough to the customer origin. The managed suffix apex is reserved for the
-provider and cannot be leased. Blindport currently reads customer DNS through a
-recursive resolver; it is not an authoritative DNS server. CNAME flattening and
-CDN-proxied records are not supported in the hosted beta. Future registrar or
-authoritative-DNS integrations can automate the same subscription and verification API
-flow.
+and a wildcard CNAME to a Relay pool target. Their existing price routes both the base
+hostname and all descendants, and requires TLS passthrough to the customer origin.
+Pointing the base is optional and is not part of payment verification. A subdomain base
+can use CNAME; a DNS zone apex requires provider ALIAS, ANAME, or CNAME flattening.
+When pointed, the base needs origin certificate coverage separate from wildcard-only
+descendant coverage. The managed suffix apex is reserved for the provider and cannot be
+leased. Blindport currently reads customer DNS through a recursive resolver; it is not
+an authoritative DNS server. CDN-proxied verification records are not supported in the
+hosted beta. Future registrar or authoritative-DNS integrations can automate the same
+subscription and verification API flow.
 
 An active exact customer-owned Relay can be upgraded to a wildcard at the exact
 hostname's immediate parent. The unused exact term is valued at its snapshotted

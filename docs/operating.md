@@ -407,11 +407,17 @@ operating models:
    CNAME records beneath each suffix toward the SNI ingress. Customer leases
    may be nested below the suffix, but the suffix apex itself is reserved and
    rejected.
-2. **Customer-owned CNAME verification:** a non-apex customer subdomain receives
+2. **Customer-owned verification:** an exact non-apex customer subdomain receives
    a unique target such as `<32-lowercase-hex>.pool.example.net` at subscription
    creation. The customer publishes one CNAME from the canonical requested
-   hostname to that exact target. Blindport checks automatically when creating
-   each initial or renewal invoice;
+   hostname to that exact target. A wildcard claim instead requires TXT ownership
+   proof at `_blindport-challenge.<base>` and a DNS-only `*.<base>` CNAME to its
+   selected pool target. Blindport checks the wildcard through a deterministic
+   descendant probe. The wildcard price routes the base plus all descendants,
+   but pointing the base is optional and is not checked for payment. Use CNAME
+   for a subdomain base, or provider ALIAS, ANAME, or CNAME flattening at a zone
+   apex. Blindport checks the applicable proof automatically when creating each
+   initial or renewal invoice;
    `POST /api/v1/subscriptions/{public_id}/verify-domain` remains available for immediate
    feedback before paying. Configure
    `RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS` (30 minutes by default) and
@@ -420,9 +426,10 @@ operating models:
    Relay claims. Configure
    `RELAY_DNS_TIMEOUT_SECONDS` to bound each recursive lookup. The initial
    customer deadline also applies after successful verification; verification
-   does not extend it. Existing pending rows with a TXT
-   token continue using their returned `_blindport-challenge.<hostname>` TXT
-   record only until the existing claim deadline. New claims have no TXT token.
+   does not extend it. Existing pending exact rows with a legacy TXT token
+   continue using their returned `_blindport-challenge.<hostname>` TXT record
+   only until the existing claim deadline. New exact claims have no TXT token;
+   wildcard claims retain their TXT token for renewal verification.
 3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
    sets through multiple explicit recursive resolvers and retains one latest sanitized
    observation per name. It does not mutate authoritative DNS. A future fenced registrar or
@@ -441,6 +448,11 @@ their normal DNS-01 workflow. Managed names can use the optional HTTP-01 path:
 3. Configure the origin ACME client to answer HTTP-01 on that second upstream.
 4. Test with the CA staging directory before requesting a production certificate.
 
+Wildcard Relay is TLS passthrough-only. A wildcard certificate such as
+`*.example.com` does not cover `example.com`. If the optional base DNS record is
+pointed to Blindport, the origin TLS listener and certificate must cover that base
+in addition to all descendant hostnames it serves.
+
 The relay accepts only bounded HTTP/1.1 `GET` requests with canonical domain Host
 headers. It forwards `/.well-known/acme-challenge/<token>` to the dedicated
 challenge upstream, processes one response, and closes the connection. Other valid
@@ -453,11 +465,14 @@ conservative and prefer customer-owned domains as usage grows.
 
 The backend is a recursive DNS client, not an authoritative DNS server. Give it
 access to a trustworthy recursive resolver over the network, and monitor `502`
-or `503` verification responses as resolver failures. It queries the direct
-CNAME record with resolver search disabled and a configured total lifetime.
-NXDOMAIN, missing CNAME answers (including A/AAAA flattening), nonmatching direct
-targets (including chains and alternate pool names), and lookup timeouts are
-ordinary unsuccessful verification results and do not create payments.
+or `503` verification responses as resolver failures. For exact claims it queries
+the direct CNAME record with resolver search disabled and a configured total
+lifetime. For wildcard claims it queries TXT ownership and a generated descendant
+CNAME probe. NXDOMAIN, missing required CNAME answers, nonmatching direct targets
+(including chains and alternate pool names), and lookup timeouts are ordinary
+unsuccessful verification results and do not create payments. A/AAAA flattening
+is not valid proof for either required CNAME. The optional wildcard base record
+is not queried and may use provider flattening because it controls routing only.
 
 For every `RELAY_POOL_DOMAINS` base, publish wildcard A/AAAA or CNAME ingress
 records for its generated children. A pool base can contain at most 220 ASCII
@@ -474,14 +489,14 @@ change authoritative records, or provide a fencing lease.
 An active Blindport Relay subscription loses authorization exactly at
 `current_period_end`. Its domain remains reserved to that subscription until
 `RELAY_RENEWAL_GRACE_SECONDS` after the period end (seven days by default,
-configurable from 136 seconds to 30 days). Creating a renewal invoice rechecks
-the exact assigned CNAME. The owner must create and settle renewal payment before
-that deadline. Periodic and request-time reaping reconcile open Lightning,
-stablecoin swap, and NWC payments before cancellation, then
-clears the domain, verification state, and relay-pool metadata only when no open
-payment remains. Provider-check failures and `PROCESSING` payments retain the
-claim for operator reconciliation. Any later claimant starts the managed or
-customer-owned verification flow from the beginning.
+configurable from 136 seconds to 30 days). Creating a renewal invoice repeats
+the claim's exact CNAME or wildcard TXT and descendant-probe checks. The owner
+must create and settle renewal payment before that deadline. Periodic and
+request-time reaping reconcile open Lightning, stablecoin swap, and NWC payments
+before cancellation, then clear the domain, verification state, and relay-pool
+metadata only when no open payment remains. Provider-check failures and
+`PROCESSING` payments retain the claim for operator reconciliation. Any later
+claimant starts the managed or customer-owned verification flow from the beginning.
 
 For DNS active-active Blindport Relay ingress, publish multiple healthy relay targets
 with low TTLs and include every advertised edge in
@@ -491,6 +506,11 @@ existing TCP sessions when an answer or edge changes. Advertising an edge that
 is absent from provisioning can direct traffic to a node without the tunnel.
 Dedicated Blindport IP and shared Blindport Port failover still need routing or address
 movement outside Blindport.
+
+When introducing base routing for existing wildcard subscriptions, deploy every
+Relay first and verify base, exact-precedence, and descendant lookup behavior.
+Only then deploy backend and dashboard wording that advertises the included base.
+Rollback reverses that order: restore the backend wording before reverting Relays.
 
 ## Firewall
 
@@ -857,8 +877,8 @@ lookup errors remain pending for LND and wallet reconciliation and never release
 an active subscription based only on the wallet response.
 Operators should alert on long-lived `unknown` NWC states and investigate before
 manually changing payment state.
-Automatic renewal of a customer-owned Relay hostname also repeats its exact CNAME
-check before creating the NWC invoice.
+Automatic renewal of a customer-owned Relay hostname repeats its exact CNAME or
+wildcard TXT and descendant-probe checks before creating the NWC invoice.
 
 Cashu runtime support has been removed. The legacy database enum value and token
 column remain read-only so historical rows can be inspected. Before upgrading,

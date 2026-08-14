@@ -84,12 +84,18 @@ Claims are strict tagged objects:
 | --- | --- | --- |
 | `ip` | `ip` | historical framed Blindport IP, with all configured TCP listeners on one dedicated IP |
 | `port` | `ip`, `port`, `transport: "tcp"` or `"udp"` | Blindport Port, exactly one shared transport socket |
-| `relay` | lowercase `domain` | Blindport Relay, one valid DNS hostname on the SNI listener |
+| `relay` | lowercase `domain`, optional `scope: "wildcard"` | Blindport Relay, one exact hostname or one wildcard base on the SNI listener |
 
 Fields belonging to another claim type are rejected. Blindport IP and Blindport Relay
 accept an omitted transport for legacy compatibility or explicit `tcp`;
 Blindport Port requires it. TCP and UDP on the same numeric IP and port are distinct
 claims.
+
+An exact Relay claim matches only its `domain`. A wildcard Relay claim matches
+its base `domain` and every hostname strictly below that base. Public SNI lookup
+prefers an exact claim, then a wildcard claim at the requested hostname, then the
+longest matching wildcard suffix. This routing interpretation does not require a
+new frame version because the existing scope marker identifies wildcard claims.
 
 An omitted frame version is legacy version `0` and remains valid for TCP claims.
 UDP requires version `1`. Relays return their current version in `hello_ok` and
@@ -156,32 +162,43 @@ stream after a bounded timeout; this does not close sibling streams or the
 shared control tunnel.
 
 Before a Blindport Relay claim can become active, the control plane classifies its
-canonical hostname under one of three DNS models. Names strictly beneath a
-configured provider-managed wildcard suffix bypass customer proof. Non-apex,
-non-wildcard customer subdomains receive a stable, subscription-specific CNAME target under
-one configured relay-pool base and require an exact direct CNAME response before
+canonical hostname by DNS model. Names strictly beneath a configured
+provider-managed wildcard suffix bypass customer proof. Exact non-apex customer
+subdomains receive a stable, subscription-specific CNAME target under one
+configured relay-pool base and require an exact direct CNAME response before
 payment. The target's generated lowercase label contains 128 bits of randomness.
-A verification lookup requests only the CNAME type at the canonical customer
-hostname, disables resolver search expansion, accepts one absolute target, and
-requires canonical exact equality. CNAME chains, A/AAAA flattening, other pool
-targets, and resolver failures do not prove control.
+That lookup requests only CNAME at the canonical customer hostname, disables
+resolver search expansion, accepts one absolute target, and requires canonical
+exact equality. CNAME chains, A/AAAA flattening, other pool targets, and resolver
+failures do not prove control.
+
+A customer-owned wildcard claim retains a TXT ownership token at
+`_blindport-challenge.<base>` and requires `*.<base>` to be a DNS-only CNAME to
+the selected Relay pool target. Verification queries a deterministic descendant
+of the base so the required wildcard answer is exercised without confusing it
+with an optional base record. The claim routes both `<base>` and all descendants.
+Pointing `<base>` to the same target is optional and is not checked before
+payment. A subdomain base can use CNAME; a DNS zone apex requires provider ALIAS,
+ANAME, or CNAME flattening. Wildcard claims use TLS passthrough, and an origin
+certificate must cover every pointed name, including the base separately from
+wildcard descendants.
 A future registrar or authoritative-DNS integration may automate record changes
 through the same control-plane API, but that facility is not part of v0.
 Blindport itself is not currently an authoritative DNS server. DNS verification
 changes subscription eligibility only; the relay does not authorize the claim
 until payment activates the subscription. Managed names have a 30-minute initial
 payment deadline; customer-owned names have a one-hour DNS and payment deadline.
-Verification does not reset that deadline. Pending claims created
-before the CNAME rollout retain their existing TXT challenge only until that
-bounded claim expires.
+Verification does not reset that deadline. Pending exact claims created before
+the CNAME rollout retain their existing TXT challenge only until that bounded
+claim expires. Wildcard claims retain their TXT token for renewal proof.
 
 At the end of an active Blindport Relay billing period, the backend removes the name
 from resolution immediately. A bounded renewal grace reserves the name to the
 same subscription but grants no tunnel authorization. Renewal during grace
-requires a fresh exact-CNAME lookup and retains the assigned target; release after grace requires any new
-claimant to pass the normal managed or customer-owned rules again with a newly
-generated target. Activation, renewal, and renewal grace retain the assigned
-CNAME target; final release clears it.
+requires fresh DNS proof for the claim's model and retains the assigned target;
+release after grace requires any new claimant to pass the normal managed or
+customer-owned rules again. Activation, renewal, and renewal grace retain the
+assigned CNAME or pool target; final release clears it.
 Before either initial or renewal release, open Lightning, stablecoin swap, and NWC payments are
 reconciled. Confirmed settlement activates the name, while uncertain provider
 state or an irreversible `PROCESSING` payment blocks handoff for operator

@@ -20,7 +20,7 @@ routed plane and does not use the framed tunnel protocol.
 | --- | --- | --- |
 | Blindport IP | one dedicated public IP | annual routed WireGuard `/32` |
 | Blindport Port | one shared public IP, one port, and TCP or UDP | exact destination socket |
-| Blindport Relay | one hostname | TLS ClientHello SNI on a shared listener |
+| Blindport Relay | one exact hostname or customer-owned wildcard base | TLS ClientHello SNI on a shared listener |
 
 `WIREGUARD_PUBLIC_IPS` is the current Blindport IP sale inventory and must not be
 bound as relay listener addresses. `RELAY_PUBLIC_IPS` is retained only for
@@ -183,29 +183,38 @@ creation and upgrades. Application startup never calls `metadata.create_all()`.
 
 Blindport Relay's unique domain row is its reservation. Provider-managed names are
 immediately verified only when they are strictly below a configured managed
-suffix. At creation, customer-owned names receive a unique CNAME target whose
-lowercase child label contains 128 bits of cryptographic randomness. The target
-is stored in the existing pool-domain field and remains stable for the retained
-claim. Customer claims cannot create a payment until the requested hostname has
-one direct CNAME answer exactly equal to that target. Unverified claims and
-verified-but-unpaid claims retain a one-hour eligibility deadline; managed unpaid
-claims retain a 30-minute deadline. Successful verification does not extend or
-remove that deadline. An account may hold at most two unpaid Relay claims. Pending rows
-with a pre-rollout TXT token retain the legacy TXT path until their existing
-claim expires; new rows never receive a token. When an active claim expires,
-authorization stops immediately and a
-separate renewal deadline reserves the verified domain for its existing owner.
-Creating a payment during that bounded grace requires another exact CNAME lookup
-before the same domain can reactivate. The periodic payment reconciler and
-request-time reaper cancel elapsed claims and
-clears the domain, verification fields, and pool-domain assignment. Active
-rows and unelapsed renewal holds do not match the release update. Before release,
-the reaper checks open Lightning, stablecoin swap, and NWC payments against their providers so a
-boundary settlement wins. An uncertain provider check or an irreversible
-`PROCESSING` payment retains the claim for operator reconciliation. The final
-release is conditional on no open payment, while payment settlement remains a
-one-time conditional transaction. Pool-domain assignment is load-distribution
-metadata and is not scarce socket inventory.
+suffix. At creation, exact customer-owned names receive a unique CNAME target
+whose lowercase child label contains 128 bits of cryptographic randomness. The
+target is stored in the existing pool-domain field and remains stable for the
+retained claim. Exact customer claims cannot create a payment until the requested
+hostname has one direct CNAME answer exactly equal to that target. Pending exact
+rows with a pre-rollout TXT token retain the legacy TXT path until their existing
+claim expires; new exact rows never receive a token.
+
+Customer-owned wildcard claims retain a TXT ownership token and one selected
+Relay pool base. Payment requires the TXT proof plus a CNAME answer from a
+deterministic descendant probe, proving that the displayed `*.<base>` CNAME is
+active. The optional base record is deliberately outside payment verification.
+The same wildcard price and claim route the base plus all descendants. Exact SNI
+routes take precedence, then a wildcard at the requested base, then the longest
+matching wildcard suffix.
+
+Unverified claims and verified-but-unpaid claims retain a one-hour eligibility
+deadline; managed unpaid claims retain a 30-minute deadline. Successful
+verification does not extend or remove that deadline. An account may hold at
+most two unpaid Relay claims. When an active claim expires, authorization stops
+immediately and a separate renewal deadline reserves the verified domain for its
+existing owner. Creating a payment during that bounded grace repeats the exact
+CNAME check or wildcard TXT and descendant-probe checks before the same domain
+can reactivate. The periodic payment reconciler and request-time reaper cancel
+elapsed claims and clear the domain, verification fields, and pool-domain
+assignment. Active rows and unelapsed renewal holds do not match the release
+update. Before release, the reaper checks open Lightning, stablecoin swap, and
+NWC payments against their providers so a boundary settlement wins. An uncertain
+provider check or an irreversible `PROCESSING` payment retains the claim for
+operator reconciliation. The final release is conditional on no open payment,
+while payment settlement remains a one-time conditional transaction. Pool-domain
+assignment is load-distribution metadata and is not scarce socket inventory.
 
 An optional process-local Bitcoin/USD cache fetches the fixed mempool.space price
 endpoint outside request handling. Strictly validated last-good values may be used
@@ -241,6 +250,11 @@ loss or latency behavior.
 Blindport Relay reads only enough TLS ClientHello bytes to obtain SNI, then replays
 those bytes through the tunnel. User TLS remains end to end between the external
 client and local upstream.
+
+SNI dispatch checks an exact hostname tunnel first. It then checks a wildcard
+tunnel whose base equals the requested hostname, followed by wildcard suffixes
+from longest to shortest. This preserves exact-route precedence and label
+boundaries while including the wildcard base itself.
 
 When the optional HTTP listener is enabled, it accepts bounded HTTP/1.1 `GET`
 requests with a canonical domain Host. Requests below
@@ -336,12 +350,15 @@ Blindport Relay has three DNS operating models:
 1. **Managed wildcard:** the provider configures suffixes such as
    `relay.example.net`, publishes wildcard ingress records, and leases only
    names strictly below each suffix. The suffix apex remains provider-owned.
-2. **Customer-owned DNS:** the customer requests an arbitrary hostname and
-   publishes one CNAME from that hostname to the unique target returned by the
-   subscription API. The control plane makes a bounded direct CNAME query with
-   resolver search disabled and requires the one returned absolute target to
-   equal the assigned target after canonicalization. It does not follow CNAME
-   chains or accept A/AAAA flattening, another pool target, or failed lookups.
+2. **Customer-owned DNS:** an exact-name customer publishes one CNAME from the
+   requested hostname to the unique target returned by the subscription API.
+   The control plane makes a bounded direct CNAME query with resolver search
+   disabled and requires the one returned absolute target to equal the assigned
+   target after canonicalization. A wildcard customer publishes TXT ownership
+   proof and a wildcard CNAME to the selected Relay pool. The wildcard's base
+   record is optional for routing and is not verified for payment. Subdomain
+   bases can use CNAME; zone apexes require provider ALIAS, ANAME, or CNAME
+   flattening. Neither model follows CNAME chains or accepts failed lookups.
 3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
    sets through multiple explicit recursive resolvers and retains one latest sanitized
    observation per name. It does not mutate authoritative DNS. A future fenced registrar or

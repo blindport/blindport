@@ -397,9 +397,11 @@ renewal remains a separate dashboard setting.
 `payment_pending` means an NWC-created initial payment is awaiting settlement or
 reconciliation, not that the endpoint is active. Without NWC, the order is
 `awaiting_payment` until the dashboard payment settles. A customer-owned Relay
-domain is `awaiting_domain` until the customer publishes the exact DNS-only CNAME
-shown in the dashboard and verification succeeds; no payment is created or
-attempted first.
+domain is `awaiting_domain` until the dashboard DNS instructions verify; no
+payment is created or attempted first. Exact-name subscriptions require the
+exact DNS-only CNAME shown. Wildcard subscriptions require the TXT ownership
+challenge and wildcard CNAME; pointing the included base hostname is optional
+and does not affect payment eligibility.
 
 In version 3, the pending subscription appears only in the dashboard belonging
 to the selected account token. Existing NWC auto-payment settings for that

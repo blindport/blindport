@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public receiver fills the per-stream queue.
 - Lightning Swap checkout now uses a percent-encoded BOLT11 query parameter in a new
   provider tab and no longer requires provider API credentials or prepared orders.
+- Customer-owned wildcard Relay subscriptions now route their base hostname in
+  addition to all descendants at the existing wildcard price. Base DNS remains
+  optional, while exact routes retain precedence.
 
 ## [0.2.3] - 2026-08-04
 

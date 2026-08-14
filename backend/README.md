@@ -106,6 +106,8 @@ pool settings are valid and report unavailable capacity through the catalog. The
 apply to private payment-provider endpoints such as an internal LND hostname.
 
 Each `RELAY_POOL_DOMAINS` entry must leave room for a 32-character generated child label. Operators
-must publish wildcard ingress records below each pool base. New customer-owned Relay claims receive
-one stable, random child target at creation and must point the requested hostname directly to it with
-a CNAME before payment.
+must publish wildcard ingress records below each pool base. New exact customer-owned Relay claims
+receive one stable, random child target at creation and must point the requested hostname directly to
+it with a CNAME before payment. Wildcard claims instead retain a TXT ownership token and require a
+wildcard CNAME to a selected pool base. The wildcard scope routes its base plus all descendants, but
+pointing the base is optional and is not checked before payment.
