@@ -71,6 +71,13 @@ queue immediately. UDP retains the nonblocking drop policy described below.
 Serialized frame writes have a 10-second deadline; a peer that stops reading
 loses that tunnel instead of holding its write mutex and ingress handlers
 indefinitely.
+
+TCP OPEN frames carry the direct peer in `src`, an authorization-sensitive logical
+route in `dst`, and may carry the Relay listener address in `dst_addr`. The physical
+destination is separate because wildcard Relay lookup keys are not network
+addresses. New Relays include `dst_addr`; clients that do not request local PROXY
+protocol forwarding can ignore it. A configured agent fails the individual stream
+closed if either physical address cannot produce a valid PROXY protocol header.
 The agent applies one 10-second deadline across the HELLO write and reply read,
 then clears the connection deadline after receiving `hello_ok`. The relay gives
 the incoming HELLO the same 10-second read deadline, caps its encoded frame at 8
@@ -147,8 +154,10 @@ packet without terminating the association or control tunnel. Tunnel UDP queues
 also count against the shared 64 MiB and 4,096-frame receive budget.
 
 For a Relay stream, destination metadata is authorization-sensitive. It is
-exactly `domain:<claimed-hostname>:443` for public TLS and
-`domain:<claimed-hostname>:80` for a relay-validated HTTP-01 request. In legacy
+exactly `domain:<requested-hostname>:443` for public TLS and
+`domain:<requested-hostname>:80` for a relay-validated HTTP-01 request. Exact
+claims require that hostname to equal the claim. Wildcard claims permit their base
+and label-boundary descendants. In legacy
 and explicit passthrough mode, destination 443 remains opaque end-to-end TLS and
 destination 80 is accepted only when a separate challenge upstream is
 configured. In automatic mode, one per-hostname agent manager shared by every
@@ -182,6 +191,10 @@ payment. A subdomain base can use CNAME; a DNS zone apex requires provider ALIAS
 ANAME, or CNAME flattening. Wildcard claims use TLS passthrough, and an origin
 certificate must cover every pointed name, including the base separately from
 wildcard descendants.
+
+HTTP-01 can authorize an exact base or descendant name through a wildcard Relay
+claim when `http_challenge_upstream` is configured. ACME wildcard certificates
+still require DNS-01; forwarding an HTTP-01 request does not change that CA rule.
 A future registrar or authoritative-DNS integration may automate record changes
 through the same control-plane API, but that facility is not part of v0.
 Blindport itself is not currently an authoritative DNS server. DNS verification

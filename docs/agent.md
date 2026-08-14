@@ -133,7 +133,7 @@ Pass `--config /etc/blindport/config.json` or set
       "tls_mode": "automatic",
       "acme_terms_accepted": true
     },
-    {"subscription_id": "45645645-6456-4456-8456-456456456456", "upstream": "tls-proxy:443", "tls_mode": "passthrough", "http_challenge_upstream": "tls-proxy:80"}
+    {"subscription_id": "45645645-6456-4456-8456-456456456456", "upstream": "tls-proxy:443", "tls_mode": "passthrough", "http_challenge_upstream": "tls-proxy:80", "proxy_protocol": "v2"}
   ]
 }
 ```
@@ -190,6 +190,20 @@ TLS continues to `upstream` on port 443. Other valid HTTP GET requests receive a
 permanent same-host HTTPS redirect directly from the relay and never reach the
 agent. Legacy mode exposes the same setting through `--http-challenge-upstream` or
 `BLINDPORT_HTTP_CHALLENGE_UPSTREAM`.
+
+Set `proxy_protocol` to `v2` when a trusted local reverse proxy needs the external
+client address. The agent writes one PROXY protocol v2 header before any bytes sent
+to `upstream` and, when configured, `http_challenge_upstream`. In passthrough mode
+the header precedes the original TLS ClientHello. In automatic mode it precedes the
+decrypted plaintext stream after `blindportd` terminates TLS. UDP mappings reject
+this option.
+
+The upstream must accept PROXY protocol only from the exact private address used by
+`blindportd`; never enable unrestricted trust. A reverse proxy such as Traefik can
+then derive `X-Forwarded-For` after HTTP parsing. `blindportd` does not inject or
+trust HTTP forwarding headers. A configured agent requires a Relay version that
+supplies the physical destination metadata used by the PROXY header; a missing or
+malformed address closes only the affected stream.
 
 Version 3 runs several named local accounts in one process. Each account has an
 owner-only token file, a non-overlapping private state directory, and its own
@@ -353,6 +367,7 @@ exclusive. Relay mappings may add `.tls_mode` as `automatic` or `passthrough`.
 Automatic mode also requires `.acme_terms_accepted: "true"`; omitted mode keeps
 legacy Docker mappings in passthrough mode. All provisioned relay-edge workers
 for one hostname share one in-process certificate and HTTP-01 challenge manager.
+TCP mappings may add `.proxy_protocol: "v2"`; UDP rejects it.
 
 For example, a declarative Port order selects its account and stable mapping key
 the same way:

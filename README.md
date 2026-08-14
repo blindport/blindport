@@ -45,6 +45,9 @@ The three products use distinct ingress identities:
   management in an existing origin server.
 
 Automatic Relay TLS terminates in the customer agent, not at the Blindport edge.
+TCP mappings can optionally send the Relay-observed client address to a narrowly
+trusted local reverse proxy with PROXY protocol v2; see the
+[Traefik wildcard example](examples/docker-traefik/README.md).
 Blindport Port supports TCP or UDP. WireGuard is the only currently issued
 Blindport IP delivery mode. Blindport Port and Blindport Relay remain application
 forwarding products; framed Blindport IP is retained only for historical service.

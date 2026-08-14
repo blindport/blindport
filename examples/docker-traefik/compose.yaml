@@ -1,0 +1,95 @@
+name: blindport-traefik-demo
+
+services:
+  site:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    restart: unless-stopped
+    networks: [app]
+    volumes:
+      - ./site/index.html:/usr/share/nginx/html/index.html:ro
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "blindport-traefik-app"
+      traefik.http.routers.site.rule: "Host(`${APP_HOSTNAME:?set APP_HOSTNAME}`)"
+      traefik.http.routers.site.entrypoints: "websecure"
+      traefik.http.routers.site.tls: "true"
+      traefik.http.routers.site.tls.certresolver: "letsencrypt-dns"
+      traefik.http.routers.site.tls.domains[0].main: "${BASE_DOMAIN:?set BASE_DOMAIN}"
+      traefik.http.routers.site.tls.domains[0].sans: "*.${BASE_DOMAIN:?set BASE_DOMAIN}"
+      traefik.http.services.site.loadbalancer.server.port: "80"
+
+  traefik:
+    image: ${TRAEFIK_IMAGE:-traefik:v3}
+    restart: unless-stopped
+    depends_on:
+      site:
+        condition: service_started
+    networks:
+      edge:
+        ipv4_address: 172.30.0.3
+      app: {}
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.proxyprotocol.trustedips=172.30.0.2/32
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.proxyprotocol.trustedips=172.30.0.2/32
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=blindport-traefik-app
+      - --certificatesresolvers.letsencrypt-dns.acme.email=${ACME_EMAIL:?set ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt-dns.acme.storage=/letsencrypt/dns.json
+      - --certificatesresolvers.letsencrypt-dns.acme.dnschallenge.provider=cloudflare
+      - --certificatesresolvers.letsencrypt-http.acme.email=${ACME_EMAIL:?set ACME_EMAIL}
+      - --certificatesresolvers.letsencrypt-http.acme.storage=/letsencrypt/http.json
+      - --certificatesresolvers.letsencrypt-http.acme.httpchallenge.entrypoint=web
+    environment:
+      CF_DNS_API_TOKEN_FILE: /run/secrets/cloudflare-dns-api-token
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ./secrets/cloudflare-dns-api-token:/run/secrets/cloudflare-dns-api-token:ro
+      - traefik-acme:/letsencrypt
+    labels:
+      tech.blindport.mapping.edge.account: "public"
+      tech.blindport.mapping.edge.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID}"
+      tech.blindport.mapping.edge.upstream: "traefik:443"
+      tech.blindport.mapping.edge.http_challenge_upstream: "traefik:80"
+      tech.blindport.mapping.edge.tls_mode: "passthrough"
+      tech.blindport.mapping.edge.proxy_protocol: "v2"
+
+  blindportd:
+    image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      traefik:
+        condition: service_started
+    command: ["--docker", "--config=/etc/blindport/accounts.json"]
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID}"
+    networks:
+      edge:
+        ipv4_address: 172.30.0.2
+    environment:
+      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ./config/accounts.json:/etc/blindport/accounts.json:ro
+      - ./secrets/public-token:/run/secrets/blindport-public:ro
+      - blindport-state:/var/lib/blindport
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+
+networks:
+  edge:
+    name: blindport-traefik-edge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+  app:
+    name: blindport-traefik-app
+
+volumes:
+  blindport-state:
+  traefik-acme:

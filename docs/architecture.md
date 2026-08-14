@@ -251,6 +251,14 @@ Blindport Relay reads only enough TLS ClientHello bytes to obtain SNI, then repl
 those bytes through the tunnel. User TLS remains end to end between the external
 client and local upstream.
 
+An opt-in mapping can prepend PROXY protocol v2 on the local TCP connection. The
+Relay records the direct external peer and accepted listener address separately
+from the authorization-sensitive logical destination. `blindportd` validates and
+encodes those addresses before sending application bytes. This lets a narrowly
+trusted local reverse proxy recover the client address without terminating TLS at
+the provider edge. Without this option, the upstream observes the agent's local
+address.
+
 SNI dispatch checks an exact hostname tunnel first. It then checks a wildcard
 tunnel whose base equals the requested hostname, followed by wildcard suffixes
 from longest to shortest. This preserves exact-route precedence and label
@@ -258,7 +266,8 @@ boundaries while including the wildcard base itself.
 
 When the optional HTTP listener is enabled, it accepts bounded HTTP/1.1 `GET`
 requests with a canonical domain Host. Requests below
-`/.well-known/acme-challenge/` select the same active Blindport Relay claim, but
+`/.well-known/acme-challenge/` use the same exact-first and longest-wildcard claim
+selection as TLS ingress, but
 the tunnel stream has destination port 80 so `blindportd` can dial a separate
 plaintext challenge upstream. Other paths receive a bodyless `308 Permanent
 Redirect` to the same host, path, and query over HTTPS without a tunnel lookup.

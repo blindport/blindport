@@ -533,6 +533,56 @@ assert services["site"]["labels"]["tech.blindport.mapping.site.acme_terms_accept
 '
 }
 
+docker_traefik_example_check() {
+    docker compose \
+        --env-file "$root/examples/docker-traefik/.env.example" \
+        -f "$root/examples/docker-traefik/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+config = json.load(sys.stdin)
+services = config["services"]
+assert set(services) == {"blindportd", "site", "traefik"}
+assert all(not service.get("ports") for service in services.values())
+assert services["blindportd"]["networks"]["edge"]["ipv4_address"] == "172.30.0.2"
+assert services["traefik"]["networks"]["edge"]["ipv4_address"] == "172.30.0.3"
+
+labels = services["traefik"]["labels"]
+assert labels["tech.blindport.mapping.edge.upstream"] == "traefik:443"
+assert labels["tech.blindport.mapping.edge.http_challenge_upstream"] == "traefik:80"
+assert labels["tech.blindport.mapping.edge.tls_mode"] == "passthrough"
+assert labels["tech.blindport.mapping.edge.proxy_protocol"] == "v2"
+assert "tech.blindport.mapping.edge.acme_terms_accepted" not in labels
+
+commands = set(services["traefik"]["command"])
+assert "--entrypoints.web.proxyprotocol.trustedips=172.30.0.2/32" in commands
+assert "--entrypoints.websecure.proxyprotocol.trustedips=172.30.0.2/32" in commands
+assert not any("proxyprotocol.insecure" in command for command in commands)
+assert any("dnschallenge.provider=cloudflare" in command for command in commands)
+assert any("httpchallenge.entrypoint=web" in command for command in commands)
+
+site_labels = services["site"]["labels"]
+assert site_labels["traefik.http.routers.site.tls.certresolver"] == "letsencrypt-dns"
+assert site_labels["traefik.http.routers.site.tls.domains[0].main"] == "example.com"
+assert site_labels["traefik.http.routers.site.tls.domains[0].sans"] == "*.example.com"
+
+for name in ("blindportd", "traefik"):
+    socket = next(
+        volume
+        for volume in services[name]["volumes"]
+        if volume["target"] == "/var/run/docker.sock"
+    )
+    assert socket["read_only"] is True
+
+assert services["blindportd"]["read_only"] is True
+assert services["blindportd"]["cap_drop"] == ["ALL"]
+assert services["blindportd"]["security_opt"] == ["no-new-privileges:true"]
+assert "traefik-acme" in config["volumes"]
+'
+}
+
 ha_lab_policy_check() {
     docker compose \
         --profile tools \
@@ -686,6 +736,7 @@ caddy_admin_routing_policy_check \
 production_proxy_protocol_check Caddyfile
 production_proxy_protocol_check Caddyfile.internal
 docker_example_check
+docker_traefik_example_check
 ha_lab_policy_check
 
 echo "deployment configuration validation passed"

@@ -448,6 +448,18 @@ their normal DNS-01 workflow. Managed names can use the optional HTTP-01 path:
 3. Configure the origin ACME client to answer HTTP-01 on that second upstream.
 4. Test with the CA staging directory before requesting a production certificate.
 
+The HTTP-01 path supports exact hostnames routed by either an exact or wildcard
+Relay claim. It cannot issue an ACME wildcard certificate. Use DNS-01 at the origin
+for `*.example.com`; use HTTP-01 when the origin proxy requests an exact certificate
+such as `app.example.com`. In both cases TLS terminates on the customer machine.
+
+Set a mapping's `proxy_protocol` to `v2` when the origin proxy needs the direct
+client address. Configure both its TLS and HTTP challenge listeners to trust only
+the exact private `blindportd` address. The proxy can then produce
+`X-Forwarded-For` after TLS termination. Without this option it sees the agent as
+the TCP peer. See the [Traefik wildcard example](../examples/docker-traefik/README.md)
+for a complete Docker topology.
+
 Wildcard Relay is TLS passthrough-only. A wildcard certificate such as
 `*.example.com` does not cover `example.com`. If the optional base DNS record is
 pointed to Blindport, the origin TLS listener and certificate must cover that base
