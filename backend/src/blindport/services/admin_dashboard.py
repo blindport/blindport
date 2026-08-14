@@ -257,7 +257,7 @@ def _assigned_resource(subscription: Subscription) -> str:
             return "Unassigned"
         return f"{_enum_key(subscription.transport).upper()} {subscription.assigned_ip}:{subscription.assigned_port}"
     if subscription.domain and subscription.relay_hostname_scope == RelayHostnameScope.WILDCARD:
-        return f"*.{subscription.domain}"
+        return f"{subscription.domain} + *.{subscription.domain}"
     return subscription.domain or subscription.relay_pool_domain or "Unassigned"
 
 

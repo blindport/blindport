@@ -33,9 +33,9 @@
     {% set ip_wireguard_available = ip.available and ip.capacity.wireguard_available %}
     <article>
       <h3>Blindport Relay</h3>
-      <p class="product-purpose">One exact hostname or a customer-owned wildcard base</p>
+      <p class="product-purpose">One exact hostname, or a wildcard price for <code>base</code> plus <code>*.base</code></p>
       <p class="price-line">{{ relay.relay_scopes.exact.monthly_price_sats }} <span>sats / 30 days for one exact hostname{% set relay_usd = approximate_usd(relay.relay_scopes.exact.monthly_price_sats) %}{% if relay_usd %} · about {{ relay_usd }} USD{% endif %}</span></p>
-      <p class="price-line">{{ relay.relay_scopes.wildcard.monthly_price_sats }} <span>sats / 30 days for one wildcard base{% set relay_wildcard_usd = approximate_usd(relay.relay_scopes.wildcard.monthly_price_sats) %}{% if relay_wildcard_usd %} · about {{ relay_wildcard_usd }} USD{% endif %}</span></p>
+      <p class="price-line">{{ relay.relay_scopes.wildcard.monthly_price_sats }} <span>sats / 30 days for <code>base</code> plus <code>*.base</code>{% set relay_wildcard_usd = approximate_usd(relay.relay_scopes.wildcard.monthly_price_sats) %}{% if relay_wildcard_usd %} · about {{ relay_wildcard_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>Managed name, customer-owned subdomain, or customer-owned wildcard base</li>
         <li>Shared port 443, routed by visible TLS SNI</li>
@@ -211,7 +211,7 @@
               <legend>Hostname scope</legend>
               <div class="choice-list compact">
                 <label><input type="radio" name="relayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span><strong>Exact hostname</strong> (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
-                <label><input type="radio" name="relayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span><strong>Customer-owned wildcard base</strong> (<strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+                <label><input type="radio" name="relayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span><strong>Customer-owned wildcard base</strong> (price includes <code>base</code> + <code>*.base</code>, <strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
               </div>
             </fieldset>
             <fieldset>
@@ -237,7 +237,7 @@
               <label id="customerDomainLabel" for="customerDomain">Full public hostname</label>
               <input id="customerDomain" name="customerDomain" type="text" inputmode="url" autocomplete="off" placeholder="service.example.com" maxlength="253">
               <p id="customerDomainHelp" class="field-help">After ordering, add the exact DNS-only CNAME record shown in the dashboard, then check DNS.</p>
-              <p id="wildcardDomainPreview" class="field-help" hidden>Wildcard route: <strong>Enter a base domain</strong></p>
+              <p id="wildcardDomainPreview" class="field-help" hidden>Wildcard price includes <strong class="wildcard-base-preview">a base domain</strong> + <strong class="wildcard-descendant-preview">*.base</strong></p>
             </div>
           </div>
           <div class="form-actions">

@@ -1272,8 +1272,8 @@ func (r *relay) handleSNIConn(conn net.Conn) {
 	}
 }
 
-// forwardToRelay resolves exact names before wildcard suffixes. Wildcard
-// claims are strict-descendant matches, so the base hostname never matches.
+// forwardToRelay resolves exact names before wildcard claims. A wildcard claim
+// matches its base hostname and descendants, preferring the longest suffix.
 func (r *relay) forwardToRelay(conn net.Conn, hostname, port string) bool {
 	key, ok := r.relayTunnelKey(hostname)
 	if !ok {
@@ -1288,6 +1288,10 @@ func (r *relay) relayTunnelKey(hostname string) (string, bool) {
 	exact := "domain:" + hostname
 	if r.getTunnel(exact) != nil {
 		return exact, true
+	}
+	wildcard := "domain:wildcard:" + hostname
+	if r.getTunnel(wildcard) != nil {
+		return wildcard, true
 	}
 	labels := strings.Split(hostname, ".")
 	for index := 1; index < len(labels); index++ {

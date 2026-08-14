@@ -385,13 +385,19 @@ def test_landing_wildcard_relay_order_uses_wildcard_price_and_scope(
         )
         page.locator("#customerDomain").fill("base.example")
         assert page.locator("#wildcardDomainPreview").inner_text() == (
-            "Wildcard route: *.base.example"
+            "Wildcard price includes base.example + *.base.example"
+        )
+        assert (
+            "price includes base + *.base"
+            in page.locator(
+                'label:has(input[name="relayHostnameScope"][value="wildcard"])'
+            ).inner_text()
         )
         page.locator("#toReviewBtn").click()
         assert page.locator("#reviewPrice").text_content() == "7500"
         assert (
             page.locator("#reviewConfig").text_content()
-            == "*.base.example (TLS passthrough)"
+            == "base.example + *.base.example (TLS passthrough)"
         )
         with page.expect_response(
             lambda response: (
@@ -451,7 +457,13 @@ def test_dashboard_wildcard_relay_order_uses_wildcard_price_and_scope(
         assert page.locator("#selectedPrice").text_content() == "7500 sats / 30 days"
         page.locator("#domain").fill("dashboard-base.example")
         assert page.locator("#dashboardWildcardDomainPreview").inner_text() == (
-            "Wildcard route: *.dashboard-base.example"
+            "Wildcard price includes dashboard-base.example + *.dashboard-base.example"
+        )
+        assert (
+            "price includes base + *.base"
+            in page.locator(
+                'label:has(input[name="dashboardRelayHostnameScope"][value="wildcard"])'
+            ).inner_text()
         )
         with page.expect_response(
             lambda response: (
@@ -1376,6 +1388,15 @@ def test_dashboard_payment_controls_require_successful_dns_check(
         assert lightning.is_disabled()
         assert stablecoin.is_disabled()
         assert inline_nwc.is_disabled()
+        dns_guidance = card.locator(".dns-instructions").inner_text()
+        assert "required wildcard record type" in dns_guidance.lower()
+        assert "*.payment-dns-failure.example" in dns_guidance
+        assert "standard CNAME when the base is a subdomain" in dns_guidance
+        assert "ALIAS, ANAME, or CNAME flattening" in dns_guidance
+        assert (
+            "optional base record is not checked for payment verification"
+            in dns_guidance
+        )
         stablecoin.click(force=True)
         page.wait_for_timeout(100)
         assert payment_requests == []
@@ -1601,15 +1622,19 @@ def test_active_wildcard_relay_setup_uses_tls_passthrough(
         )
         assert mapping.get_attribute("data-tls-mode") == "passthrough"
         assert mapping.get_by_text(
-            "*.browser-wildcard.example", exact=True
+            "browser-wildcard.example + *.browser-wildcard.example", exact=True
         ).is_visible()
         assert mapping.get_by_text("TLS passthrough", exact=True).is_visible()
         assert page.locator("#acmeTermsAccepted").count() == 0
+        guidance = page.get_by_text("Wildcard Relay uses TLS passthrough", exact=False)
+        assert "including a DNS zone apex" in guidance.text_content()
         assert (
-            "local TLS listener"
-            in page.get_by_text(
-                "Wildcard Relay uses TLS passthrough", exact=False
-            ).text_content()
+            "local TLS listener and certificate must serve both the base and its descendant"
+            in (guidance.text_content())
+        )
+        card = page.locator(f'.subscription-card[data-sub-id="{subscription["id"]}"]')
+        assert "includes browser-wildcard.example + *.browser-wildcard.example" in (
+            card.locator(".sub-details-compact").inner_text()
         )
 
         mapping.locator(".mappingUpstream").fill("127.0.0.1:8443")

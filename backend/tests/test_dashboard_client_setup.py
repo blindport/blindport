@@ -263,9 +263,14 @@ def test_server_rendered_wildcard_relay_uses_passthrough_without_acme(app_client
     dashboard = _dashboard(client, token)
     config = json.loads(_element_text(dashboard, "generatedClientConfig"))
 
-    assert "*.rendered-wildcard.example" in dashboard
+    assert "rendered-wildcard.example + *.rendered-wildcard.example" in dashboard
     assert 'id="acmeTermsAccepted"' not in dashboard
     assert "Wildcard Relay uses TLS passthrough" in dashboard
+    assert "including a DNS zone apex" in dashboard
+    assert (
+        "local TLS listener and certificate must serve both the base and its descendant"
+        in dashboard
+    )
     assert config["accounts"][0]["mappings"] == [
         {
             "subscription_id": public_id,

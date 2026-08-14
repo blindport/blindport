@@ -132,10 +132,12 @@ function updateDashboardWildcardDomainPreview() {
   const wildcard = selectedDashboardRelayHostnameScope() === "wildcard";
   const domain = document.getElementById("domain").value.trim();
   document.getElementById("dashboardWildcardDomainPreview").hidden = !wildcard;
-  document.getElementById("dashboardWildcardDomainPreview").querySelector("strong").textContent =
-    domain ? `*.${domain}` : "Enter a base domain";
+  document.querySelector("#dashboardWildcardDomainPreview .wildcard-base-preview").textContent =
+    domain || "a base domain";
+  document.querySelector("#dashboardWildcardDomainPreview .wildcard-descendant-preview").textContent =
+    domain ? `*.${domain}` : "*.base";
   document.getElementById("dashboardCustomerDomainHelp").textContent = wildcard
-    ? "Enter a customer-owned base domain without '*.'. It routes strict descendant hostnames and requires TLS passthrough."
+    ? "Enter a customer-owned base domain without '*.'. Its price includes the base hostname and wildcard descendants, and it requires TLS passthrough."
     : "Enter the exact hostname to publish, not only the root domain.";
   document.getElementById("dashboardCustomerDomainLabel").textContent = wildcard
     ? "Customer-owned base domain"

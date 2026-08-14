@@ -117,7 +117,7 @@ def test_admin_resource_label_marks_wildcard_scope() -> None:
         monthly_price_sats=7500,
     )
 
-    assert _assigned_resource(subscription) == "*.admin.example"
+    assert _assigned_resource(subscription) == "admin.example + *.admin.example"
 
 
 def test_anonymous_wildcard_order_snapshots_wildcard_price(app_client, monkeypatch) -> None:

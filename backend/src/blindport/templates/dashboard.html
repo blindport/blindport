@@ -52,13 +52,13 @@
               <header>
                 <div>
                   <p class="endpoint-kind">{% if s.product.value == "ip" %}{{ "Historical framed IP" if legacy_ip else "Routed dedicated /32" }}{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
-                  <h3>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}*.{% endif %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
+                  <h3>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}{{ s.domain }} + *.{% endif %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
                 </div>
                 <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
               </header>
 
               <div class="route-line" aria-label="Traffic route">
-                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{% if s.relay_hostname_scope.value == "wildcard" %}*.{% endif %}{{ s.domain }}:443</code>{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}<code>{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
+                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{% if s.relay_hostname_scope.value == "wildcard" %}{{ s.domain }}:443 + *.{% endif %}{{ s.domain }}:443</code>{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}<code>{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
                 <span class="route-arrow" aria-hidden="true">&rarr;</span>
                 <span><small>Origin</small><strong>{% if s.status.value == "active" %}Set in blindportd{% else %}Connect after activation{% endif %}</strong></span>
               </div>
@@ -66,7 +66,7 @@
               {% set card_sats = s.yearly_price_sats if s.billing_term.value == "yearly" else s.monthly_price_sats %}
               {% set card_usd = approximate_usd(card_sats) %}
               <dl class="sub-details sub-details-compact">
-                <div><dt>Price</dt><dd><span class="cardPrice">{{ card_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days<span class="cardUsd">{% if card_usd %} (about {{ card_usd }} USD){% endif %}</span></dd></div>
+                <div><dt>Price</dt><dd><span class="cardPrice">{{ card_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days{% if s.relay_hostname_scope.value == "wildcard" %}, includes <code>{{ s.domain }}</code> + <code>*.{{ s.domain }}</code>{% endif %}<span class="cardUsd">{% if card_usd %} (about {{ card_usd }} USD){% endif %}</span></dd></div>
                 {% if s.current_period_end %}<div><dt>Active until</dt><dd>{{ s.current_period_end }}</dd></div>{% endif %}
                 {% if upgrade_source %}<div><dt>Upgrade</dt><dd>Replacing <code>{{ upgrade_source.domain }}</code> after payment</dd></div>{% endif %}
                 {% if upgrade_source %}<div><dt>Wildcard credit</dt><dd>{{ s.upgrade_credit_sats }} sats, due <span class="upgradeDue">{{ card_sats - s.upgrade_credit_sats }}</span> sats</dd></div>{% endif %}
@@ -103,9 +103,10 @@
                       <span>Type</span><code>TXT</code>
                       <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
                       <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
-                      <span>Type</span><code>CNAME</code>
+                      <span>Required wildcard record type</span><code>CNAME</code>
                       <span>Name</span><code>*.{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
+                      <p class="field-help">This wildcard CNAME is required for payment verification. To also route <code>{{ s.domain }}</code>, point it to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain; at a DNS zone apex, use your provider's ALIAS, ANAME, or CNAME flattening. The optional base record is not checked for payment verification.</p>
                     {% elif s.domain_verification_token %}
                       <span>Type</span><code>TXT</code>
                       <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
@@ -115,7 +116,7 @@
                       <span>Name</span><code>{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
                     {% endif %}
-                    <p class="field-help">{% if s.relay_hostname_scope.value == "wildcard" %}Wildcard Relay requires TLS passthrough. Verify DNS before payment becomes available.{% else %}Use the full hostname shown above. Verify DNS before payment becomes available.{% endif %}</p>
+                    <p class="field-help">{% if s.relay_hostname_scope.value == "wildcard" %}Wildcard Relay requires TLS passthrough. Verify the TXT challenge and required wildcard CNAME before payment becomes available.{% else %}Use the full hostname shown above. Verify DNS before payment becomes available.{% endif %}</p>
                     <div class="button-row">
                       <button type="button" class="verifyDomainBtn button-secondary" data-sub-id="{{ s.public_id }}">Check DNS</button>
                       {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}" disabled>Pay with Lightning</button>{% endif %}
@@ -212,7 +213,7 @@
               <legend>Hostname scope</legend>
               <div class="choice-list compact">
                 <label><input type="radio" name="dashboardRelayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span>Exact hostname (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
-                <label><input type="radio" name="dashboardRelayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span>Customer-owned wildcard base (<strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+                <label><input type="radio" name="dashboardRelayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span>Customer-owned wildcard base (price includes <code>base</code> + <code>*.base</code>, <strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
               </div>
             </fieldset>
             <fieldset>
@@ -231,7 +232,7 @@
               <label id="dashboardCustomerDomainLabel" for="domain">Full public hostname</label>
               <input type="text" id="domain" placeholder="service.example.com" maxlength="253">
               <p id="dashboardCustomerDomainHelp" class="field-help">Enter the exact hostname to publish, not only the root domain.</p>
-              <p id="dashboardWildcardDomainPreview" class="field-help" hidden>Wildcard route: <strong>Enter a base domain</strong></p>
+              <p id="dashboardWildcardDomainPreview" class="field-help" hidden>Wildcard price includes <strong class="wildcard-base-preview">a base domain</strong> + <strong class="wildcard-descendant-preview">*.base</strong></p>
             </div>
           </div>
           <div class="form-actions form-actions-end"><span id="selectedPrice" class="selected-price" aria-live="polite"></span><button id="createSubBtn" type="submit">Create order</button></div>
@@ -257,7 +258,7 @@
               <div id="mappingControls" class="mapping-controls">
                 {% for s in client_subscriptions %}
                 <div class="mapping-control" data-subscription-id="{{ s.public_id }}" data-tls-mode="{{ 'automatic' if s.product.value == 'relay' and s.relay_hostname_scope.value != 'wildcard' else 'passthrough' }}">
-                  <div><strong>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}*.{% endif %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}{{ s.public_id }}{% endif %}</strong><span>{% if s.product.value == "relay" and s.relay_hostname_scope.value != "wildcard" %}Automatic HTTPS{% elif s.product.value == "relay" %}TLS passthrough{% else %}TCP/UDP passthrough{% endif %}</span></div>
+                  <div><strong>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}{{ s.domain }} + *.{% endif %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}{{ s.public_id }}{% endif %}</strong><span>{% if s.product.value == "relay" and s.relay_hostname_scope.value != "wildcard" %}Automatic HTTPS{% elif s.product.value == "relay" %}TLS passthrough{% else %}TCP/UDP passthrough{% endif %}</span></div>
                   <label for="mappingUpstream-{{ loop.index }}">Local target</label>
                   <input id="mappingUpstream-{{ loop.index }}" class="mappingUpstream" type="text" value="127.0.0.1:8080" maxlength="259" inputmode="url" autocomplete="off" spellcheck="false" aria-describedby="mappingError-{{ loop.index }}">
                   <p id="mappingError-{{ loop.index }}" class="mapping-error field-help" aria-live="polite"></p>
@@ -270,7 +271,7 @@
               <p class="field-help">For exact-name Blindport Relay, your agent terminates TLS and retains automatic certificate private keys while Blindport routes the connection.</p>
               <label class="terms-consent"><input id="acmeTermsAccepted" type="checkbox"> <span>I agree to the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> for automatic HTTPS.</span></label>
               {% endif %}
-              {% if wildcard_relay_subscriptions %}<p class="field-help">Wildcard Relay uses TLS passthrough. Point each mapping to a local TLS listener that serves the matching descendant hostnames.</p>{% endif %}
+              {% if wildcard_relay_subscriptions %}<p class="field-help">Wildcard Relay uses TLS passthrough. When you point a base hostname, including a DNS zone apex, its local TLS listener and certificate must serve both the base and its descendant hostnames.</p>{% endif %}
               <div class="field-group">
                 <label for="linuxHomePath">Absolute Linux home directory</label>
                 <input id="linuxHomePath" type="text" placeholder="/home/alice" maxlength="255" autocomplete="off" spellcheck="false" aria-describedby="linuxHomePathHelp">

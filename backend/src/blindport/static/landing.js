@@ -121,10 +121,12 @@ function updateWildcardDomainPreview() {
   const wildcard = selectedRelayHostnameScope() === "wildcard";
   const domain = document.getElementById("customerDomain").value.trim();
   document.getElementById("wildcardDomainPreview").hidden = !wildcard;
-  document.getElementById("wildcardDomainPreview").querySelector("strong").textContent =
-    domain ? `*.${domain}` : "Enter a base domain";
+  document.querySelector("#wildcardDomainPreview .wildcard-base-preview").textContent =
+    domain || "a base domain";
+  document.querySelector("#wildcardDomainPreview .wildcard-descendant-preview").textContent =
+    domain ? `*.${domain}` : "*.base";
   document.getElementById("customerDomainHelp").textContent = wildcard
-    ? "Enter a customer-owned base domain without '*.'. It routes strict descendant hostnames and requires TLS passthrough."
+    ? "Enter a customer-owned base domain without '*.'. Its price includes the base hostname and wildcard descendants, and it requires TLS passthrough."
     : "After ordering, add the exact DNS-only CNAME record shown in the dashboard, then check DNS.";
   document.getElementById("customerDomainLabel").textContent = wildcard
     ? "Customer-owned base domain"
@@ -214,7 +216,7 @@ function populateReview() {
   if (body.product === "port") configuration = `${body.transport.toUpperCase()} tuple`;
   if (body.product === "relay") {
     configuration = body.relay_hostname_scope === "wildcard"
-      ? `*.${body.domain} (TLS passthrough)`
+      ? `${body.domain} + *.${body.domain} (TLS passthrough)`
       : selectedValue("domainMode") === "customer"
       ? `${body.domain} (CNAME)`
       : body.domain;

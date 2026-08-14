@@ -168,9 +168,25 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "relay_scopes.wildcard.monthly_price_sats" in _asset("templates/landing.html")
     assert "relay_scopes.exact.monthly_price_sats" in _asset("templates/dashboard.html")
     assert "relay_scopes.wildcard.monthly_price_sats" in _asset("templates/dashboard.html")
-    assert "strict descendant hostnames and requires TLS passthrough" in landing
-    assert "strict descendant hostnames and requires TLS passthrough" in dashboard
-    assert "`*.${body.domain} (TLS passthrough)`" in landing
+    assert "price includes the base hostname and wildcard descendants" in landing
+    assert "price includes the base hostname and wildcard descendants" in dashboard
+    assert "Wildcard price includes" in _asset("templates/landing.html")
+    assert "Wildcard price includes" in _asset("templates/dashboard.html")
+    assert "price includes <code>base</code> + <code>*.base</code>" in _asset(
+        "templates/landing.html"
+    )
+    assert "price includes <code>base</code> + <code>*.base</code>" in _asset(
+        "templates/dashboard.html"
+    )
+    assert "Required wildcard record type" in _asset("templates/dashboard.html")
+    assert "The optional base record is not checked for payment verification." in _asset(
+        "templates/dashboard.html"
+    )
+    assert "standard CNAME when the base is a subdomain" in _asset("templates/dashboard.html")
+    assert "ALIAS, ANAME, or CNAME flattening" in _asset("templates/dashboard.html")
+    assert "The optional base record is not verified for payment." in _asset("templates/guide.html")
+    assert "including a zone apex" in _asset("templates/guide.html")
+    assert "`${body.domain} + *.${body.domain} (TLS passthrough)`" in landing
     assert "`${body.domain} (CNAME)`" in landing
     assert 'if (product === "ip") body.delivery = "wireguard"' in landing
     assert 'if (selectedProduct()?.value === "ip") return "yearly"' in landing
@@ -268,6 +284,11 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert 'id="acmeTermsAccepted" type="checkbox"' in dashboard
     assert "s.relay_hostname_scope.value != 'wildcard' else 'passthrough'" in dashboard
     assert "Wildcard Relay uses TLS passthrough" in dashboard
+    assert "including a DNS zone apex" in dashboard
+    assert (
+        "local TLS listener and certificate must serve both the base and its descendant"
+        in dashboard
+    )
     assert 'class="mappingUpstream"' in dashboard
     assert 'class="copyCommandBtn configDependent"' in dashboard
     assert 'id="framedRunCommand"' in dashboard

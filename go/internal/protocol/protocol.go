@@ -63,8 +63,8 @@ const (
 )
 
 // RelayHostnameScope identifies whether a Relay hostname claim applies to one
-// hostname or its strict descendants. The zero value remains exact so legacy
-// Claim JSON remains unchanged.
+// hostname or to a wildcard base and all its descendants. The zero value remains
+// exact so legacy Claim JSON remains unchanged.
 type RelayHostnameScope string
 
 const (

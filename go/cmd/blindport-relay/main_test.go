@@ -521,21 +521,27 @@ func TestRelayClaimScopeKeysAuthorizationAndSNILookup(t *testing.T) {
 	exactRaw, exactPeer := net.Pipe()
 	wildcardRaw, wildcardPeer := net.Pipe()
 	longerRaw, longerPeer := net.Pipe()
+	baseRaw, basePeer := net.Pipe()
 	defer exactPeer.Close()
 	defer wildcardPeer.Close()
 	defer longerPeer.Close()
+	defer basePeer.Close()
 	exact := tunnel.New(exactRaw, nil)
 	wildcard := tunnel.New(wildcardRaw, nil)
 	longer := tunnel.New(longerRaw, nil)
+	base := tunnel.New(baseRaw, nil)
 	exactClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "api.public.example"}
 	wildcardClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "public.example", Scope: protocol.RelayHostnameScopeWildcard}
 	longerClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "api.public.example", Scope: protocol.RelayHostnameScopeWildcard}
+	baseClaim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "nested.public.example", Scope: protocol.RelayHostnameScopeWildcard}
 	r.registerTunnel(claimKey(exactClaim), exactClaim.Kind, exact)
 	r.registerTunnel(claimKey(wildcardClaim), wildcardClaim.Kind, wildcard)
 	r.registerTunnel(claimKey(longerClaim), longerClaim.Kind, longer)
+	r.registerTunnel(claimKey(baseClaim), baseClaim.Kind, base)
 	defer r.unregisterTunnel(claimKey(exactClaim), exactClaim.Kind, exact)
 	defer r.unregisterTunnel(claimKey(wildcardClaim), wildcardClaim.Kind, wildcard)
 	defer r.unregisterTunnel(claimKey(longerClaim), longerClaim.Kind, longer)
+	defer r.unregisterTunnel(claimKey(baseClaim), baseClaim.Kind, base)
 
 	if got, want := claimKey(exactClaim), "domain:api.public.example"; got != want {
 		t.Fatalf("exact claim key = %q, want %q", got, want)
@@ -544,19 +550,24 @@ func TestRelayClaimScopeKeysAuthorizationAndSNILookup(t *testing.T) {
 		t.Fatalf("wildcard claim key = %q, want %q", got, want)
 	}
 	for _, test := range []struct {
+		name     string
 		hostname string
 		wantKey  string
 		wantOK   bool
 	}{
-		{hostname: "api.public.example", wantKey: claimKey(exactClaim), wantOK: true},
-		{hostname: "v1.api.public.example", wantKey: claimKey(longerClaim), wantOK: true},
-		{hostname: "public.example"},
-		{hostname: "badpublic.example"},
+		{name: "exact claim takes precedence over wildcard at same base", hostname: "api.public.example", wantKey: claimKey(exactClaim), wantOK: true},
+		{name: "wildcard matches its base hostname", hostname: "public.example", wantKey: claimKey(wildcardClaim), wantOK: true},
+		{name: "wildcard base takes precedence over parent suffix", hostname: "nested.public.example", wantKey: claimKey(baseClaim), wantOK: true},
+		{name: "longest wildcard suffix matches descendant", hostname: "v1.api.public.example", wantKey: claimKey(longerClaim), wantOK: true},
+		{name: "hostname without label boundary is rejected", hostname: "badpublic.example"},
+		{name: "unrelated hostname is rejected", hostname: "unrelated.example"},
 	} {
-		key, ok := r.relayTunnelKey(test.hostname)
-		if key != test.wantKey || ok != test.wantOK {
-			t.Fatalf("relayTunnelKey(%q) = %q, %t; want %q, %t", test.hostname, key, ok, test.wantKey, test.wantOK)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			key, ok := r.relayTunnelKey(test.hostname)
+			if key != test.wantKey || ok != test.wantOK {
+				t.Fatalf("relayTunnelKey(%q) = %q, %t; want %q, %t", test.hostname, key, ok, test.wantKey, test.wantOK)
+			}
+		})
 	}
 
 	resolution := &relayauth.Resolution{
