@@ -108,6 +108,7 @@ apply to private payment-provider endpoints such as an internal LND hostname.
 Each `RELAY_POOL_DOMAINS` entry must leave room for a 32-character generated child label. Operators
 must publish wildcard ingress records below each pool base. New exact customer-owned Relay claims
 receive one stable, random child target at creation and must point the requested hostname directly to
-it with a CNAME before payment. Wildcard claims instead retain a TXT ownership token and require a
-wildcard CNAME to a selected pool base. The wildcard scope routes its base plus all descendants, but
+it with a CNAME before payment. Wildcard claims instead retain a TXT ownership token, which is the
+only proof required before payment. Their wildcard CNAME to a selected pool base controls routing and
+can be added later for a no-downtime cutover. The wildcard scope routes its base plus all descendants;
 pointing the base is optional and is not checked before payment.

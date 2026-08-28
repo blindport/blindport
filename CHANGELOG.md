@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Customer-owned wildcard Relay subscriptions now route their base hostname in
   addition to all descendants at the existing wildcard price. Base DNS remains
   optional, while exact routes retain precedence.
+- Customer-owned wildcard Relay subscriptions require only their retained TXT
+  ownership challenge before initial and renewal payments. Routing CNAME records
+  can be changed later for a no-downtime migration.
 
 ## [0.2.3] - 2026-08-04
 

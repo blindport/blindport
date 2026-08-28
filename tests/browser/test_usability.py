@@ -11,12 +11,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, urlsplit
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from playwright.sync_api import Browser, Page, Playwright, sync_playwright
@@ -1389,14 +1389,14 @@ def test_dashboard_payment_controls_require_successful_dns_check(
         assert stablecoin.is_disabled()
         assert inline_nwc.is_disabled()
         dns_guidance = card.locator(".dns-instructions").inner_text()
-        assert "required wildcard record type" in dns_guidance.lower()
+        assert "routing record type" in dns_guidance.lower()
         assert "*.payment-dns-failure.example" in dns_guidance
         assert "standard CNAME when the base is a subdomain" in dns_guidance
         assert "ALIAS, ANAME, or CNAME flattening" in dns_guidance
         assert (
-            "optional base record is not checked for payment verification"
-            in dns_guidance
+            "Only the TXT record is checked for ownership and payment" in dns_guidance
         )
+        assert "CNAME can be added later for a no-downtime cutover" in dns_guidance
         stablecoin.click(force=True)
         page.wait_for_timeout(100)
         assert payment_requests == []

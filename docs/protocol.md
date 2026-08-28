@@ -182,15 +182,14 @@ exact equality. CNAME chains, A/AAAA flattening, other pool targets, and resolve
 failures do not prove control.
 
 A customer-owned wildcard claim retains a TXT ownership token at
-`_blindport-challenge.<base>` and requires `*.<base>` to be a DNS-only CNAME to
-the selected Relay pool target. Verification queries a deterministic descendant
-of the base so the required wildcard answer is exercised without confusing it
-with an optional base record. The claim routes both `<base>` and all descendants.
-Pointing `<base>` to the same target is optional and is not checked before
-payment. A subdomain base can use CNAME; a DNS zone apex requires provider ALIAS,
-ANAME, or CNAME flattening. Wildcard claims use TLS passthrough, and an origin
-certificate must cover every pointed name, including the base separately from
-wildcard descendants.
+`_blindport-challenge.<base>`, which is the only DNS proof required before payment.
+The displayed DNS-only `*.<base>` CNAME to the selected Relay pool target controls
+routing and can be added later for a no-downtime cutover. The claim routes both
+`<base>` and all descendants. Pointing `<base>` to the same target is optional and
+is not checked before payment. A subdomain base can use CNAME; a DNS zone apex
+requires provider ALIAS, ANAME, or CNAME flattening. Wildcard claims use TLS
+passthrough, and an origin certificate must cover every pointed name, including
+the base separately from wildcard descendants.
 
 HTTP-01 can authorize an exact base or descendant name through a wildcard Relay
 claim when `http_challenge_upstream` is configured. ACME wildcard certificates

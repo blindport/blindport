@@ -178,13 +178,13 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "price includes <code>base</code> + <code>*.base</code>" in _asset(
         "templates/dashboard.html"
     )
-    assert "Required wildcard record type" in _asset("templates/dashboard.html")
-    assert "The optional base record is not checked for payment verification." in _asset(
+    assert "Routing record type" in _asset("templates/dashboard.html")
+    assert "Only the TXT record is checked for ownership and payment." in _asset(
         "templates/dashboard.html"
     )
     assert "standard CNAME when the base is a subdomain" in _asset("templates/dashboard.html")
     assert "ALIAS, ANAME, or CNAME flattening" in _asset("templates/dashboard.html")
-    assert "The optional base record is not verified for payment." in _asset("templates/guide.html")
+    assert "Neither routing record is verified for payment." in _asset("templates/guide.html")
     assert "including a zone apex" in _asset("templates/guide.html")
     assert "`${body.domain} + *.${body.domain} (TLS passthrough)`" in landing
     assert "`${body.domain} (CNAME)`" in landing

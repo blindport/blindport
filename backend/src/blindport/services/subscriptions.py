@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import secrets
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
@@ -102,15 +101,6 @@ def domain_challenge_value(token: str) -> str:
 def wildcard_route_name(domain: str) -> str:
     """Return the DNS wildcard record name for a canonical Relay base domain."""
     name = f"*.{domain}"
-    if len(name) > 253:
-        raise ValueError("domain is too long for DNS wildcard routing")
-    return name
-
-
-def wildcard_probe_name(domain: str, token: str) -> str:
-    """Return the stable strict-descendant CNAME probe for a wildcard claim."""
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
-    name = f"bpv-{token_hash}.{domain}"
     if len(name) > 253:
         raise ValueError("domain is too long for DNS wildcard routing")
     return name
@@ -388,7 +378,7 @@ def verify_subscription_domain(
     *,
     force: bool = False,
 ) -> DomainVerificationResult:
-    """Verify a custom domain claim, optionally refreshing prior CNAME proof."""
+    """Verify a custom domain claim, optionally refreshing prior DNS proof."""
     reap_expired_domain_claims(session)
     session.refresh(sub)
     if sub.product != ProductType.RELAY:
@@ -409,15 +399,9 @@ def verify_subscription_domain(
     if sub.relay_hostname_scope == RelayHostnameScope.WILDCARD:
         if not sub.domain_verification_token or not sub.relay_pool_domain:
             raise ValueError("wildcard domain claim has no active verification challenge")
-        ownership = verifier.verify_txt(
+        verification = verifier.verify_txt(
             domain_challenge_name(sub.domain),
             domain_challenge_value(sub.domain_verification_token),
-        )
-        if not ownership.verified:
-            return ownership
-        verification = verifier.verify_cname(
-            wildcard_probe_name(sub.domain, sub.domain_verification_token),
-            sub.relay_pool_domain,
         )
     elif sub.domain_verification_token:
         name = domain_challenge_name(sub.domain)

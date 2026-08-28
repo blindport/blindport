@@ -103,10 +103,10 @@
                       <span>Type</span><code>TXT</code>
                       <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
                       <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
-                      <span>Required wildcard record type</span><code>CNAME</code>
+                      <span>Routing record type</span><code>CNAME</code>
                       <span>Name</span><code>*.{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
-                      <p class="field-help">This wildcard CNAME is required for payment verification. To also route <code>{{ s.domain }}</code>, point it to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain; at a DNS zone apex, use your provider's ALIAS, ANAME, or CNAME flattening. The optional base record is not checked for payment verification.</p>
+                      <p class="field-help">Only the TXT record is checked for ownership and payment. Add the wildcard CNAME when you are ready to route traffic. To also route <code>{{ s.domain }}</code>, point it to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain; at a DNS zone apex, use your provider's ALIAS, ANAME, or CNAME flattening.</p>
                     {% elif s.domain_verification_token %}
                       <span>Type</span><code>TXT</code>
                       <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
@@ -116,7 +116,7 @@
                       <span>Name</span><code>{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
                     {% endif %}
-                    <p class="field-help">{% if s.relay_hostname_scope.value == "wildcard" %}Wildcard Relay requires TLS passthrough. Verify the TXT challenge and required wildcard CNAME before payment becomes available.{% else %}Use the full hostname shown above. Verify DNS before payment becomes available.{% endif %}</p>
+                    <p class="field-help">{% if s.relay_hostname_scope.value == "wildcard" %}Wildcard Relay requires TLS passthrough. Verify the TXT challenge before payment becomes available. The CNAME can be added later for a no-downtime cutover.{% else %}Use the full hostname shown above. Verify DNS before payment becomes available.{% endif %}</p>
                     <div class="button-row">
                       <button type="button" class="verifyDomainBtn button-secondary" data-sub-id="{{ s.public_id }}">Check DNS</button>
                       {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}" disabled>Pay with Lightning</button>{% endif %}

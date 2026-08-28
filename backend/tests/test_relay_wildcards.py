@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-import dns.name
 from sqlmodel import Session
 from subscription_helpers import subscription_by_public_id
 
@@ -30,11 +29,6 @@ class _TxtRecord:
         self.strings = (value.encode("ascii"),)
 
 
-class _CnameRecord:
-    def __init__(self, target: str) -> None:
-        self.target = dns.name.from_text(target)
-
-
 class _Resolver:
     def __init__(self, answers: dict[tuple[str, str], object]) -> None:
         self.answers = answers
@@ -54,29 +48,11 @@ def _set_resolver_verifier(client, resolver: _Resolver) -> None:
 
 
 def _wildcard_answers(subscription: dict) -> dict[tuple[str, str], object]:
-    from blindport.services.subscriptions import wildcard_probe_name
-
-    token = subscription["domain_challenge_value"].removeprefix("blindport-verification=")
     return {
         (subscription["domain_challenge_name"], "TXT"): [
             _TxtRecord(subscription["domain_challenge_value"])
         ],
-        (wildcard_probe_name(subscription["domain"], token), "CNAME"): [
-            _CnameRecord(subscription["record_target"] + ".")
-        ],
     }
-
-
-def test_wildcard_probe_name_is_stable_ascii_and_within_dns_limit() -> None:
-    from blindport.services.subscriptions import wildcard_probe_name
-
-    domain = ".".join(("a" * 63, "a" * 63, "a" * 63, "a" * 40))
-    name = wildcard_probe_name(domain, "stored-verification-token")
-
-    assert name == wildcard_probe_name(domain, "stored-verification-token")
-    assert len(name) == 253
-    assert name.split(".", 1)[0].startswith("bpv-")
-    assert name.isascii()
 
 
 def test_catalog_exposes_relay_scope_prices_and_contract(app_client) -> None:
@@ -201,7 +177,7 @@ def test_wildcard_rejects_shallow_and_managed_suffix_base_domains(app_client, mo
     assert "cannot equal or contain a managed suffix" in ancestor.json()["detail"]
 
 
-def test_wildcard_dns_verification_and_renewal_query_stable_descendant_probe(app_client) -> None:
+def test_wildcard_dns_verification_and_renewal_require_only_txt_ownership(app_client) -> None:
     client, factory = app_client
     token = _signup(client)
     created = _create_relay(client, token, "renew-wild.example", "wildcard")
@@ -220,17 +196,8 @@ def test_wildcard_dns_verification_and_renewal_query_stable_descendant_probe(app
         verified.json()["subscription"]["domain_challenge_value"]
         == subscription["domain_challenge_value"]
     )
-    from blindport.services.subscriptions import wildcard_probe_name
-
-    token_value = subscription["domain_challenge_value"].removeprefix("blindport-verification=")
-    probe_name = wildcard_probe_name(subscription["domain"], token_value)
-    assert probe_name.startswith("bpv-")
-    assert probe_name.endswith(".renew-wild.example")
-    assert probe_name != subscription["record_name"]
-    assert len(probe_name) <= 253
     assert resolver.calls == [
         ("_blindport-challenge.renew-wild.example", "TXT", False, 0.5),
-        (probe_name, "CNAME", False, 0.5),
     ]
 
     resolver.calls.clear()
@@ -254,7 +221,32 @@ def test_wildcard_dns_verification_and_renewal_query_stable_descendant_probe(app
     assert renewal.status_code == 200, renewal.text
     assert resolver.calls == [
         ("_blindport-challenge.renew-wild.example", "TXT", False, 0.5),
-        (probe_name, "CNAME", False, 0.5),
+    ]
+
+
+def test_wildcard_payment_rejects_wrong_txt_without_querying_routing_cname(app_client) -> None:
+    client, _ = app_client
+    token = _signup(client)
+    subscription = _create_relay(client, token, "wrong-proof.example", "wildcard").json()
+    resolver = _Resolver(
+        {
+            (subscription["domain_challenge_name"], "TXT"): [
+                _TxtRecord("blindport-verification=wrong-token")
+            ]
+        }
+    )
+    _set_resolver_verifier(client, resolver)
+
+    payment = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+
+    assert payment.status_code == 400
+    assert payment.json()["detail"] == "challenge TXT value did not match"
+    assert resolver.calls == [
+        ("_blindport-challenge.wrong-proof.example", "TXT", False, 0.5),
     ]
 
 

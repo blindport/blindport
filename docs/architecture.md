@@ -192,9 +192,9 @@ rows with a pre-rollout TXT token retain the legacy TXT path until their existin
 claim expires; new exact rows never receive a token.
 
 Customer-owned wildcard claims retain a TXT ownership token and one selected
-Relay pool base. Payment requires the TXT proof plus a CNAME answer from a
-deterministic descendant probe, proving that the displayed `*.<base>` CNAME is
-active. The optional base record is deliberately outside payment verification.
+Relay pool base. Payment requires only the TXT ownership proof. The displayed
+`*.<base>` CNAME and optional base record control routing and are deliberately
+outside payment verification, allowing the customer to move traffic after setup.
 The same wildcard price and claim route the base plus all descendants. Exact SNI
 routes take precedence, then a wildcard at the requested base, then the longest
 matching wildcard suffix.
@@ -205,7 +205,7 @@ verification does not extend or remove that deadline. An account may hold at
 most two unpaid Relay claims. When an active claim expires, authorization stops
 immediately and a separate renewal deadline reserves the verified domain for its
 existing owner. Creating a payment during that bounded grace repeats the exact
-CNAME check or wildcard TXT and descendant-probe checks before the same domain
+CNAME check or wildcard TXT ownership check before the same domain
 can reactivate. The periodic payment reconciler and request-time reaper cancel
 elapsed claims and clear the domain, verification fields, and pool-domain
 assignment. Active rows and unelapsed renewal holds do not match the release
@@ -364,10 +364,12 @@ Blindport Relay has three DNS operating models:
    The control plane makes a bounded direct CNAME query with resolver search
    disabled and requires the one returned absolute target to equal the assigned
    target after canonicalization. A wildcard customer publishes TXT ownership
-   proof and a wildcard CNAME to the selected Relay pool. The wildcard's base
-   record is optional for routing and is not verified for payment. Subdomain
+   proof before payment and later points a wildcard CNAME to the selected Relay
+   pool when ready to route traffic. Neither that CNAME nor the wildcard's optional
+   base record is verified for payment. Subdomain
    bases can use CNAME; zone apexes require provider ALIAS, ANAME, or CNAME
-   flattening. Neither model follows CNAME chains or accepts failed lookups.
+   flattening. Exact-name verification does not follow CNAME chains or accept
+   failed lookups.
 3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
    sets through multiple explicit recursive resolvers and retains one latest sanitized
    observation per name. It does not mutate authoritative DNS. A future fenced registrar or

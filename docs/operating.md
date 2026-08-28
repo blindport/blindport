@@ -410,11 +410,11 @@ operating models:
 2. **Customer-owned verification:** an exact non-apex customer subdomain receives
    a unique target such as `<32-lowercase-hex>.pool.example.net` at subscription
    creation. The customer publishes one CNAME from the canonical requested
-   hostname to that exact target. A wildcard claim instead requires TXT ownership
-   proof at `_blindport-challenge.<base>` and a DNS-only `*.<base>` CNAME to its
-   selected pool target. Blindport checks the wildcard through a deterministic
-   descendant probe. The wildcard price routes the base plus all descendants,
-   but pointing the base is optional and is not checked for payment. Use CNAME
+   hostname to that exact target. A wildcard claim instead requires only TXT ownership
+   proof at `_blindport-challenge.<base>` before payment. Its DNS-only `*.<base>`
+   CNAME to the selected pool target controls routing and can be added after setup.
+   The wildcard price routes the base plus all descendants, but pointing the base
+   is optional and neither routing record is checked for payment. Use CNAME
    for a subdomain base, or provider ALIAS, ANAME, or CNAME flattening at a zone
    apex. Blindport checks the applicable proof automatically when creating each
    initial or renewal invoice;
@@ -479,12 +479,12 @@ The backend is a recursive DNS client, not an authoritative DNS server. Give it
 access to a trustworthy recursive resolver over the network, and monitor `502`
 or `503` verification responses as resolver failures. For exact claims it queries
 the direct CNAME record with resolver search disabled and a configured total
-lifetime. For wildcard claims it queries TXT ownership and a generated descendant
-CNAME probe. NXDOMAIN, missing required CNAME answers, nonmatching direct targets
-(including chains and alternate pool names), and lookup timeouts are ordinary
-unsuccessful verification results and do not create payments. A/AAAA flattening
-is not valid proof for either required CNAME. The optional wildcard base record
-is not queried and may use provider flattening because it controls routing only.
+lifetime. For wildcard claims it queries only TXT ownership. NXDOMAIN, missing
+proof records, nonmatching direct exact-name targets (including chains and
+alternate pool names), and lookup timeouts are ordinary unsuccessful verification
+results and do not create payments. A/AAAA flattening is not valid proof for an
+exact-name CNAME. Wildcard routing records are not queried and may be changed
+independently because the retained TXT challenge is the ownership proof.
 
 For every `RELAY_POOL_DOMAINS` base, publish wildcard A/AAAA or CNAME ingress
 records for its generated children. A pool base can contain at most 220 ASCII
@@ -502,7 +502,7 @@ An active Blindport Relay subscription loses authorization exactly at
 `current_period_end`. Its domain remains reserved to that subscription until
 `RELAY_RENEWAL_GRACE_SECONDS` after the period end (seven days by default,
 configurable from 136 seconds to 30 days). Creating a renewal invoice repeats
-the claim's exact CNAME or wildcard TXT and descendant-probe checks. The owner
+the claim's exact CNAME or wildcard TXT ownership check. The owner
 must create and settle renewal payment before that deadline. Periodic and
 request-time reaping reconcile open Lightning, stablecoin swap, and NWC payments
 before cancellation, then clear the domain, verification state, and relay-pool
@@ -890,7 +890,7 @@ an active subscription based only on the wallet response.
 Operators should alert on long-lived `unknown` NWC states and investigate before
 manually changing payment state.
 Automatic renewal of a customer-owned Relay hostname repeats its exact CNAME or
-wildcard TXT and descendant-probe checks before creating the NWC invoice.
+wildcard TXT ownership check before creating the NWC invoice.
 
 Cashu runtime support has been removed. The legacy database enum value and token
 column remain read-only so historical rows can be inspected. Before upgrading,

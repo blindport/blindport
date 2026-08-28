@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-import dns.name
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -22,11 +21,6 @@ class _TxtRecord:
         self.strings = (value.encode("ascii"),)
 
 
-class _CnameRecord:
-    def __init__(self, target: str) -> None:
-        self.target = dns.name.from_text(target)
-
-
 class _Resolver:
     def __init__(self, answers: dict[tuple[str, str], object]) -> None:
         self.answers = answers
@@ -38,16 +32,11 @@ class _Resolver:
 def _set_resolver_verifier(client, subscription: dict) -> None:
     from blindport.api import v1
     from blindport.services.domain_verification import DnsPythonDomainVerifier
-    from blindport.services.subscriptions import wildcard_probe_name
 
-    token = subscription["domain_challenge_value"].removeprefix("blindport-verification=")
     resolver = _Resolver(
         {
             (subscription["domain_challenge_name"], "TXT"): [
                 _TxtRecord(subscription["domain_challenge_value"])
-            ],
-            (wildcard_probe_name(subscription["domain"], token), "CNAME"): [
-                _CnameRecord(subscription["record_target"] + ".")
             ],
         }
     )

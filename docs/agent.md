@@ -415,8 +415,8 @@ reconciliation, not that the endpoint is active. Without NWC, the order is
 domain is `awaiting_domain` until the dashboard DNS instructions verify; no
 payment is created or attempted first. Exact-name subscriptions require the
 exact DNS-only CNAME shown. Wildcard subscriptions require the TXT ownership
-challenge and wildcard CNAME; pointing the included base hostname is optional
-and does not affect payment eligibility.
+challenge only for payment eligibility. Their wildcard CNAME can be added later
+when traffic is ready to move; pointing the included base hostname remains optional.
 
 In version 3, the pending subscription appears only in the dashboard belonging
 to the selected account token. Existing NWC auto-payment settings for that
