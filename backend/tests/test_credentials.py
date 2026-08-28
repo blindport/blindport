@@ -9,13 +9,20 @@ import pytest
 from sqlalchemy import text
 from sqlmodel import Session, select
 
-from blindport.adapters.base import NwcAdapterError, NwcBudgetResult, NwcBudgetState
+from blindport.adapters.base import (
+    NwcAdapterError,
+    NwcBudgetResult,
+    NwcBudgetState,
+    NwcValidationResult,
+)
 from blindport.core.credentials import (
     CredentialCipher,
     CredentialError,
     CredentialPurpose,
     EncryptedCredential,
 )
+from blindport.core.models import User
+from blindport.services.nwc_credentials import nwc_capabilities, nwc_encryption
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -53,6 +60,33 @@ def test_key_rotation_encrypts_with_first_key_and_decrypts_old_versions() -> Non
     assert new.key_version != old.key_version
     with pytest.raises(CredentialError, match="unavailable"):
         old_cipher.decrypt(account_id, new)
+
+
+def test_nwc_metadata_reader_preserves_legacy_capability_lists() -> None:
+    user = User(
+        hashed_token="hash",
+        has_nwc=True,
+        nwc_capabilities='["lookup_invoice","pay_invoice"]',
+    )
+
+    assert nwc_capabilities(user) == ("lookup_invoice", "pay_invoice")
+    assert nwc_encryption(user) == "nip44_v2"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "not-json",
+        '{"capabilities":["pay_invoice"],"encryption":"unknown"}',
+        '{"capabilities":"pay_invoice","encryption":"nip44_v2"}',
+        '{"capabilities":["pay_invoice"],"encryption":"nip44_v2","extra":true}',
+    ],
+)
+def test_nwc_metadata_reader_rejects_malformed_metadata(metadata: str) -> None:
+    user = User(hashed_token="hash", has_nwc=True, nwc_capabilities=metadata)
+
+    assert nwc_capabilities(user) == ()
+    assert nwc_encryption(user) is None
 
 
 def test_credential_purposes_are_cryptographically_separated() -> None:
@@ -95,6 +129,7 @@ def test_nwc_api_and_database_never_disclose_plaintext(app_client) -> None:
     assert response.json() == {
         "has_nwc": True,
         "capabilities": ["lookup_invoice", "pay_invoice"],
+        "encryption": "nip44_v2",
         "last_validated_at": response.json()["last_validated_at"],
     }
     assert uri not in response.text
@@ -118,6 +153,88 @@ def test_nwc_api_and_database_never_disclose_plaintext(app_client) -> None:
     assert uri not in row.nwc_ciphertext
     assert row.nwc_key_version
     assert bool(row.has_nwc) is True
+
+
+def test_legacy_capability_metadata_is_reported_as_nip44(app_client) -> None:
+    client, _ = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    uri = "nostr+walletconnect://private-wallet?secret=private-secret"
+    assert (
+        client.post("/api/v1/me/nwc", json={"nwc_uri": uri}, headers=_auth(token)).status_code
+        == 200
+    )
+
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        session.execute(
+            text(
+                'UPDATE "user" SET nwc_capabilities = '
+                '\'["lookup_invoice","pay_invoice"]\' WHERE is_admin = 0'
+            )
+        )
+        session.commit()
+
+    status_response = client.get("/api/v1/me/nwc", headers=_auth(token))
+    assert status_response.status_code == 200
+    assert status_response.json()["encryption"] == "nip44_v2"
+    client.cookies.set("blindport_token", token)
+    dashboard = client.get("/dashboard")
+    assert dashboard.status_code == 200
+    assert "Connected (NIP-44)" in dashboard.text
+    assert uri not in dashboard.text
+
+
+def test_legacy_nwc_encryption_is_stored_and_shown_without_disclosing_uri(
+    app_client, monkeypatch
+) -> None:
+    client, factory = app_client
+    from blindport.api import v1 as v1_mod
+
+    monkeypatch.setattr(v1_mod.settings, "NWC_ALLOW_LEGACY_NIP04", True)
+    token = client.post("/api/v1/signup").json()["token"]
+    uri = "nostr+walletconnect://legacy-private-secret"
+    monkeypatch.setattr(
+        factory.get_nwc_adapter(),
+        "validate_connection",
+        lambda nwc_uri: NwcValidationResult(
+            ("pay_invoice", "lookup_invoice"),
+            ("nip04",),
+        ),
+    )
+
+    connected = client.post("/api/v1/me/nwc", json={"nwc_uri": uri}, headers=_auth(token))
+
+    assert connected.status_code == 200
+    assert connected.json()["encryption"] == "nip04"
+    assert uri not in connected.text
+    client.cookies.set("blindport_token", token)
+    dashboard = client.get("/dashboard")
+    assert dashboard.status_code == 200
+    assert "Connected (legacy NIP-04)" in dashboard.text
+    assert "does not authenticate ciphertext" in dashboard.text
+    assert uri not in dashboard.text
+
+
+def test_nwc_api_rejects_legacy_adapter_selection_when_disabled(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    uri = "nostr+walletconnect://legacy-private-secret"
+    monkeypatch.setattr(
+        factory.get_nwc_adapter(),
+        "validate_connection",
+        lambda nwc_uri: NwcValidationResult(
+            ("pay_invoice", "lookup_invoice"),
+            ("nip04",),
+        ),
+    )
+
+    response = client.post("/api/v1/me/nwc", json={"nwc_uri": uri}, headers=_auth(token))
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "wallet adapter returned an invalid encryption"}
+    assert uri not in response.text
+    assert client.get("/api/v1/me/nwc", headers=_auth(token)).json()["has_nwc"] is False
 
 
 def test_nwc_budget_api_returns_only_strict_budget_metadata(app_client, monkeypatch) -> None:
@@ -370,6 +487,7 @@ def test_nwc_delete_revokes_and_disables_auto_renew(app_client) -> None:
     assert revoked.json() == {
         "has_nwc": False,
         "capabilities": [],
+        "encryption": None,
         "last_validated_at": None,
     }
     current = client.get("/api/v1/me", headers=_auth(token)).json()

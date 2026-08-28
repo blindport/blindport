@@ -68,6 +68,7 @@ from ..services.browser_sessions import (
 )
 from ..services.btc_usd_price import approximate_usd, price_cache
 from ..services.catalog import get_catalog
+from ..services.nwc_credentials import nwc_encryption
 from ..services.rate_limits import (
     RateLimitExceeded,
     RateLimitScope,
@@ -405,6 +406,7 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
         _ctx(
             request,
             user=user,
+            nwc_encryption=nwc_encryption(user),
             browser_auth_method=browser_session.auth_method if browser_session is not None else "",
             subscriptions=visible_subscriptions,
             pending_subscriptions=[

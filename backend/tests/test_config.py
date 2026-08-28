@@ -315,6 +315,13 @@ def test_production_settings_allow_secured_nwc_alongside_lightning() -> None:
         "lightning",
         "nwc",
     }
+    assert settings.NWC_ALLOW_LEGACY_NIP04 is False
+
+
+def test_legacy_nip04_fallback_is_explicitly_configurable() -> None:
+    settings = Settings(_env_file=None, NWC_ALLOW_LEGACY_NIP04=True)
+
+    assert settings.NWC_ALLOW_LEGACY_NIP04 is True
 
 
 def test_production_settings_allow_public_user_selected_nwc_relays() -> None:

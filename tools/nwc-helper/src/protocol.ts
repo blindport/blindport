@@ -12,25 +12,18 @@ interface RequestBase {
   nwc_uri: string;
   allowed_relay_hosts: string[];
   allow_public_relays: boolean;
+  allow_legacy_nip04: boolean;
 }
 
 export type Request =
   | RequestBase & { operation: "validate" }
   | RequestBase & { operation: "get_budget" }
-  | {
-      version: 1;
+  | RequestBase & {
       operation: "pay_invoice";
-      nwc_uri: string;
-      allowed_relay_hosts: string[];
-      allow_public_relays: boolean;
       invoice: string;
     }
-  | {
-      version: 1;
+  | RequestBase & {
       operation: "lookup_invoice";
-      nwc_uri: string;
-      allowed_relay_hosts: string[];
-      allow_public_relays: boolean;
       payment_hash: string;
     };
 
@@ -172,6 +165,7 @@ export function parseRequest(value: unknown): Request {
     "nwc_uri",
     "allowed_relay_hosts",
     "allow_public_relays",
+    "allow_legacy_nip04",
   ];
   if (operation === "pay_invoice") allowed.push("invoice");
   if (operation === "lookup_invoice") allowed.push("payment_hash");
@@ -182,6 +176,7 @@ export function parseRequest(value: unknown): Request {
   const nwcUri = requireString(object.nwc_uri, "nwc_uri", 4096);
   const allowedRelayHosts = requireAllowedRelayHosts(object.allowed_relay_hosts);
   const allowPublicRelays = requireBoolean(object.allow_public_relays, "allow_public_relays");
+  const allowLegacyNip04 = requireBoolean(object.allow_legacy_nip04, "allow_legacy_nip04");
   if (allowPublicRelays === (allowedRelayHosts.length > 0)) {
     throw new ProtocolError("invalid_request", "relay egress policy is invalid");
   }
@@ -192,6 +187,7 @@ export function parseRequest(value: unknown): Request {
       nwc_uri: nwcUri,
       allowed_relay_hosts: allowedRelayHosts,
       allow_public_relays: allowPublicRelays,
+      allow_legacy_nip04: allowLegacyNip04,
       invoice: requireString(object.invoice, "invoice", 8192),
     };
   }
@@ -202,6 +198,7 @@ export function parseRequest(value: unknown): Request {
       nwc_uri: nwcUri,
       allowed_relay_hosts: allowedRelayHosts,
       allow_public_relays: allowPublicRelays,
+      allow_legacy_nip04: allowLegacyNip04,
       payment_hash: requireString(object.payment_hash, "payment_hash", 64, HEX64),
     };
   }
@@ -211,6 +208,7 @@ export function parseRequest(value: unknown): Request {
     nwc_uri: nwcUri,
     allowed_relay_hosts: allowedRelayHosts,
     allow_public_relays: allowPublicRelays,
+    allow_legacy_nip04: allowLegacyNip04,
   };
 }
 
@@ -333,11 +331,26 @@ export async function validatePublicRelayEgress(
   }
 }
 
-function validateInfo(info: WalletServiceInfo): void {
-  if (!Array.isArray(info.encryptions) || !info.encryptions.includes("nip44_v2")) {
+type EncryptionType = "nip44_v2" | "nip04";
+
+function validateInfo(info: WalletServiceInfo, allowLegacyNip04: boolean): EncryptionType {
+  if (!Array.isArray(info.encryptions)) {
     throw new ProtocolError(
       "unsupported_encryption",
       "wallet connection must support NIP-44 v2",
+    );
+  }
+  const encryption: EncryptionType | undefined = info.encryptions.includes("nip44_v2")
+    ? "nip44_v2"
+    : allowLegacyNip04 && info.encryptions.includes("nip04")
+      ? "nip04"
+      : undefined;
+  if (encryption === undefined) {
+    throw new ProtocolError(
+      "unsupported_encryption",
+      allowLegacyNip04
+        ? "wallet connection must support NIP-44 v2 or NIP-04"
+        : "wallet connection must support NIP-44 v2",
     );
   }
   if (
@@ -349,6 +362,7 @@ function validateInfo(info: WalletServiceInfo): void {
       "wallet connection must allow invoice payment and lookup",
     );
   }
+  return encryption;
 }
 
 function safeHex(value: unknown, field: string, allowEmpty = false): string | null {
@@ -478,21 +492,21 @@ export async function executeRequest(
     }
     client = await clientFactory(options);
     const info = await client.getWalletServiceInfo();
-    validateInfo(info);
+    const encryption = validateInfo(info, request.allow_legacy_nip04);
     // SDK 8.0.3 otherwise negotiates again inside each request and can fall
     // back to NIP-04 if relay metadata changes after the mandatory precheck.
-    const nip44Client = client as Client & {
+    const selectedClient = client as Client & {
       _encryptionType?: string;
       readonly encryptionType?: string;
     };
-    nip44Client._encryptionType = "nip44_v2";
+    selectedClient._encryptionType = encryption;
     if (
-      nip44Client._encryptionType !== "nip44_v2" ||
-      (nip44Client.encryptionType !== undefined && nip44Client.encryptionType !== "nip44_v2")
+      selectedClient._encryptionType !== encryption ||
+      (selectedClient.encryptionType !== undefined && selectedClient.encryptionType !== encryption)
     ) {
       throw new ProtocolError(
         "unsupported_encryption",
-        "wallet connection must use NIP-44 v2",
+        "wallet connection could not select the required encryption",
       );
     }
     if (request.operation === "validate") {
@@ -502,7 +516,7 @@ export async function executeRequest(
         result: {
           state: "valid",
           capabilities: [...REQUIRED_CAPABILITIES],
-          encryptions: ["nip44_v2"],
+          encryptions: [encryption],
         },
       };
     }

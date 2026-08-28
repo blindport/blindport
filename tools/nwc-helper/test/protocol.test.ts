@@ -13,7 +13,12 @@ const uri = `nostr+walletconnect://${pubkey}?relay=${encodeURIComponent("wss://r
 const allowedRelayHosts = ["relay.example"];
 
 function request<T extends Record<string, unknown>>(value: T): T & { allowed_relay_hosts: string[] } {
-  return { ...value, allowed_relay_hosts: allowedRelayHosts, allow_public_relays: false };
+  return {
+    ...value,
+    allowed_relay_hosts: allowedRelayHosts,
+    allow_public_relays: false,
+    allow_legacy_nip04: value.allow_legacy_nip04 === true,
+  };
 }
 
 function factory(overrides: Partial<Client> = {}): { create: ClientFactory; client: Client } {
@@ -72,6 +77,7 @@ describe("NWC URI validation", () => {
         nwc_uri: uri,
         allowed_relay_hosts: [],
         allow_public_relays: true,
+        allow_legacy_nip04: false,
       },
       create,
       async () => ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"],
@@ -102,6 +108,7 @@ describe("NWC URI validation", () => {
         nwc_uri: uri,
         allowed_relay_hosts: [],
         allow_public_relays: true,
+        allow_legacy_nip04: false,
       },
       create,
       async () => ["93.184.216.34", address],
@@ -123,6 +130,7 @@ describe("NWC URI validation", () => {
         nwc_uri: uri,
         allowed_relay_hosts: [],
         allow_public_relays: true,
+        allow_legacy_nip04: false,
       },
       create,
       async () => { throw new Error("private DNS detail"); },
@@ -177,6 +185,117 @@ describe("wallet operations", () => {
       },
     });
     expect((client as Client & { _encryptionType?: string })._encryptionType).toBe("nip44_v2");
+  });
+
+  test("allows and pins legacy NIP-04 only when explicitly enabled", async () => {
+    const client = new NWCClient({
+      relayUrls: ["wss://relay.example"],
+      walletPubkey: pubkey,
+      secret,
+    });
+    client.getWalletServiceInfo = async () => ({
+      encryptions: ["nip04"],
+      capabilities: ["pay_invoice", "lookup_invoice"],
+      notifications: [],
+    });
+
+    const response = await executeRequest(
+      request({
+        version: 1,
+        operation: "validate",
+        nwc_uri: uri,
+        allow_legacy_nip04: true,
+      }),
+      () => client,
+    );
+
+    expect(response).toEqual({
+      version: 1,
+      ok: true,
+      result: {
+        state: "valid",
+        capabilities: ["pay_invoice", "lookup_invoice"],
+        encryptions: ["nip04"],
+      },
+    });
+    expect(client.encryptionType).toBe("nip04");
+  });
+
+  test("prefers NIP-44 when legacy fallback is enabled", async () => {
+    const { create, client } = factory({
+      getWalletServiceInfo: async () => ({
+        encryptions: ["nip04", "nip44_v2"],
+        capabilities: ["pay_invoice", "lookup_invoice"],
+      }),
+    });
+
+    const response = await executeRequest(
+      request({
+        version: 1,
+        operation: "validate",
+        nwc_uri: uri,
+        allow_legacy_nip04: true,
+      }),
+      create,
+    );
+
+    expect(response.ok).toBeTrue();
+    expect((client as Client & { _encryptionType?: string })._encryptionType).toBe("nip44_v2");
+  });
+
+  test("pins legacy NIP-04 before every supported wallet operation", async () => {
+    const selected: string[] = [];
+    const { create, client } = factory({
+      getWalletServiceInfo: async () => ({
+        encryptions: ["nip04"],
+        capabilities: ["pay_invoice", "lookup_invoice", "get_budget"],
+      }),
+      getBudget: async () => {
+        selected.push((client as Client & { _encryptionType?: string })._encryptionType ?? "");
+        return {};
+      },
+      payInvoice: async () => {
+        selected.push((client as Client & { _encryptionType?: string })._encryptionType ?? "");
+        return { preimage: "33".repeat(32), fees_paid: 42 };
+      },
+      lookupInvoice: async () => {
+        selected.push((client as Client & { _encryptionType?: string })._encryptionType ?? "");
+        return {
+          state: "settled",
+          payment_hash: "44".repeat(32),
+          preimage: "33".repeat(32),
+          fees_paid: 42,
+        };
+      },
+    });
+    const legacy = { allow_legacy_nip04: true };
+
+    await executeRequest(
+      request({ version: 1, operation: "get_budget", nwc_uri: uri, ...legacy }),
+      create,
+    );
+    await executeRequest(
+      request({
+        version: 1,
+        operation: "pay_invoice",
+        nwc_uri: uri,
+        invoice: "lnbc1invoice",
+        ...legacy,
+      }),
+      create,
+    );
+    await executeRequest(
+      request({
+        version: 1,
+        operation: "lookup_invoice",
+        nwc_uri: uri,
+        payment_hash: "44".repeat(32),
+        ...legacy,
+      }),
+      create,
+    );
+
+    expect(selected).toEqual(["nip04", "nip04", "nip04"]);
   });
 
   test.each([

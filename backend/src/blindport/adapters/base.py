@@ -133,7 +133,7 @@ class NwcAdapterError(RuntimeError):
 
 
 class NwcAdapter(ABC):
-    """Validates and executes NIP-44-only NWC wallet operations."""
+    """Validates and executes policy-approved NWC wallet operations."""
 
     @abstractmethod
     def validate_connection(self, nwc_uri: str) -> NwcValidationResult: ...

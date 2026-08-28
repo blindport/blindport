@@ -201,6 +201,11 @@ mode false and set `NWC_ALLOWED_RELAY_HOSTS` to exact trusted hostnames without
 wildcards. The backend and helper perform independent policy prechecks. Public
 mode does not pin the SDK connection to a checked DNS answer, so enforce network
 egress rules outside the application if DNS rebinding must be excluded.
+Legacy NIP-04 wallet providers remain rejected by default. Set
+`NWC_ALLOW_LEGACY_NIP04=true` only when compatibility is required; NIP-44 remains
+preferred when a wallet advertises both modes. NIP-04 does not authenticate its
+ciphertext, so keep wallet budgets and expirations restrictive and migrate the
+connection when the provider supports NIP-44 v2.
 The backend image already contains the architecture-native compiled helper, so no
 Node or Bun service runs in production. Each user should create a dedicated wallet
 connection with a wallet-enforced budget and expiry that cover the selected renewal

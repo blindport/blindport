@@ -275,6 +275,7 @@ def test_postgres_concurrent_identical_agent_orders_create_one_payment(
             user,
             "nostr+walletconnect://postgres-agent-order",
             ("pay_invoice", "lookup_invoice"),
+            "nip44_v2",
         )
         session.add(user)
         session.commit()

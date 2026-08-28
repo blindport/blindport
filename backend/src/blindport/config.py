@@ -634,6 +634,7 @@ class Settings(BaseSettings):
     NWC_HELPER_PATH: str = "/usr/local/bin/blindport-nwc-helper"
     NWC_ALLOWED_RELAY_HOSTS: str = ""
     NWC_ALLOW_PUBLIC_RELAYS: bool = False
+    NWC_ALLOW_LEGACY_NIP04: bool = False
     NWC_HELPER_TIMEOUT_SECONDS: float = Field(default=20.0, ge=1, le=120)
     NWC_MAX_PAYMENT_ATTEMPTS: int = Field(default=3, ge=1, le=10)
     NWC_RETRY_BASE_SECONDS: int = Field(default=30, ge=1, le=3600)

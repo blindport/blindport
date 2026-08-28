@@ -142,8 +142,9 @@ NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment
 rows snapshot the credential generation. A single-shot compiled Bun helper owns
 NIP-47 and NIP-44 handling and communicates with Python only through bounded JSON
-stdin/stdout. It validates wallet service metadata before every operation and
-rejects NIP-04 or missing pay/lookup capabilities.
+stdin/stdout. It validates wallet service metadata before every operation, always
+prefers NIP-44 v2, and rejects missing pay/lookup capabilities. Operators can
+explicitly allow compatibility with providers that advertise only legacy NIP-04.
 Each connection URI supplies its own relay URLs. Deployments either restrict those
 URLs to exact configured hostnames or admit only `wss:443` hostnames whose complete
 DNS result is globally routable; Python and the helper precheck the policy separately.

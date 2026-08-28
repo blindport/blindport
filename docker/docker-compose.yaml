@@ -61,6 +61,7 @@ services:
       PAYMENT_LIGHTNING_ADAPTER: mock-auto
       PAYMENT_NWC_ADAPTER: mock-auto
       NWC_ALLOWED_RELAY_HOSTS: "relay.getalby.com"
+      NWC_ALLOW_LEGACY_NIP04: "false"
       PAYMENT_ENABLED_METHODS: "lightning,nwc"
       PAYMENT_RECONCILIATION_ENABLED: "true"
       PAYMENT_RECONCILIATION_INTERVAL_SECONDS: "0.5"

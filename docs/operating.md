@@ -836,10 +836,12 @@ bounded JSON request on stdin and one bounded JSON response on stdout. It accept
 only strict `nostr+walletconnect://` URIs with lowercase 32-byte wallet and secret
 keys, one or more `wss` relays, and only `relay`, `secret`, and optional `lud16`
 query fields. Before validation, payment, lookup, or budget discovery, it requires
-`nip44_v2`, `pay_invoice`, and `lookup_invoice`; NIP-04 fallback is never allowed.
-NIP-04 uses an unauthenticated legacy payload format, leaks message length, and is
-deprecated by NIP-47. Blindport does not silently downgrade unattended recurring
-payment credentials; update or replace wallets that advertise only NIP-04.
+`pay_invoice` and `lookup_invoice` and always prefers `nip44_v2`. Wallets that
+advertise only legacy `nip04` are rejected by default. Set
+`NWC_ALLOW_LEGACY_NIP04=true` only when compatibility is required; the selected
+mode is retained as connection metadata and shown in the dashboard. NIP-04 uses
+an unauthenticated legacy payload format, leaks message length, and is deprecated
+by NIP-47. Upgrade or replace legacy wallets when possible.
 
 To enable NWC, retain `lightning` in `PAYMENT_ENABLED_METHODS`, set
 `PAYMENT_NWC_ADAPTER=nwc`, add `nwc` to the allowlist, and install

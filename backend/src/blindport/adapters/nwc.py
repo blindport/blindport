@@ -80,7 +80,7 @@ class _Envelope(_StrictModel):
 class _Validation(_StrictModel):
     state: Literal["valid"]
     capabilities: list[Literal["pay_invoice", "lookup_invoice"]]
-    encryptions: list[Literal["nip44_v2"]]
+    encryptions: list[Literal["nip44_v2", "nip04"]]
 
 
 class _Budget(_StrictModel):
@@ -151,7 +151,7 @@ _SAFE_ERROR_MESSAGES = {
     "transport": "wallet transport is unavailable",
     "unauthorized": "wallet connection is unauthorized",
     "unsupported_capability": "wallet connection lacks required permissions",
-    "unsupported_encryption": "wallet connection must support NIP-44 v2",
+    "unsupported_encryption": "wallet connection uses unsupported encryption",
 }
 
 
@@ -163,6 +163,7 @@ class SubprocessNwcAdapter(NwcAdapter):
         allowed_relay_hosts: tuple[str, ...] = (),
         *,
         allow_public_relays: bool = False,
+        allow_legacy_nip04: bool = False,
         relay_resolver: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
         if not os.path.isabs(executable):
@@ -177,6 +178,7 @@ class SubprocessNwcAdapter(NwcAdapter):
         self._timeout = timeout_seconds
         self._allowed_relay_hosts = frozenset(host.lower() for host in allowed_relay_hosts)
         self._allow_public_relays = allow_public_relays
+        self._allow_legacy_nip04 = allow_legacy_nip04
         self._relay_resolver = relay_resolver or _resolve_relay_host
 
     def _require_public_relay(self, host: str) -> None:
@@ -348,6 +350,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
                         "allow_public_relays": self._allow_public_relays,
+                        "allow_legacy_nip04": self._allow_legacy_nip04,
                     }
                 )
             )
@@ -358,6 +361,14 @@ class SubprocessNwcAdapter(NwcAdapter):
         if set(result.capabilities) != {"pay_invoice", "lookup_invoice"}:
             raise NwcAdapterError(
                 "protocol", "wallet helper returned invalid capabilities", retryable=False
+            )
+        if len(result.encryptions) != 1:
+            raise NwcAdapterError(
+                "protocol", "wallet helper returned invalid encryption", retryable=False
+            )
+        if result.encryptions[0] == "nip04" and not self._allow_legacy_nip04:
+            raise NwcAdapterError(
+                "protocol", "wallet helper returned invalid encryption", retryable=False
             )
         return NwcValidationResult(tuple(result.capabilities), tuple(result.encryptions))
 
@@ -372,6 +383,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
                         "allow_public_relays": self._allow_public_relays,
+                        "allow_legacy_nip04": self._allow_legacy_nip04,
                         "invoice": bolt11,
                     }
                 )
@@ -393,6 +405,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
                         "allow_public_relays": self._allow_public_relays,
+                        "allow_legacy_nip04": self._allow_legacy_nip04,
                     }
                 )
             )
@@ -419,6 +432,7 @@ class SubprocessNwcAdapter(NwcAdapter):
                         "nwc_uri": nwc_uri,
                         "allowed_relay_hosts": sorted(self._allowed_relay_hosts),
                         "allow_public_relays": self._allow_public_relays,
+                        "allow_legacy_nip04": self._allow_legacy_nip04,
                         "payment_hash": payment_hash,
                     }
                 )

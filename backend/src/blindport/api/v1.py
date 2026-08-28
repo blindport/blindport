@@ -94,6 +94,7 @@ from ..services.nwc_credentials import (
     clear_nwc_credential,
     decrypt_nwc_credential,
     nwc_capabilities,
+    nwc_encryption,
     store_nwc_credential,
 )
 from ..services.rate_limits import (
@@ -280,6 +281,7 @@ def _nwc_status(user: User) -> NwcStatusResponse:
     return NwcStatusResponse(
         has_nwc=user.has_nwc,
         capabilities=nwc_capabilities(user),
+        encryption=cast(Literal["nip44_v2", "nip04"] | None, nwc_encryption(user)),
         last_validated_at=user.nwc_last_validated_at,
     )
 
@@ -510,8 +512,23 @@ async def set_nwc(
                 str(error),
                 headers=_NWC_RESPONSE_HEADERS,
             ) from error
+    if (
+        len(validation.encryptions) != 1
+        or validation.encryptions[0] not in {"nip44_v2", "nip04"}
+        or (validation.encryptions[0] == "nip04" and not settings.NWC_ALLOW_LEGACY_NIP04)
+    ):
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "wallet adapter returned an invalid encryption",
+            headers=_NWC_RESPONSE_HEADERS,
+        )
     try:
-        store_nwc_credential(user, nwc_uri, validation.capabilities)
+        store_nwc_credential(
+            user,
+            nwc_uri,
+            validation.capabilities,
+            validation.encryptions[0],
+        )
     except ValueError as error:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

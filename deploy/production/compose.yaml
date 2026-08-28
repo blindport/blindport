@@ -49,6 +49,7 @@ x-backend-environment: &backend-environment
   PAYMENT_NWC_ADAPTER: ${PAYMENT_NWC_ADAPTER:-mock}
   NWC_ALLOWED_RELAY_HOSTS: ${NWC_ALLOWED_RELAY_HOSTS:-}
   NWC_ALLOW_PUBLIC_RELAYS: ${NWC_ALLOW_PUBLIC_RELAYS:-false}
+  NWC_ALLOW_LEGACY_NIP04: ${NWC_ALLOW_LEGACY_NIP04:-false}
   # NWC stays disabled until migration 0010 and a credential key secret are installed.
   REMINDER_EMAIL_ENABLED: ${REMINDER_EMAIL_ENABLED:-false}
   ANNOUNCEMENT_EMAIL_ENABLED: ${ANNOUNCEMENT_EMAIL_ENABLED:-false}

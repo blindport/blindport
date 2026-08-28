@@ -21,8 +21,18 @@ def _helper(tmp_path: Path, body: str) -> str:
     return str(path)
 
 
-def _adapter(executable: str, timeout: float = 2) -> SubprocessNwcAdapter:
-    return SubprocessNwcAdapter(executable, timeout, ("relay.example",))
+def _adapter(
+    executable: str,
+    timeout: float = 2,
+    *,
+    allow_legacy_nip04: bool = False,
+) -> SubprocessNwcAdapter:
+    return SubprocessNwcAdapter(
+        executable,
+        timeout,
+        ("relay.example",),
+        allow_legacy_nip04=allow_legacy_nip04,
+    )
 
 
 def test_budget_extension_is_optional_for_legacy_adapters() -> None:
@@ -37,6 +47,7 @@ request = json.load(sys.stdin)
 assert request["nwc_uri"] not in " ".join(sys.argv)
 assert request["nwc_uri"] not in json.dumps(dict(os.environ))
 assert request["allow_public_relays"] is False
+assert request["allow_legacy_nip04"] is False
 print(json.dumps({"version": 1, "ok": True, "result": {
     "state": "valid", "capabilities": ["pay_invoice", "lookup_invoice"],
     "encryptions": ["nip44_v2"]}}))
@@ -48,6 +59,74 @@ print(json.dumps({"version": 1, "ok": True, "result": {
 
     assert set(result.capabilities) == {"pay_invoice", "lookup_invoice"}
     assert result.encryptions == ("nip44_v2",)
+
+
+def test_subprocess_allows_one_explicit_legacy_encryption(tmp_path) -> None:
+    executable = _helper(
+        tmp_path,
+        """import json, sys
+request = json.load(sys.stdin)
+assert request["allow_legacy_nip04"] is True
+print(json.dumps({"version": 1, "ok": True, "result": {
+    "state": "valid", "capabilities": ["pay_invoice", "lookup_invoice"],
+    "encryptions": ["nip04"]}}))
+""",
+    )
+
+    result = _adapter(executable, allow_legacy_nip04=True).validate_connection(_URI)
+
+    assert result.encryptions == ("nip04",)
+
+
+def test_subprocess_rejects_legacy_helper_selection_when_disabled(tmp_path) -> None:
+    executable = _helper(
+        tmp_path,
+        """import json
+print(json.dumps({"version": 1, "ok": True, "result": {
+    "state": "valid", "capabilities": ["pay_invoice", "lookup_invoice"],
+    "encryptions": ["nip04"]}}))
+""",
+    )
+
+    with pytest.raises(NwcAdapterError, match="invalid encryption"):
+        _adapter(executable).validate_connection(_URI)
+
+
+def test_subprocess_rejects_multiple_selected_encryptions(tmp_path) -> None:
+    executable = _helper(
+        tmp_path,
+        """import json
+print(json.dumps({"version": 1, "ok": True, "result": {
+    "state": "valid", "capabilities": ["pay_invoice", "lookup_invoice"],
+    "encryptions": ["nip44_v2", "nip04"]}}))
+""",
+    )
+
+    with pytest.raises(NwcAdapterError, match="invalid encryption"):
+        _adapter(executable, allow_legacy_nip04=True).validate_connection(_URI)
+
+
+def test_subprocess_forwards_legacy_policy_for_all_wallet_operations(tmp_path) -> None:
+    payment_hash = "44" * 32
+    executable = _helper(
+        tmp_path,
+        f"""import json, sys
+request = json.load(sys.stdin)
+assert request["allow_legacy_nip04"] is True
+if request["operation"] == "get_budget":
+    result = {{"state": "unsupported"}}
+elif request["operation"] == "pay_invoice":
+    result = {{"state": "settled", "preimage": "33" * 32, "fees_paid_msats": 1}}
+else:
+    result = {{"state": "settled", "payment_hash": "{payment_hash}", "preimage": "33" * 32, "fees_paid_msats": 1}}
+print(json.dumps({{"version": 1, "ok": True, "result": result}}))
+""",
+    )
+    adapter = _adapter(executable, allow_legacy_nip04=True)
+
+    assert adapter.get_budget(_URI).state == NwcBudgetState.UNSUPPORTED
+    assert adapter.pay_invoice(_URI, "lnbc1invoice").state.value == "settled"
+    assert adapter.lookup_invoice(_URI, payment_hash).state == NwcLookupState.SETTLED
 
 
 def test_subprocess_maps_safe_errors_without_private_detail(tmp_path) -> None:
@@ -182,6 +261,7 @@ def test_subprocess_public_relay_policy_is_rechecked_and_sent_to_helper(tmp_path
 request = json.load(sys.stdin)
 assert request["allowed_relay_hosts"] == []
 assert request["allow_public_relays"] is True
+assert request["allow_legacy_nip04"] is False
 print(json.dumps({"version": 1, "ok": True, "result": {
     "state": "valid", "capabilities": ["pay_invoice", "lookup_invoice"],
     "encryptions": ["nip44_v2"]}}))

@@ -50,6 +50,7 @@ def get_nwc_adapter() -> NwcAdapter:
             settings.NWC_HELPER_TIMEOUT_SECONDS,
             settings.nwc_allowed_relay_hosts,
             allow_public_relays=settings.NWC_ALLOW_PUBLIC_RELAYS,
+            allow_legacy_nip04=settings.NWC_ALLOW_LEGACY_NIP04,
         )
     raise ValueError(f"unknown nwc adapter: {name!r}")
 

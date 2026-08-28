@@ -1888,6 +1888,7 @@ def test_nwc_budget_preflight_and_terminal_error_are_actionable(
     page.route("**/api/v1/payments", route_payment)
     try:
         page.goto(f"{browser_server.base_url}/dashboard", wait_until="networkidle")
+        assert page.locator("#nwcStatus").text_content() == "Connected (NIP-44)"
         unavailable_notice = (
             "The wallet spending limit could not be read. The wallet will enforce it during "
             "payment."

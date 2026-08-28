@@ -462,6 +462,7 @@ class SetNwcRequest(BaseModel):
 class NwcStatusResponse(BaseModel):
     has_nwc: bool
     capabilities: tuple[str, ...] = ()
+    encryption: Literal["nip44_v2", "nip04"] | None = None
     last_validated_at: datetime | None = None
 
 
