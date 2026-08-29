@@ -41,6 +41,7 @@ from blindport.core.models import (
     RateLimitMaintenance,
     RelayBandwidthCursor,
     RelayEdgeDailyBandwidth,
+    RelayHeartbeat,
     ReminderDelivery,
     ReminderKind,
     Subscription,
@@ -312,6 +313,55 @@ def test_postgres_concurrent_edge_bandwidth_aggregates_preserve_all_deltas() -> 
             )
             session.execute(delete(Subscription).where(Subscription.id.in_(subscription_ids)))
             session.execute(delete(User).where(User.hashed_token == marker))
+            session.commit()
+
+
+def test_postgres_heartbeat_upsert_returning_identifies_the_winning_snapshot() -> None:
+    assert POSTGRES_URL is not None
+    from blindport.api.internal import RelayHeartbeatRequest, persist_relay_heartbeat
+
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    upgrade_database(engine)
+    edge_id = f"postgres-heartbeat-{uuid4().hex[:16]}"
+    older = datetime.now(UTC) - timedelta(seconds=1)
+    newer = older + timedelta(seconds=1)
+    payload = {
+        "edge_id": edge_id,
+        "ready": True,
+        "components": {
+            "authorization": "ok",
+            "certificate": "ok",
+            "lifecycle": "serving",
+            "listeners": "ok",
+            "wireguard": "disabled",
+        },
+        "active_tunnels": 1,
+        "active_streams": 2,
+        "accepted_connections_total": 3,
+        "forwarded_bytes_total": 4,
+        "active_subscription_ids": [],
+        "active_subscription_ids_truncated": False,
+    }
+    try:
+        with Session(engine) as session:
+            assert persist_relay_heartbeat(
+                session,
+                RelayHeartbeatRequest.model_validate(payload),
+                received_at=newer,
+            )
+            session.commit()
+            assert not persist_relay_heartbeat(
+                session,
+                RelayHeartbeatRequest.model_validate(payload | {"active_tunnels": 9}),
+                received_at=older,
+            )
+            session.commit()
+            heartbeat = session.get(RelayHeartbeat, edge_id)
+            assert heartbeat is not None
+            assert heartbeat.active_tunnels == 1
+    finally:
+        with Session(engine) as session:
+            session.execute(delete(RelayHeartbeat).where(RelayHeartbeat.edge_id == edge_id))
             session.commit()
 
 

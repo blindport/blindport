@@ -173,14 +173,14 @@ def persist_relay_heartbeat(
     )
     values["received_at"] = received_at
     insert = _relay_heartbeat_insert(session).values(edge_id=body.edge_id, **values)
-    result = session.execute(
+    winning_edge_id = session.execute(
         insert.on_conflict_do_update(
             index_elements=["edge_id"],
             set_=values,
             where=RelayHeartbeat.received_at < received_at,  # type: ignore[arg-type]
-        )
-    )
-    return result.rowcount == 1
+        ).returning(RelayHeartbeat.edge_id)
+    ).scalar_one_or_none()
+    return winning_edge_id is not None
 
 
 class RelayHeartbeatUnknownSubscriptionError(ValueError):

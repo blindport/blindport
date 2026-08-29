@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- PostgreSQL heartbeat upserts now persist per-subscription agent connection
+  observations instead of leaving every admin connection timestamp as never.
 - Relay TLS ingress behind the production HAProxy edge now preserves real client
   addresses for origin-side PROXY protocol v2 mappings.
 
