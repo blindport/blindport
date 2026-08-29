@@ -54,46 +54,59 @@ func validateToken(token string) error {
 }
 
 func loadStaticAccountToken(path string) (string, error) {
+	token, _, err := loadStaticAccountTokenWithWarnings(path)
+	return token, err
+}
+
+func loadStaticAccountTokenWithWarnings(path string) (string, []error, error) {
 	if err := validateStaticConfigPath(path, "token_file"); err != nil {
-		return "", fmt.Errorf("invalid account token file %q: %w", path, err)
+		return "", nil, fmt.Errorf("invalid account token file %q: %w", path, err)
 	}
 	pathInfo, err := os.Lstat(path)
 	if err != nil {
-		return "", fmt.Errorf("inspect account token file %q: %w", path, err)
+		return "", nil, accountTokenFileAccessError("inspect", path, err)
 	}
 	if pathInfo.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("account token file %q must not be a symbolic link", path)
+		return "", nil, fmt.Errorf("account token file %q must not be a symbolic link", path)
 	}
 	file, err := openStaticConfig(path)
 	if err != nil {
-		return "", fmt.Errorf("open account token file %q: %w", path, err)
+		return "", nil, accountTokenFileAccessError("open", path, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
-		return "", fmt.Errorf("inspect opened account token file %q: %w", path, err)
+		return "", nil, fmt.Errorf("inspect opened account token file %q: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("account token file %q must be a regular file", path)
+		return "", nil, fmt.Errorf("account token file %q must be a regular file", path)
 	}
+	warnings := make([]error, 0, 2)
 	if info.Mode().Perm()&0o077 != 0 {
-		return "", fmt.Errorf("account token file %q must be owner-only (mode 0600 or stricter), got %04o", path, info.Mode().Perm())
+		warnings = append(warnings, fmt.Errorf("mode %04o allows access by group or others", info.Mode().Perm()))
 	}
 	if err := validateAccountTokenOwner(info); err != nil {
-		return "", fmt.Errorf("account token file %q: %w", path, err)
+		warnings = append(warnings, err)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 8193))
 	if err != nil {
-		return "", fmt.Errorf("read account token file %q: %w", path, err)
+		return "", nil, fmt.Errorf("read account token file %q: %w", path, err)
 	}
 	if len(data) > 8192 {
-		return "", fmt.Errorf("account token file %q exceeds 8192 bytes", path)
+		return "", nil, fmt.Errorf("account token file %q exceeds 8192 bytes", path)
 	}
 	token := strings.TrimSpace(string(data))
 	if err := validateToken(token); err != nil {
-		return "", fmt.Errorf("invalid token in account token file %q: %w", path, err)
+		return "", nil, fmt.Errorf("invalid token in account token file %q: %w", path, err)
 	}
-	return token, nil
+	return token, warnings, nil
+}
+
+func accountTokenFileAccessError(operation, path string, err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%s account token file %q: %w (running as UID %d GID %d; ensure every parent directory is traversable, normally mode 0700)", operation, path, err, os.Geteuid(), os.Getegid())
+	}
+	return fmt.Errorf("%s account token file %q: %w", operation, path, err)
 }
 
 func promptAndStoreToken(path string, input *os.File, output io.Writer) (string, error) {

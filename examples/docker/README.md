@@ -53,6 +53,10 @@ The resulting host layout is:
 account's identity and ACME state under the bind-mounted `state/` directory. The
 config and token files must both be owned by UID `10001` with mode `0600`; the
 three directories must be owned by `10001:10001` with mode `0700`.
+Directory mode `0600` is not sufficient because it omits the execute bit needed
+to reach files inside the directory. A readable token with broader permissions
+produces a warning and continues; a missing or inaccessible token remains a
+startup error.
 
 Set:
 

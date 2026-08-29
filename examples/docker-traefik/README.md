@@ -62,6 +62,10 @@ Blindport state and Traefik ACME paths across upgrades and back them up as secre
 
 The account config and public token must be owned by UID `10001`, with mode
 `0600`; `/opt/blindport/state` must be owned by `10001:10001` with mode `0700`.
+The config, secrets, and state directories must use mode `0700`; directory mode
+`0600` omits the execute bit required to reach files inside them. A readable
+token with broader permissions produces a warning and continues, while an
+inaccessible token remains a startup error.
 The bind-mounted `state/`, `secrets/`, and `traefik-acme/` paths contain private
 keys and should be backed up as secrets. A production deployment should use
 digest-pinned images and a narrowly authorized Docker socket proxy. Version 3

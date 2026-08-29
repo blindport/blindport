@@ -352,6 +352,12 @@ capability, so the container must retain that capability to start. The example
 drops every capability and adds back only `NET_ADMIN`; Docker discovery does not
 otherwise use it.
 
+The image runs as UID/GID `10001:10001`. Config and token files should use mode
+`0600`; their parent directories and the state directory must use mode `0700` so
+the process has the execute bit required to traverse them. A readable token with
+broader permissions produces a warning and continues. A missing or inaccessible
+token remains a startup error.
+
 The mounted `/opt/blindport/config/config.json` is a version 3 Docker account
 config. It uses an empty `mappings` list because Docker labels provide the
 mappings:

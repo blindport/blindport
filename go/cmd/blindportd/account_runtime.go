@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 )
 
@@ -71,9 +72,19 @@ func runPreparedAccountRuntimes(ctx context.Context, logger *slog.Logger, accoun
 	}
 	runtimes := newAccountRuntimes(accounts, options)
 	return runAccountRuntimes(ctx, logger, runtimes, func(runtimeCtx context.Context, accountLogger *slog.Logger, runtime accountRuntime) error {
-		token, err := loadStaticAccountToken(runtime.tokenFile)
+		token, warnings, err := loadStaticAccountTokenWithWarnings(runtime.tokenFile)
 		if err != nil {
 			return fmt.Errorf("load account token: %w", err)
+		}
+		for _, warning := range warnings {
+			accountLogger.Warn(
+				"account token file permissions are broader than recommended; continuing",
+				"path", runtime.tokenFile,
+				"detail", warning,
+				"recommended_uid", os.Geteuid(),
+				"recommended_gid", os.Getegid(),
+				"recommended_mode", "0600",
+			)
 		}
 		if err := prepareCredentialStateDir(runtime.stateDir); err != nil {
 			return fmt.Errorf("initialize account state: %w", err)

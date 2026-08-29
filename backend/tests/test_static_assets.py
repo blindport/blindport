@@ -441,6 +441,9 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     assert "/opt/blindport/state:/var/lib/blindport" in guide
     assert "cap_add: [NET_ADMIN]" in guide
     assert "executable carries that file capability" in guide
+    assert "runs as UID/GID <code>10001:10001</code>" in guide
+    assert "mode <code>0600</code> on a directory omits the execute bit" in guide
+    assert "readable token with broader permissions produces a warning" in guide
 
 
 def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> None:

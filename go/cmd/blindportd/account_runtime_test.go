@@ -30,8 +30,9 @@ func TestLoadStaticAccountTokenRequiresPrivateRegularFile(t *testing.T) {
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadStaticAccountToken(path); err == nil || !strings.Contains(err.Error(), "must be owner-only (mode 0600 or stricter), got 0640") {
-		t.Fatalf("group-readable account token error = %v", err)
+	token, warnings, err := loadStaticAccountTokenWithWarnings(path)
+	if err != nil || token != "ACCOUNT-TOKEN" || len(warnings) != 1 || !strings.Contains(warnings[0].Error(), "mode 0640 allows access by group or others") {
+		t.Fatalf("group-readable account token = %q, %v, %v", token, warnings, err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
@@ -51,6 +52,51 @@ func TestLoadStaticAccountTokenRequiresPrivateRegularFile(t *testing.T) {
 	}
 	if _, err := loadStaticAccountToken(path); err == nil {
 		t.Fatal("invalid account token was accepted")
+	}
+}
+
+func TestAccountTokenPermissionWarningIncludesRuntimeIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(path, []byte("ACCOUNT-TOKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	accounts := []staticAccount{{Name: "public", TokenFile: path, StateDir: filepath.Join(t.TempDir(), "state")}}
+	err := runPreparedAccountRuntimes(context.Background(), slog.New(slog.NewTextHandler(&output, nil)), accounts, &outboundTransport{}, framedRuntimeOptions{}, func(context.Context, *slog.Logger, accountRuntime, string) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runPreparedAccountRuntimes() error = %v", err)
+	}
+	logged := output.String()
+	for _, expected := range []string{
+		"account token file permissions are broader than recommended; continuing",
+		"account=public",
+		"detail=\"mode 0644 allows access by group or others\"",
+		fmt.Sprintf("recommended_uid=%d", os.Geteuid()),
+		fmt.Sprintf("recommended_gid=%d", os.Getegid()),
+		"recommended_mode=0600",
+	} {
+		if !strings.Contains(logged, expected) {
+			t.Errorf("permission warning missing %q: %s", expected, logged)
+		}
+	}
+	if strings.Contains(logged, "ACCOUNT-TOKEN") {
+		t.Fatalf("permission warning exposed token: %s", logged)
+	}
+}
+
+func TestAccountTokenPermissionDeniedExplainsDirectoryTraversal(t *testing.T) {
+	err := accountTokenFileAccessError("inspect", "/run/secrets/public", os.ErrPermission)
+	for _, expected := range []string{
+		"permission denied",
+		fmt.Sprintf("running as UID %d GID %d", os.Geteuid(), os.Getegid()),
+		"every parent directory is traversable",
+		"mode 0700",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("permission error missing %q: %v", expected, err)
+		}
 	}
 }
 
