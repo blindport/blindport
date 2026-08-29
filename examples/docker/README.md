@@ -58,6 +58,11 @@ to reach files inside the directory. A readable token with broader permissions
 produces a warning and continues; a missing or inaccessible token remains a
 startup error.
 
+Bind each token file separately as shown in `compose.yaml`. Do not bind the
+whole host secrets directory onto `/run/secrets`; the source directory's mode
+would replace the container directory and can prevent the agent from traversing
+it.
+
 Set:
 
 - `DOMAIN` to the active Relay hostname, for the verification command below.

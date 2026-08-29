@@ -443,6 +443,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     assert "executable carries that file capability" in guide
     assert "runs as UID/GID <code>10001:10001</code>" in guide
     assert "mode <code>0600</code> on a directory omits the execute bit" in guide
+    assert "Bind each token file separately" in guide
+    assert "Do not bind the whole host secrets directory" in guide
     assert "readable token with broader permissions produces a warning" in guide
 
 
@@ -479,6 +481,7 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
     assert "cap_add: [NET_ADMIN]" in docker_compose
     assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in docker_compose
     assert "/opt/blindport/state:/var/lib/blindport" in docker_compose
+    assert "/opt/blindport/secrets:/run/secrets" not in docker_compose
     assert "ipv4_address: 172.30.0.2" in docker_compose
     assert "BLINDPORT_BACKEND_URL" not in traefik_compose
     assert "${DOCKER_GID:-999}" in traefik_compose
@@ -487,6 +490,7 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
     assert 'command: ["--docker", "--config=/etc/blindport/config.json"]' in traefik_compose
     assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in traefik_compose
     assert "/opt/blindport/traefik-acme:/letsencrypt" in traefik_compose
+    assert "/opt/blindport/secrets:/run/secrets" not in traefik_compose
     assert traefik_config == docker_config
     assert "BLINDPORT_TOKEN=" not in docker_env
     assert "owner-only token file" in docker_readme

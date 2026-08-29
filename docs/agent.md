@@ -358,6 +358,10 @@ the process has the execute bit required to traverse them. A readable token with
 broader permissions produces a warning and continues. A missing or inaccessible
 token remains a startup error.
 
+Bind each token file separately. Do not bind the whole host secrets directory
+onto `/run/secrets`; its ownership and mode would replace the container
+directory and can prevent the agent from traversing it.
+
 The mounted `/opt/blindport/config/config.json` is a version 3 Docker account
 config. It uses an empty `mappings` list because Docker labels provide the
 mappings:

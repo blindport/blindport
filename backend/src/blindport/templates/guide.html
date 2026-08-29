@@ -114,7 +114,7 @@ blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"
 sudo install -o 10001 -g 10001 -m 0600 config.json /opt/blindport/config/config.json
 sudo install -o 10001 -g 10001 -m 0600 /dev/null /opt/blindport/secrets/public-token
 sudoedit /opt/blindport/secrets/public-token</code></pre>
-      <p>The image runs as UID/GID <code>10001:10001</code>. Config and token files should use mode <code>0600</code>. Config, secrets, and state directories must use mode <code>0700</code>; mode <code>0600</code> on a directory omits the execute bit required to reach files inside it. A readable token with broader permissions produces a warning and continues, while an inaccessible token remains a startup error.</p>
+      <p>The image runs as UID/GID <code>10001:10001</code>. Config and token files should use mode <code>0600</code>. Config, secrets, and state directories must use mode <code>0700</code>; mode <code>0600</code> on a directory omits the execute bit required to reach files inside it. Bind each token file separately as shown below. Do not bind the whole host secrets directory onto <code>/run/secrets</code>, because its ownership and mode replace the container directory and can prevent traversal. A readable token with broader permissions produces a warning and continues, while an inaccessible token remains a startup error.</p>
       <pre><code>services:
   app:
     image: example/app:latest

@@ -66,6 +66,10 @@ The config, secrets, and state directories must use mode `0700`; directory mode
 `0600` omits the execute bit required to reach files inside them. A readable
 token with broader permissions produces a warning and continues, while an
 inaccessible token remains a startup error.
+Bind each token file separately as shown in `compose.yaml`. Do not bind the
+whole host secrets directory onto `/run/secrets`; the source directory's mode
+would replace the container directory and can prevent the agent from traversing
+it.
 The bind-mounted `state/`, `secrets/`, and `traefik-acme/` paths contain private
 keys and should be backed up as secrets. A production deployment should use
 digest-pinned images and a narrowly authorized Docker socket proxy. Version 3
