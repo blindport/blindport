@@ -20,6 +20,7 @@ services:
 
   traefik:
     image: ${TRAEFIK_IMAGE:-traefik:v3}
+    container_name: blindport-traefik
     restart: unless-stopped
     depends_on:
       site:
@@ -46,8 +47,8 @@ services:
       CF_DNS_API_TOKEN_FILE: /run/secrets/cloudflare-dns-api-token
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
-      - ./secrets/cloudflare-dns-api-token:/run/secrets/cloudflare-dns-api-token:ro
-      - traefik-acme:/letsencrypt
+      - /opt/blindport/secrets/cloudflare-dns-api-token:/run/secrets/cloudflare-dns-api-token:ro
+      - /opt/blindport/traefik-acme:/letsencrypt
     labels:
       tech.blindport.mapping.edge.account: "public"
       tech.blindport.mapping.edge.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID}"
@@ -58,12 +59,13 @@ services:
 
   blindportd:
     image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    container_name: blindportd
     init: true
     restart: unless-stopped
     depends_on:
       traefik:
         condition: service_started
-    command: ["--docker", "--config=/etc/blindport/accounts.json"]
+    command: ["--docker", "--config=/etc/blindport/config.json"]
     group_add:
       - "${DOCKER_GID:-999}"
     networks:
@@ -71,9 +73,9 @@ services:
         ipv4_address: 172.30.0.2
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
-      - ./config/accounts.json:/etc/blindport/accounts.json:ro
-      - ./secrets/public-token:/run/secrets/blindport-public:ro
-      - blindport-state:/var/lib/blindport
+      - /opt/blindport/config/config.json:/etc/blindport/config.json:ro
+      - /opt/blindport/secrets/public-token:/run/secrets/blindport-public:ro
+      - /opt/blindport/state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -87,7 +89,3 @@ networks:
         - subnet: 172.30.0.0/24
   app:
     name: blindport-traefik-app
-
-volumes:
-  blindport-state:
-  traefik-acme:

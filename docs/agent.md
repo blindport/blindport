@@ -244,7 +244,7 @@ mappings, credentials, authorization cache, ACME state, and tunnel workers:
 Run this supported multi-account configuration with:
 
 ```sh
-blindportd --config /etc/blindport/accounts.json
+blindportd --config /etc/blindport/config.json
 ```
 
 Account names are lowercase stable IDs. Token and state paths must be absolute,
@@ -303,6 +303,7 @@ as its stable, account-scoped order key:
 services:
   web:
     image: example/web:latest
+    networks: [blindport]
     labels:
       tech.blindport.mapping.web.account: "public"
       tech.blindport.mapping.web.product: "relay"
@@ -314,18 +315,22 @@ services:
 
   blindportd:
     image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    container_name: blindportd
     init: true
     restart: unless-stopped
-    command: ["--docker", "--config=/etc/blindport/accounts.json"]
+    command: ["--docker", "--config=/etc/blindport/config.json"]
     group_add:
       - "${DOCKER_GID:-999}"
     environment:
       BLINDPORT_BACKEND_URL: "https://api.blindport.example"
+    networks:
+      blindport:
+        ipv4_address: 172.30.0.2
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./config/accounts.json:/etc/blindport/accounts.json:ro
-      - ./secrets/public-token:/run/secrets/blindport-public:ro
-      - blindport-state:/var/lib/blindport
+      - /opt/blindport/config/config.json:/etc/blindport/config.json:ro
+      - /opt/blindport/secrets/public-token:/run/secrets/blindport-public:ro
+      - /opt/blindport/state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     security_opt:
@@ -333,11 +338,16 @@ services:
     tmpfs:
       - /tmp:size=16m,mode=1777
 
-volumes:
-  blindport-state:
+networks:
+  blindport:
+    name: blindport
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 ```
 
-The mounted `config/accounts.json` is a version 3 Docker account config. It
+The mounted `/opt/blindport/config/config.json` is a version 3 Docker account
+config. It
 uses an empty `mappings` list because Docker labels provide the mappings:
 
 ```json

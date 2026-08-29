@@ -408,7 +408,7 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         '"token_file": "/home/blindport/.config/blindport/tokens/public"',
         '"state_dir": "/home/blindport/.local/state/blindport-public"',
         'tech.blindport.mapping.web.account: "public"',
-        "blindport-state:/var/lib/blindport",
+        "/opt/blindport/state:/var/lib/blindport",
         "GitHub Actions builds versioned static Linux binaries",
         "only detects transfer corruption",
         "does not authenticate the CI-built binary",
@@ -437,8 +437,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     base = _asset("templates/base.html")
     assert "https://github.com/blindport/blindport" in base
     assert "https://github.com/blindport/blindport/issues" in base
-    assert "- blindport-state:/var/lib/blindport" in guide
-    assert "volumes:\n  blindport-state:" in guide
+    assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in guide
+    assert "/opt/blindport/state:/var/lib/blindport" in guide
 
 
 def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> None:
@@ -446,24 +446,39 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
     agent = _repository_file("docs/agent.md")
     docker_readme = _repository_file("examples/docker/README.md")
     docker_compose = _repository_file("examples/docker/compose.yaml")
-    docker_config = _repository_file("examples/docker/config/accounts.json")
+    docker_config = _repository_file("examples/docker/config/config.json")
     docker_env = _repository_file("examples/docker/.env.example")
     traefik_compose = _repository_file("examples/docker-traefik/compose.yaml")
+    traefik_config = _repository_file("examples/docker-traefik/config/config.json")
 
     forbidden_rollout_term = "can" + "ary"
-    for document in (guide, agent, docker_readme, docker_compose, docker_config, docker_env):
+    for document in (
+        guide,
+        agent,
+        docker_readme,
+        docker_compose,
+        docker_config,
+        docker_env,
+    ):
         assert forbidden_rollout_term not in document.lower()
 
     assert '"version": 3' in docker_config
     assert '"token_file": "/run/secrets/blindport-public"' in docker_config
     assert '"state_dir": "/var/lib/blindport/accounts/public"' in docker_config
-    assert 'command: ["--docker", "--config=/etc/blindport/accounts.json"]' in docker_compose
+    assert 'command: ["--docker", "--config=/etc/blindport/config.json"]' in docker_compose
     assert 'tech.blindport.mapping.site.account: "public"' in docker_compose
     assert "BLINDPORT_TOKEN:" not in docker_compose
     assert "BLINDPORT_BACKEND_URL" not in docker_compose
     assert "${DOCKER_GID:-999}" in docker_compose
+    assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in docker_compose
+    assert "/opt/blindport/state:/var/lib/blindport" in docker_compose
+    assert "ipv4_address: 172.30.0.2" in docker_compose
     assert "BLINDPORT_BACKEND_URL" not in traefik_compose
     assert "${DOCKER_GID:-999}" in traefik_compose
+    assert 'command: ["--docker", "--config=/etc/blindport/config.json"]' in traefik_compose
+    assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in traefik_compose
+    assert "/opt/blindport/traefik-acme:/letsencrypt" in traefik_compose
+    assert traefik_config == docker_config
     assert "BLINDPORT_TOKEN=" not in docker_env
     assert "owner-only token file" in docker_readme
     assert "non-overlapping state directory" in docker_readme

@@ -24,21 +24,35 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-Create the v3 account token file for the image's unprivileged UID. Do not put
-the bearer token in `.env`, Compose environment, or rendered Compose output:
+Install the example config and create bind-mounted state and token paths for the
+image's unprivileged UID. Do not put the bearer token in `.env`, Compose
+environment, or rendered Compose output:
 
 ```sh
-sudo chown 10001:10001 config/accounts.json
-chmod 0600 config/accounts.json
-sudo install -d -o 10001 -g 10001 -m 0700 secrets
-sudo install -o 10001 -g 10001 -m 0600 /dev/null secrets/public-token
-sudoedit secrets/public-token
+sudo install -d -o 10001 -g 10001 -m 0700 \
+  /opt/blindport/config /opt/blindport/secrets /opt/blindport/state
+sudo install -o 10001 -g 10001 -m 0600 \
+  config/config.json /opt/blindport/config/config.json
+sudo install -o 10001 -g 10001 -m 0600 \
+  /dev/null /opt/blindport/secrets/public-token
+sudoedit /opt/blindport/secrets/public-token
 ```
 
-`config/accounts.json` selects that mounted file and keeps this account's
-identity and ACME state in `/var/lib/blindport/accounts/public`. The config and
-token files must both be owned by the image's UID `10001`; keep that ownership
-after editing the config.
+The resulting host layout is:
+
+```text
+/opt/blindport/
+├── config/
+│   └── config.json
+├── secrets/
+│   └── public-token
+└── state/
+```
+
+`/opt/blindport/config/config.json` selects the mounted token and keeps this
+account's identity and ACME state under the bind-mounted `state/` directory. The
+config and token files must both be owned by UID `10001` with mode `0600`; the
+three directories must be owned by `10001:10001` with mode `0700`.
 
 Set:
 
@@ -54,13 +68,17 @@ Agreement. An optional `ACME_EMAIL` supplies the ACME account contact.
 
 For rootless Docker, set `DOCKER_SOCKET_PATH` to its Unix socket and derive
 `DOCKER_GID` from that socket. Use a digest-pinned `BLINDPORTD_IMAGE` from the
-matching Blindport release for a durable deployment.
+matching Blindport release for a durable deployment. Version 3 account configs
+require `blindportd v0.3.0` or newer. An untagged image is not refreshed
+automatically, so pull before recreating the service.
 
 ## 3. Start and verify
 
 ```sh
 docker compose config --quiet
+docker compose pull blindportd
 docker compose up -d
+docker compose exec blindportd blindportd -version
 docker compose logs -f blindportd
 ```
 
@@ -70,16 +88,17 @@ After the log reports that the automatic TLS certificate is installed:
 curl --fail --show-error --silent "https://${DOMAIN}/"
 ```
 
-The `blindport-state` volume contains the enrolled client identity, ACME account,
-and certificate private keys. Back it up as a secret and reuse it across image
-updates. Starting another empty state volume with the same account can require an
-operator identity reset and can consume Let's Encrypt issuance limits.
+`/opt/blindport/state` contains the enrolled client identity, ACME account, and
+certificate private keys. Back up `/opt/blindport` as a secret and reuse it
+across image updates. Starting another empty state directory with the same
+account can require an operator identity reset and can consume Let's Encrypt
+issuance limits.
 
 `site` selects the configured `public` account with
 `tech.blindport.mapping.site.account`. Version 3 requires this `.account` label
 on every Docker mapping, including existing subscriptions. To add an account,
 mount another owner-only token file and add an account with a distinct state path
-to `config/accounts.json`:
+to `/opt/blindport/config/config.json`:
 
 ```json
 {
@@ -90,8 +109,9 @@ to `config/accounts.json`:
 }
 ```
 
-Add `./secrets/private-token:/run/secrets/blindport-private:ro` to the agent
-volumes after creating it with the same `10001:10001`, `0600` ownership and mode.
+Add `/opt/blindport/secrets/private-token:/run/secrets/blindport-private:ro` to
+the agent volumes after creating it with the same `10001:10001`, `0600`
+ownership and mode.
 Mappings for that account use labels such as
 `tech.blindport.mapping.api.account: "private"`. Each account needs its own
 non-overlapping state directory and token file.
@@ -105,6 +125,21 @@ To stop the example without deleting private state:
 ```sh
 docker compose down
 ```
+
+For a consistent offline backup, stop only the agent, archive the bind-mounted
+tree, then start it again:
+
+```sh
+docker compose stop blindportd
+sudo tar -C /opt -czf /root/blindport-backup.tgz blindport
+docker compose start blindportd
+```
+
+The fixed `172.30.0.2` address lets an upstream proxy trust PROXY protocol only
+from `172.30.0.2/32`. Change the subnet and fixed address together if they
+conflict with another Docker network. A host service is not reachable as
+`127.0.0.1` from this container; put it on the `blindport` network or add
+`host.docker.internal:host-gateway` and use `host.docker.internal:<port>`.
 
 ## Declarative orders
 
@@ -150,19 +185,17 @@ services:
     restart: unless-stopped
     command: ["--wireguard", "--token-file=/run/blindport/token", "--state-dir=/var/lib/blindport"]
     volumes:
-      - ./secrets/wireguard-token:/run/blindport/token:ro
-      - blindport-wireguard-state:/var/lib/blindport
+      - /opt/blindport-wireguard/secrets/token:/run/blindport/token:ro
+      - /opt/blindport-wireguard/state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     cap_add: [NET_ADMIN]
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:size=16m,mode=1777"]
 
-volumes:
-  blindport-wireguard-state:
 ```
 
-Create `secrets/wireguard-token` as a root-owned regular file with mode `0600`.
-Preserve the root-owned state volume as a secret. `NET_ADMIN` is the only added
-capability required. Do not give this process the Docker socket or combine it
-with `--docker`.
+Create `/opt/blindport-wireguard/secrets/token` as a root-owned regular file with
+mode `0600` and its `state/` directory with mode `0700`. Preserve both as
+secrets. `NET_ADMIN` is the only added capability required. Do not give this
+process the Docker socket or combine it with `--docker`.

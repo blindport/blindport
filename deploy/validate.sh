@@ -446,12 +446,14 @@ import sys
 services = json.load(sys.stdin)["services"]
 assert set(services) == {"blindportd", "site"}
 assert all(not service.get("ports") for service in services.values())
-assert all(set(service["networks"]) == {"default"} for service in services.values())
+assert all(set(service["networks"]) == {"blindport"} for service in services.values())
 assert "user" not in services["blindportd"]
+assert services["blindportd"]["container_name"] == "blindportd"
+assert services["blindportd"]["networks"]["blindport"]["ipv4_address"] == "172.30.0.2"
 assert services["blindportd"]["depends_on"]["site"]["condition"] == "service_started"
 assert services["blindportd"]["command"] == [
     "--docker",
-    "--config=/etc/blindport/accounts.json",
+    "--config=/etc/blindport/config.json",
 ]
 assert services["blindportd"]["read_only"] is True
 assert services["blindportd"]["cap_drop"] == ["ALL"]
@@ -476,8 +478,8 @@ state = next(
     for volume in services["blindportd"]["volumes"]
     if volume["target"] == "/var/lib/blindport"
 )
-assert state["type"] == "volume"
-assert state["source"] == "blindport-state"
+assert state["type"] == "bind"
+assert state["source"] == "/opt/blindport/state"
 assert not state.get("read_only", False)
 assert services["blindportd"]["environment"]["BLINDPORT_ACME_EMAIL"] == ""
 assert "BLINDPORT_TOKEN" not in services["blindportd"]["environment"]
@@ -486,10 +488,10 @@ assert "BLINDPORT_TOKEN_FILE" not in services["blindportd"]["environment"]
 account_config = next(
     volume
     for volume in services["blindportd"]["volumes"]
-    if volume["target"] == "/etc/blindport/accounts.json"
+    if volume["target"] == "/etc/blindport/config.json"
 )
 assert account_config["read_only"] is True
-assert account_config["source"].endswith("/examples/docker/config/accounts.json")
+assert account_config["source"] == "/opt/blindport/config/config.json"
 
 token = next(
     volume
@@ -497,7 +499,7 @@ token = next(
     if volume["target"] == "/run/secrets/blindport-public"
 )
 assert token["read_only"] is True
-assert token["source"].endswith("/examples/docker/secrets/public-token")
+assert token["source"] == "/opt/blindport/secrets/public-token"
 '
 
     DOCKER_SOCKET_PATH=/run/user/1234/docker.sock docker compose \
@@ -579,7 +581,20 @@ for name in ("blindportd", "traefik"):
 assert services["blindportd"]["read_only"] is True
 assert services["blindportd"]["cap_drop"] == ["ALL"]
 assert services["blindportd"]["security_opt"] == ["no-new-privileges:true"]
-assert "traefik-acme" in config["volumes"]
+
+agent_volumes = {volume["target"]: volume for volume in services["blindportd"]["volumes"]}
+assert agent_volumes["/etc/blindport/config.json"]["source"] == "/opt/blindport/config/config.json"
+assert agent_volumes["/etc/blindport/config.json"]["read_only"] is True
+assert agent_volumes["/run/secrets/blindport-public"]["source"] == "/opt/blindport/secrets/public-token"
+assert agent_volumes["/run/secrets/blindport-public"]["read_only"] is True
+assert agent_volumes["/var/lib/blindport"]["source"] == "/opt/blindport/state"
+assert not agent_volumes["/var/lib/blindport"].get("read_only", False)
+
+traefik_volumes = {volume["target"]: volume for volume in services["traefik"]["volumes"]}
+assert traefik_volumes["/letsencrypt"]["source"] == "/opt/blindport/traefik-acme"
+assert not traefik_volumes["/letsencrypt"].get("read_only", False)
+assert traefik_volumes["/run/secrets/cloudflare-dns-api-token"]["source"] == "/opt/blindport/secrets/cloudflare-dns-api-token"
+assert traefik_volumes["/run/secrets/cloudflare-dns-api-token"]["read_only"] is True
 '
 }
 

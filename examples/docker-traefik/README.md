@@ -35,29 +35,37 @@ The Blindport ownership token and ACME proof are unrelated.
 
 ## Configure
 
-Create the environment and owner-only secrets:
+Create the environment and bind-mounted config, state, and owner-only secrets:
 
 ```sh
 cp .env.example .env
 chmod 600 .env
-sudo chown 10001:10001 config/accounts.json
-chmod 0600 config/accounts.json
-sudo install -d -o 10001 -g 10001 -m 0700 secrets
-sudo install -o 10001 -g 10001 -m 0600 /dev/null secrets/public-token
-sudoedit secrets/public-token
-sudo install -o root -g root -m 0600 /dev/null secrets/cloudflare-dns-api-token
-sudoedit secrets/cloudflare-dns-api-token
+sudo install -d -o 10001 -g 10001 -m 0700 \
+  /opt/blindport/config /opt/blindport/secrets /opt/blindport/state
+sudo install -d -o root -g root -m 0700 /opt/blindport/traefik-acme
+sudo install -o 10001 -g 10001 -m 0600 \
+  config/config.json /opt/blindport/config/config.json
+sudo install -o 10001 -g 10001 -m 0600 \
+  /dev/null /opt/blindport/secrets/public-token
+sudoedit /opt/blindport/secrets/public-token
+sudo install -o root -g root -m 0600 \
+  /dev/null /opt/blindport/secrets/cloudflare-dns-api-token
+sudoedit /opt/blindport/secrets/cloudflare-dns-api-token
 ```
 
 Set `BASE_DOMAIN`, `APP_HOSTNAME`, `BLINDPORT_SUBSCRIPTION_ID`, and `ACME_EMAIL`
 in `.env`. Docker group ID `999` is the default; override `DOCKER_GID` when the
-host socket uses another group. The account token must own the active wildcard subscription.
+host socket uses another group. The account token must own the active wildcard
+subscription.
 Use a Cloudflare API token limited to DNS edits for the selected zone. Keep the
-Blindport state and Traefik ACME volumes across upgrades and back them up as secrets.
+Blindport state and Traefik ACME paths across upgrades and back them up as secrets.
 
-The account config and public token must be owned by UID `10001`, with config mode
-`0600`. A production deployment should use digest-pinned images and a narrowly
-authorized Docker socket proxy.
+The account config and public token must be owned by UID `10001`, with mode
+`0600`; `/opt/blindport/state` must be owned by `10001:10001` with mode `0700`.
+The bind-mounted `state/`, `secrets/`, and `traefik-acme/` paths contain private
+keys and should be backed up as secrets. A production deployment should use
+digest-pinned images and a narrowly authorized Docker socket proxy. Version 3
+account configs require `blindportd v0.3.0` or newer.
 
 If `172.30.0.0/24` conflicts with an existing network, change the Compose subnet,
 the two fixed container addresses, and both Traefik `trustedips` values together.
@@ -66,7 +74,9 @@ the two fixed container addresses, and both Traefik `trustedips` values together
 
 ```sh
 docker compose config --quiet
+docker compose pull blindportd
 docker compose up -d
+docker compose exec blindportd blindportd -version
 docker compose logs -f blindportd traefik
 ```
 

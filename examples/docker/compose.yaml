@@ -4,6 +4,7 @@ services:
   site:
     image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
     restart: unless-stopped
+    networks: [blindport]
     volumes:
       - ./site/index.html:/usr/share/nginx/html/index.html:ro
     labels:
@@ -15,25 +16,33 @@ services:
 
   blindportd:
     image: ${BLINDPORTD_IMAGE:-ghcr.io/blindport/blindportd:latest}
+    container_name: blindportd
     init: true
     restart: unless-stopped
     depends_on:
       site:
         condition: service_started
-    command: ["--docker", "--config=/etc/blindport/accounts.json"]
+    command: ["--docker", "--config=/etc/blindport/config.json"]
     group_add:
       - "${DOCKER_GID:-999}"
+    networks:
+      blindport:
+        ipv4_address: 172.30.0.2
     environment:
       BLINDPORT_ACME_EMAIL: "${ACME_EMAIL:-}"
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
-      - ./config/accounts.json:/etc/blindport/accounts.json:ro
-      - ./secrets/public-token:/run/secrets/blindport-public:ro
-      - blindport-state:/var/lib/blindport
+      - /opt/blindport/config/config.json:/etc/blindport/config.json:ro
+      - /opt/blindport/secrets/public-token:/run/secrets/blindport-public:ro
+      - /opt/blindport/state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:size=16m,mode=1777"]
 
-volumes:
-  blindport-state:
+networks:
+  blindport:
+    name: blindport
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
