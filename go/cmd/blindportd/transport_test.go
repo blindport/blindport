@@ -277,7 +277,7 @@ func TestBackendBootstrapDoesNotFollowRedirectsWithBearerToken(t *testing.T) {
 	defer outbound.httpClient.CloseIdleConnections()
 
 	_, err = fetchConfigWithClient(context.Background(), outbound.httpClient, redirect.URL, "test-token")
-	if err == nil || !strings.Contains(err.Error(), "status 307") {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 307 Temporary Redirect") {
 		t.Fatalf("fetchConfigWithClient() error = %v, want redirect status", err)
 	}
 	if followed.Load() {

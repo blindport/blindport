@@ -178,7 +178,10 @@ const (
 	v2Infrastructure
 )
 
-type v2FetchError struct{ kind v2FetchKind }
+type v2FetchError struct {
+	kind   v2FetchKind
+	status int
+}
 
 func (e *v2FetchError) Error() string {
 	switch e.kind {
@@ -211,7 +214,16 @@ func (e *provisioningFetchError) Error() string {
 		return "provisioning infrastructure failure"
 	}
 	if e.status != 0 {
-		return fmt.Sprintf("provisioning status %d", e.status)
+		switch e.status {
+		case http.StatusUnauthorized:
+			return "provisioning rejected the account token (HTTP 401 Unauthorized); verify token_file contains the token for this Blindport account"
+		case http.StatusForbidden:
+			return "provisioning denied the account (HTTP 403 Forbidden); verify the account is active"
+		case http.StatusConflict:
+			return "provisioning client identity conflict (HTTP 409 Conflict); saved state may not match the enrolled account identity"
+		default:
+			return fmt.Sprintf("provisioning request failed (HTTP %d %s)", e.status, http.StatusText(e.status))
+		}
 	}
 	return "provisioning authorization or protocol failure"
 }
@@ -291,7 +303,7 @@ func fetchProvisioningWithCache(ctx context.Context, client *http.Client, backen
 			return provisioningResult{}, &provisioningFetchError{kind: provisioningInfrastructure}
 		}
 		if v3Err.kind != v2FeatureUnavailable {
-			return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal}
+			return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal, status: v3Err.status}
 		}
 		config, raw, err := fetchProvisioningV2(ctx, client, backend, token, identity.instanceID)
 		if err == nil {
@@ -330,7 +342,7 @@ func fetchProvisioningWithCache(ctx context.Context, client *http.Client, backen
 			}
 			return provisioningResult{}, &provisioningFetchError{kind: provisioningInfrastructure}
 		}
-		return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal}
+		return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal, status: fetchErr.status}
 	}
 	return provisioningResult{}, &provisioningFetchError{kind: provisioningInfrastructure}
 }
@@ -365,7 +377,7 @@ func fetchProvisioningV2(ctx context.Context, client *http.Client, backend, toke
 		return nil, nil, &v2FetchError{kind: v2Infrastructure}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, &v2FetchError{kind: v2Terminal}
+		return nil, nil, &v2FetchError{kind: v2Terminal, status: resp.StatusCode}
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxProvisioningJSON+1))
 	if err != nil || len(raw) > maxProvisioningJSON {

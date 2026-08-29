@@ -227,7 +227,10 @@ func validateEntitlementTimesV3(edge provisioningV3Edge, now time.Time) error {
 	return validateEntitlementTimes(provisioningV2Edge{PaidThrough: edge.PaidThrough, GraceThrough: edge.GraceThrough, Generation: edge.Generation}, now)
 }
 
-type v3FetchError struct{ kind v2FetchKind }
+type v3FetchError struct {
+	kind   v2FetchKind
+	status int
+}
 
 func (e *v3FetchError) Error() string { return "v3 provisioning failure" }
 
@@ -261,7 +264,7 @@ func fetchProvisioningV3(ctx context.Context, client *http.Client, backend, toke
 		return nil, nil, &v3FetchError{kind: v2Infrastructure}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, &v3FetchError{kind: v2Terminal}
+		return nil, nil, &v3FetchError{kind: v2Terminal, status: resp.StatusCode}
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxProvisioningJSON+1))
 	if err != nil || len(raw) > maxProvisioningJSON {

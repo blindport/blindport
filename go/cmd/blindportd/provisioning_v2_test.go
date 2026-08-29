@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -306,6 +307,9 @@ func TestFetchProvisioningCoordinatorFallbackMatrix(t *testing.T) {
 				if err == nil {
 					t.Fatal("fetchProvisioning() succeeded")
 				}
+				if test.name == "denial does not use cache" && !strings.Contains(err.Error(), "HTTP 403 Forbidden") {
+					t.Fatalf("denial error = %q", err)
+				}
 				if strings.Contains(err.Error(), "secret-value") || strings.Contains(err.Error(), "203.0.113.20") {
 					t.Fatalf("unsanitized error %q", err)
 				}
@@ -323,6 +327,38 @@ func TestFetchProvisioningCoordinatorFallbackMatrix(t *testing.T) {
 	defer server.Close()
 	if _, err := fetchProvisioning(context.Background(), server.Client(), server.URL, "secret-value", credentials, false); err == nil {
 		t.Fatal("first infrastructure outage used a nonexistent cache")
+	}
+}
+
+func TestFetchProvisioningPreservesSafeV3TerminalStatuses(t *testing.T) {
+	instance := "11111111-2222-4333-8444-555555555555"
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{status: http.StatusUnauthorized, want: "rejected the account token (HTTP 401 Unauthorized)"},
+		{status: http.StatusForbidden, want: "denied the account (HTTP 403 Forbidden)"},
+		{status: http.StatusConflict, want: "client identity conflict (HTTP 409 Conflict)"},
+	}
+	for _, test := range tests {
+		t.Run(strconv.Itoa(test.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, `{"detail":"safe test detail"}`)
+			}))
+			defer server.Close()
+			credentials := &credentialManager{
+				stateDir: privateStateDir(t),
+				snapshot: &credentialSnapshot{stored: storedCredential{InstanceID: instance, Generation: 7}},
+			}
+			_, err := fetchProvisioning(context.Background(), server.Client(), server.URL, "secret-value", credentials, false)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("fetchProvisioning() error = %v", err)
+			}
+			if strings.Contains(err.Error(), "secret-value") || strings.Contains(err.Error(), "safe test detail") || strings.Contains(err.Error(), server.URL) {
+				t.Fatalf("provisioning error exposed request details: %q", err)
+			}
+		})
 	}
 }
 

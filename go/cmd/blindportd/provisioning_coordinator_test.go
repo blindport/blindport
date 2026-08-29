@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -139,5 +140,8 @@ func TestProvisioningFailureClassificationIsSanitized(t *testing.T) {
 	err := &provisioningFetchError{kind: provisioningTerminal, status: 429}
 	if provisioningFailure(err) != provisioningTerminal || errors.Is(err, context.Canceled) {
 		t.Fatalf("classification = %v", provisioningFailure(err))
+	}
+	if !strings.Contains(err.Error(), "HTTP 429 Too Many Requests") {
+		t.Fatalf("error = %q", err)
 	}
 }
