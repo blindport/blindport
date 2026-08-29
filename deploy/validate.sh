@@ -329,7 +329,9 @@ assert 'acl api_host hdr(host),field(1,:) -i "${API_DOMAIN}"' in config
 assert "use_backend api_http if api_host" in config
 assert "default_backend relay_http" in config
 assert "backend relay_http" in config
-assert "server relay 127.0.0.1:4443 send-proxy-v2 check" in config
+assert "option httpchk GET /readyz" in config
+assert "http-check expect status 200" in config
+assert "server relay 127.0.0.1:4443 send-proxy-v2 check port 9090" in config
 assert "acl acme_path" not in config
 assert "relay_acme" not in config
 PY

@@ -402,8 +402,10 @@ HAProxy sends PROXY v2 to both loopback TLS backends. Caddy and the relay requir
 only on their explicit loopback listeners, so Caddy receives the API client address
 in `X-Forwarded-For` and the relay passes the client address through the tunnel for
 origin-side PROXY v2 mappings. Never enable the relay's SNI PROXY protocol mode on a
-public or wildcard listener. HTTP ingress rate limits still see HAProxy as one source
-and are explicitly sized for redirects and multi-vantage ACME retries.
+public or wildcard listener. HAProxy probes the relay's loopback `:9090/readyz`
+endpoint directly, without a PROXY header, because synthetic health checks have no
+client address. HTTP ingress rate limits still see HAProxy as one source and are
+explicitly sized for redirects and multi-vantage ACME retries.
 
 For independently hosted Relay edges, set `RELAY_PRIVATE_CIDRS` to their fixed source
 addresses. Caddy permits those sources to reach `/internal/v1/*`, `/internal/v2/*`, and
