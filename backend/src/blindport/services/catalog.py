@@ -84,8 +84,8 @@ def get_catalog(session: Session) -> CatalogResponse:
     )
 
     shared_ips = set(settings.relay_shared_ips_list)
-    tcp_ports = set(settings.relay_shared_tcp_ports_list)
-    udp_ports = set(settings.relay_shared_udp_ports_list)
+    tcp_ports = settings.relay_shared_tcp_port_range
+    udp_ports = settings.relay_shared_udp_port_range
     used_tcp = {
         (row.assigned_ip, row.assigned_port)
         for row in assigned
@@ -102,8 +102,8 @@ def get_catalog(session: Session) -> CatalogResponse:
         and row.assigned_ip in shared_ips
         and row.assigned_port in udp_ports
     }
-    tcp_total = len(shared_ips) * len(tcp_ports)
-    udp_total = len(shared_ips) * len(udp_ports)
+    tcp_total = min(len(shared_ips) * len(tcp_ports), settings.PORT_TCP_CAPACITY)
+    udp_total = min(len(shared_ips) * len(udp_ports), settings.PORT_UDP_CAPACITY)
     tcp_available = max(0, tcp_total - len(used_tcp))
     udp_available = max(0, udp_total - len(used_udp))
     port_available = tcp_available + udp_available

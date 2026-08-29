@@ -146,7 +146,7 @@ def parse_enabled_payment_methods(value: str) -> frozenset[PaymentMethod]:
     return frozenset(methods)
 
 
-def _parse_port_pool(value: str, transport: str) -> list[int]:
+def _port_pool_bounds(value: str, transport: str) -> tuple[int, int]:
     if not value or value.strip() != value or value.count("-") != 1:
         raise ValueError(f"must be one inclusive {transport} port range such as 10000-10007")
     start_raw, end_raw = value.split("-", 1)
@@ -155,9 +155,17 @@ def _parse_port_pool(value: str, transport: str) -> list[int]:
     start, end = int(start_raw), int(end_raw)
     if not 1 <= start <= end <= 65535:
         raise ValueError(f"{transport} port range must be within 1-65535")
-    if end - start + 1 > 4096:
-        raise ValueError(f"{transport} port range cannot contain more than 4096 ports")
-    return list(range(start, end + 1))
+    return start, end
+
+
+def _port_pool_range(value: str, transport: str) -> range:
+    start, end = _port_pool_bounds(value, transport)
+    return range(start, end + 1)
+
+
+def _parse_port_pool(value: str, transport: str) -> list[int]:
+    """Parse one port range for callers that require a concrete list."""
+    return list(_port_pool_range(value, transport))
 
 
 def parse_tcp_port_pool(value: str) -> list[int]:
@@ -681,8 +689,10 @@ class Settings(BaseSettings):
     RELAY_PUBLIC_IPS: str = "203.0.113.10,203.0.113.11"  # comma-separated, allocated pool
     WIREGUARD_PUBLIC_IPS: str = ""  # provider-routed /32 inventory, never locally bound
     RELAY_SHARED_IPS: str = "203.0.113.20"  # separate Blindport Port/SNI ingress inventory
-    RELAY_SHARED_TCP_PORTS: str = "10000-10007"  # one bounded inclusive range
+    RELAY_SHARED_TCP_PORTS: str = "10000-10007"  # one inclusive range
+    PORT_TCP_CAPACITY: int = Field(default=4096, ge=1, le=4096)
     RELAY_SHARED_UDP_PORTS: str = "10000-10007"  # independently leased UDP sockets
+    PORT_UDP_CAPACITY: int = Field(default=4096, ge=1, le=4096)
     RELAY_POOL_DOMAINS: str = "relay1.blindport.test,relay2.blindport.test"
     WIREGUARD_RELAY_PUBLIC_KEY: str = ""
     WIREGUARD_ENDPOINT: str = ""
@@ -746,8 +756,16 @@ class Settings(BaseSettings):
         return parse_tcp_port_pool(self.RELAY_SHARED_TCP_PORTS)
 
     @property
+    def relay_shared_tcp_port_range(self) -> range:
+        return _port_pool_range(self.RELAY_SHARED_TCP_PORTS, "TCP")
+
+    @property
     def relay_shared_udp_ports_list(self) -> list[int]:
         return parse_udp_port_pool(self.RELAY_SHARED_UDP_PORTS)
+
+    @property
+    def relay_shared_udp_port_range(self) -> range:
+        return _port_pool_range(self.RELAY_SHARED_UDP_PORTS, "UDP")
 
     @property
     def relay_pool_domains_list(self) -> list[str]:
@@ -988,13 +1006,13 @@ class Settings(BaseSettings):
     @field_validator("RELAY_SHARED_TCP_PORTS")
     @classmethod
     def validate_shared_tcp_ports(cls, value: str) -> str:
-        parse_tcp_port_pool(value)
+        _port_pool_bounds(value, "TCP")
         return value
 
     @field_validator("RELAY_SHARED_UDP_PORTS")
     @classmethod
     def validate_shared_udp_ports(cls, value: str) -> str:
-        parse_udp_port_pool(value)
+        _port_pool_bounds(value, "UDP")
         return value
 
     @field_validator("RELAY_MANAGED_SUFFIXES")

@@ -28,6 +28,39 @@ assert "timeout=12" in healthcheck["test"][-1]
 '
 }
 
+port_capacity_policy_check() {
+    control_directory="$1"
+    relay_directory="$2"
+    docker compose \
+        --env-file "$root/$control_directory/.env.example" \
+        -f "$root/$control_directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+environment = json.load(sys.stdin)["services"]["backend"]["environment"]
+assert environment["RELAY_SHARED_TCP_PORTS"] == "10000-65535"
+assert environment["RELAY_SHARED_UDP_PORTS"] == "10000-65535"
+assert environment["PORT_TCP_CAPACITY"] == "4096"
+assert environment["PORT_UDP_CAPACITY"] == "4096"
+'
+
+    docker compose \
+        --env-file "$root/$relay_directory/.env.example" \
+        -f "$root/$relay_directory/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+environment = json.load(sys.stdin)["services"]["relay"]["environment"]
+assert environment["BLINDPORT_RELAY_SHARED_TCP_PORTS"] == "10000-65535"
+assert environment["BLINDPORT_RELAY_SHARED_UDP_PORTS"] == "10000-65535"
+assert environment["BLINDPORT_RELAY_MAX_PORT_LISTENERS"] == "8192"
+'
+}
+
 smtp_secret_scope_check() {
     directory="$1"
     docker compose \
@@ -722,6 +755,8 @@ compose_check deploy/ha-lab
 compose_check examples/docker
 backend_healthcheck_policy_check deploy/production
 backend_healthcheck_policy_check deploy/split/control
+port_capacity_policy_check deploy/production deploy/production
+port_capacity_policy_check deploy/split/control deploy/split/relay
 smtp_secret_scope_check deploy/production
 smtp_secret_scope_check deploy/split/control
 offline_entitlement_secret_scope_check deploy/production

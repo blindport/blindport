@@ -349,9 +349,12 @@ one reconcile interval. Current support is one relay key and endpoint, IPv4
 `/32` inventory, and no BGP automation. Provider routing and relay failover are
 operator responsibilities.
 
-Each backend transport pool uses one inclusive decimal range. Ports must be within
-`1-65535`, ordered, and no more than 4096 entries. Keep pools much smaller when
-each port is a separate listener.
+Each backend transport pool uses one inclusive decimal range within `1-65535`.
+`PORT_TCP_CAPACITY` and `PORT_UDP_CAPACITY` independently cap advertised and
+allocated leases at no more than 4096 per transport, even when the configured
+numeric range is wider. Relays bind only ports with an authenticated active
+tunnel and enforce `BLINDPORT_RELAY_MAX_PORT_LISTENERS`; keep that limit at least
+as large as the sum of the two advertised capacities.
 
 ### Provider edge assignments
 

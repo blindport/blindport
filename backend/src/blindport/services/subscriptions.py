@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 
 from loguru import logger
-from sqlalchemy import or_, text, update
+from sqlalchemy import func, or_, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -42,6 +42,8 @@ _TERMINAL_PAYMENT_STATUSES = (
     PaymentStatus.EXPIRED,
     PaymentStatus.FAILED,
 )
+_TCP_PORT_CAPACITY_ADVISORY_LOCK = 1886547827
+_UDP_PORT_CAPACITY_ADVISORY_LOCK = 1886547828
 
 
 class AccountLimitError(RuntimeError):
@@ -1097,6 +1099,43 @@ def reap_elapsed_resource_holds(session: Session) -> None:
             )
 
 
+def _lock_port_capacity(session: Session, transport: Transport) -> None:
+    """Serialize one transport's capacity check and allocation on PostgreSQL."""
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    lock_id = (
+        _UDP_PORT_CAPACITY_ADVISORY_LOCK
+        if transport == Transport.UDP
+        else _TCP_PORT_CAPACITY_ADVISORY_LOCK
+    )
+    session.execute(text(f"SELECT pg_advisory_xact_lock({lock_id})"))
+
+
+def _held_port_assignment_count(
+    session: Session,
+    transport: Transport,
+    shared_ips: list[str],
+    ports: range,
+) -> int:
+    """Count assigned sockets that remain in the current shared inventory."""
+    if not shared_ips or not ports:
+        return 0
+    return int(
+        session.exec(
+            select(func.count())
+            .select_from(Subscription)
+            .where(
+                Subscription.product == ProductType.PORT,
+                Subscription.transport == transport,
+                Subscription.assigned_ip.in_(shared_ips),  # type: ignore[union-attr]
+                Subscription.assigned_port >= ports.start,  # type: ignore[operator]
+                Subscription.assigned_port < ports.stop,  # type: ignore[operator]
+            )
+        ).one()
+        or 0
+    )
+
+
 def reserve_subscription_resource(
     session: Session,
     sub: Subscription,
@@ -1114,22 +1153,38 @@ def reserve_subscription_resource(
     if sub.assigned_ip or sub.reservation_expires_at or sub.reservation_payment_id:
         raise NoCapacityError(f"{sub.product.value} assignment is not yet reusable")
 
-    candidates: list[tuple[str, int | None]]
+    candidates: Iterable[tuple[str, int | None]]
     if sub.product == ProductType.IP:
         ips = (
             settings.wireguard_public_ips_list
             if sub.delivery == DeliveryMode.WIREGUARD
             else settings.relay_public_ips_list
         )
-        candidates = [(ip, None) for ip in ips]
+        candidates = ((ip, None) for ip in ips)
         no_capacity = "no Blindport IP capacity"
     elif sub.product == ProductType.PORT:
+        _lock_port_capacity(session, sub.transport)
+        ips = settings.relay_shared_ips_list
         ports = (
-            settings.relay_shared_udp_ports_list
+            settings.relay_shared_udp_port_range
             if sub.transport == Transport.UDP
-            else settings.relay_shared_tcp_ports_list
+            else settings.relay_shared_tcp_port_range
         )
-        candidates = [(ip, port) for ip in settings.relay_shared_ips_list for port in ports]
+        configured_capacity = (
+            settings.PORT_UDP_CAPACITY
+            if sub.transport == Transport.UDP
+            else settings.PORT_TCP_CAPACITY
+        )
+        raw_count = len(ips) * len(ports)
+        capacity = min(raw_count, configured_capacity)
+        if _held_port_assignment_count(session, sub.transport, ips, ports) >= capacity:
+            raise NoCapacityError("no Blindport Port capacity")
+        start = secrets.randbelow(raw_count) if raw_count > capacity else 0
+        candidates = (
+            (ips[index // len(ports)], ports[index % len(ports)])
+            for offset in range(raw_count)
+            for index in ((start + offset) % raw_count,)
+        )
         no_capacity = "no Blindport Port capacity"
     else:  # pragma: no cover - ProductType is exhaustive
         return False

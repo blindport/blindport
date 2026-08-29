@@ -848,9 +848,9 @@ def test_parse_tcp_port_pool(value: str, expected: list[int]) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["", "80", "80,81", "0-80", "100-99", "1-65536", " 80-81", "a-b", "1-4097"],
+    ["", "80", "80,81", "0-80", "100-99", "1-65536", " 80-81", "a-b"],
 )
-def test_parse_tcp_port_pool_rejects_invalid_or_excessive_ranges(value: str) -> None:
+def test_parse_tcp_port_pool_rejects_invalid_ranges(value: str) -> None:
     with pytest.raises(ValueError):
         parse_tcp_port_pool(value)
 

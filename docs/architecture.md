@@ -26,10 +26,11 @@ routed plane and does not use the framed tunnel protocol.
 bound as relay listener addresses. `RELAY_PUBLIC_IPS` is retained only for
 already-active historical framed IP records. `RELAY_SHARED_IPS` is shared
 Blindport Port and SNI ingress inventory. All three lists must be disjoint. A
-Blindport Port lease
-also comes from the bounded inclusive `RELAY_SHARED_TCP_PORTS` or
+Blindport Port lease also comes from the inclusive `RELAY_SHARED_TCP_PORTS` or
 `RELAY_SHARED_UDP_PORTS` range. TCP and UDP on the same numeric IP/port are
-distinct lease identities and may belong to different subscriptions.
+distinct lease identities and may belong to different subscriptions. Separate
+transport capacity settings cap advertised leases, and each relay binds a leased
+socket only while its authenticated agent tunnel is active.
 
 ## Reservation and payment lifecycle
 

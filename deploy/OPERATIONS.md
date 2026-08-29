@@ -346,10 +346,10 @@ limits remain authoritative.
 The production stack uses host networking for HAProxy, Caddy, and the relay. This is required so
 the public IP configured for Blindport Port in the backend is also the actual address bound by
 the relay. Ensure `PUBLIC_IP` is configured on the host. HAProxy owns `PUBLIC_IP:80`
-and `PUBLIC_IP:443`; the relay owns the configured TCP/UDP Blindport Port range and
-`PUBLIC_IP:5443`. Backend `:8000`, relay SNI `:4443`, Caddy `:8080/:8443`, and relay
-admin `:9090` bind loopback only. Firewall all loopback-only surfaces from the public
-interface.
+and `PUBLIC_IP:443`; the relay binds active leases from the configured TCP/UDP
+Blindport Port range and owns `PUBLIC_IP:5443`. Backend `:8000`, relay SNI `:4443`,
+Caddy `:8080/:8443`, and relay admin `:9090` bind loopback only. Firewall all
+loopback-only surfaces from the public interface.
 
 Keep backend port `8000` bound to loopback. The backend image accepts forwarded
 addresses only from loopback, and Caddy must replace client-supplied forwarded
@@ -451,10 +451,11 @@ Run `pull`, the one-shot `migrate` command, and `up -d` as shown for production,
 ## Split relay host
 
 Ensure `RELAY_PUBLIC_IP` is configured on the relay host. The relay binds that IP on
-`:80` for HTTPS redirects and HTTP-01, `:443` for SNI, `:5443` for client control, and every
-configured TCP/UDP Blindport Port. Relay admin remains on loopback
-`:9090`. Permit the relay host's private source address through the control Caddy
-allowlist and verify `BACKEND_INTERNAL_URL` resolves over that private route.
+`:80` for HTTPS redirects and HTTP-01, `:443` for SNI, `:5443` for client control, and
+each TCP/UDP Blindport Port with an active authenticated tunnel. Relay admin remains
+on loopback `:9090`. Permit the relay host's private source address through the
+control Caddy allowlist and verify `BACKEND_INTERNAL_URL` resolves over that private
+route.
 
 Framed `RELAY_PUBLIC_IPS` remains disabled in the checked-in split topology.
 Routed `WIREGUARD_PUBLIC_IPS` is optional and wired through both production
