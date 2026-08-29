@@ -189,6 +189,21 @@ func TestLoadStaticConfigVersion3AllowsDockerOnlyAccounts(t *testing.T) {
 	}
 }
 
+func TestLoadStaticConfigVersion3DefaultsDockerAccountStateDirectory(t *testing.T) {
+	t.Setenv("BLINDPORT_STATE_DIR", "/var/lib/blindport")
+	path := writeConfig(t, `{"version":3,"accounts":[{"name":"public","token_file":"/run/secrets/public"}]}`, 0o600)
+	document, err := loadStaticConfigDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(document.Accounts) != 1 || document.Accounts[0].StateDir != "/var/lib/blindport/accounts/public" || len(document.Accounts[0].Mappings) != 0 {
+		t.Fatalf("document = %+v", document)
+	}
+	if err := validateStaticAccountRuntimeMappings(document.Accounts, true); err != nil {
+		t.Fatalf("defaulted Docker-only account was rejected: %v", err)
+	}
+}
+
 func makeAccounts(account func(string, string, string, string) string, count int) []string {
 	accounts := make([]string, count)
 	for i := range accounts {

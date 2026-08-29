@@ -50,9 +50,13 @@ The resulting host layout is:
 ```
 
 `/opt/blindport/config/config.json` selects the mounted token and keeps this
-account's identity and ACME state under the bind-mounted `state/` directory. The
-config and token files must both be owned by UID `10001` with mode `0600`; the
-three directories must be owned by `10001:10001` with mode `0700`.
+account's identity and ACME state under the bind-mounted `state/` directory.
+Omitting `state_dir` defaults to `/var/lib/blindport/accounts/<account-name>`.
+`mappings` is also omitted because Docker labels define the mappings. A mapping
+object in `config.json` is static and must include both
+`subscription_id` and `upstream`. The config and token files must both be owned
+by UID `10001` with mode `0600`; the three directories must be owned by
+`10001:10001` with mode `0700`.
 Directory mode `0600` is not sufficient because it omits the execute bit needed
 to reach files inside the directory. A readable token with broader permissions
 produces a warning and continues; a missing or inaccessible token remains a
@@ -108,27 +112,25 @@ across image updates. Starting another empty state directory with the same
 account can require an operator identity reset and can consume Let's Encrypt
 issuance limits.
 
-`site` selects the configured `public` account with
-`tech.blindport.mapping.site.account`. Version 3 requires this `.account` label
-on every Docker mapping, including existing subscriptions. To add an account,
-mount another owner-only token file and add an account with a distinct state path
-to `/opt/blindport/config/config.json`:
+Because this setup configures one account, every mapping automatically uses
+`public`. To add an account, mount another owner-only token file and add an
+account to `/opt/blindport/config/config.json`:
 
 ```json
 {
   "name": "private",
-  "token_file": "/run/secrets/blindport-private",
-  "state_dir": "/var/lib/blindport/accounts/private",
-  "mappings": []
+  "token_file": "/run/secrets/blindport-private"
 }
 ```
 
 Add `/opt/blindport/secrets/private-token:/run/secrets/blindport-private:ro` to
 the agent volumes after creating it with the same `10001:10001`, `0600`
 ownership and mode.
-Mappings for that account use labels such as
+The account name gives it the default non-overlapping state directory
+`/var/lib/blindport/accounts/private`. Once multiple accounts are configured,
+each mapping must select one with a label such as
 `tech.blindport.mapping.api.account: "private"`. Each account needs its own
-non-overlapping state directory and token file.
+token file.
 
 Access to the Docker socket is effectively root-equivalent even with a read-only
 mount. Prefer a narrowly authorized socket proxy where practical. Removing the

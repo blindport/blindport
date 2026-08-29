@@ -74,6 +74,11 @@ The bind-mounted `state/`, `secrets/`, and `traefik-acme/` paths contain private
 keys and should be backed up as secrets. A production deployment should use
 digest-pinned images and a narrowly authorized Docker socket proxy. Version 3
 account configs require `blindportd v0.3.0` or newer.
+The example config omits `state_dir`, which defaults to
+`/var/lib/blindport/accounts/public`, and omits `mappings` because Traefik's
+container labels define the mapping. Its single account is selected
+automatically. Any mapping object in `config.json` is
+static and must include both `subscription_id` and `upstream`.
 
 The published `v0.3.0` image's executable carries the `NET_ADMIN` file
 capability, so the container must retain that capability to start. The Compose

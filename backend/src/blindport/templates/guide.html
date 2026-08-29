@@ -110,6 +110,16 @@ blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"
     <section id="docker">
       <h2>Docker</h2>
       <p>Connect an existing paid Relay subscription directly to an app container. This version 3 example uses the same <code>config.json</code> filename as the standalone setup and reads an owner-only token file rather than putting a bearer token in Compose. Replace the subscription UUID, set <code>.upstream</code> to the app's Compose service name and internal port, and accept the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> before setting the consent label to <code>true</code>.</p>
+      <pre><code>{
+  "version": 3,
+  "accounts": [
+    {
+      "name": "public",
+      "token_file": "/run/secrets/blindport-public"
+    }
+  ]
+}</code></pre>
+      <p>Save this as <code>config.json</code>. <code>mappings</code> is omitted because <code>--docker</code> reads mappings from container labels. If a mapping object is placed in <code>config.json</code>, it is static and must define its own <code>subscription_id</code> and <code>upstream</code>. An omitted <code>state_dir</code> defaults to <code>/var/lib/blindport/accounts/&lt;account-name&gt;</code> in the image. With one configured account, labels use it automatically; only multi-account setups need an <code>.account</code> label.</p>
       <pre><code>sudo install -d -o 10001 -g 10001 -m 0700 /opt/blindport/config /opt/blindport/secrets /opt/blindport/state
 sudo install -o 10001 -g 10001 -m 0600 config.json /opt/blindport/config/config.json
 sudo install -o 10001 -g 10001 -m 0600 /dev/null /opt/blindport/secrets/public-token
@@ -120,7 +130,6 @@ sudoedit /opt/blindport/secrets/public-token</code></pre>
     image: example/app:latest
     networks: [blindport]
     labels:
-      tech.blindport.mapping.web.account: "public"
       tech.blindport.mapping.web.subscription: "12312312-3123-4123-8123-123123123123"
       tech.blindport.mapping.web.upstream: "app:8080"
       tech.blindport.mapping.web.tls_mode: "automatic"
@@ -154,9 +163,9 @@ networks:
       config:
         - subnet: 172.30.0.0/24</code></pre>
       <div class="warning"><strong>Docker socket warning:</strong> access to the Docker daemon socket is effectively root-equivalent, even when the discovery calls only list containers. Prefer a narrowly authorized socket proxy where practical.</div>
-      <p><code>app</code> and <code>blindportd</code> share the <code>blindport</code> network, so <code>app:8080</code> resolves directly. The bind-mounted <code>/opt/blindport/state</code> directory preserves the enrolled identity, ACME account, and certificates. The mounted config defines account <code>public</code> with <code>token_file</code> <code>/run/secrets/blindport-public</code> and state directory <code>/var/lib/blindport/accounts/public</code>. Docker group ID <code>999</code> is the default; override <code>DOCKER_GID</code> with <code>stat -c '%g' /var/run/docker.sock</code> when the host socket uses another group. The published <code>v0.3.0</code> image requires <code>NET_ADMIN</code> at process startup because the executable carries that file capability; <code>cap_drop: [ALL]</code> ensures no other capability is granted. Version 3 config requires <code>blindportd v0.3.0</code> or newer, and every Docker mapping must select one configured local account with <code>.account</code>.</p>
+      <p><code>app</code> and <code>blindportd</code> share the <code>blindport</code> network, so <code>app:8080</code> resolves directly. The bind-mounted <code>/opt/blindport/state</code> directory preserves the enrolled identity, ACME account, and certificates. Docker group ID <code>999</code> is the default; override <code>DOCKER_GID</code> with <code>stat -c '%g' /var/run/docker.sock</code> when the host socket uses another group. The published <code>v0.3.0</code> image requires <code>NET_ADMIN</code> at process startup because the executable carries that file capability; <code>cap_drop: [ALL]</code> ensures no other capability is granted. Version 3 config requires <code>blindportd v0.3.0</code> or newer. A single configured account is selected automatically; multi-account mappings must select one with <code>.account</code>.</p>
       <details><summary>Advanced: create orders from labels</summary>
-      <p>Instead of <code>.subscription</code>, a mapping can declare <code>.product</code>. Every declaration requires <code>.account</code> and <code>.upstream</code>. Its mapping name becomes the stable, account-scoped order key: changing that name's product, domain, transport, or billing term is rejected, so use a new name for a different order. Relay requires <code>.domain</code>; Port supports <code>.transport</code> values <code>tcp</code> and <code>udp</code>. Omit <code>.transport</code> for TCP and <code>.billing_term</code> for monthly billing. Relay uses TCP only.</p>
+      <p>Instead of <code>.subscription</code>, a mapping can declare <code>.product</code>. Every declaration requires <code>.upstream</code>, and multi-account setups also require <code>.account</code>. Its mapping name becomes the stable, account-scoped order key: changing that name's product, domain, transport, or billing term is rejected, so use a new name for a different order. Relay requires <code>.domain</code>; Port supports <code>.transport</code> values <code>tcp</code> and <code>udp</code>. Omit <code>.transport</code> for TCP and <code>.billing_term</code> for monthly billing. Relay uses TCP only.</p>
       <pre><code># Relay order, with a required domain
 tech.blindport.mapping.web.account: "public"
 tech.blindport.mapping.web.product: "relay"

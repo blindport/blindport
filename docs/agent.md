@@ -363,8 +363,9 @@ onto `/run/secrets`; its ownership and mode would replace the container
 directory and can prevent the agent from traversing it.
 
 The mounted `/opt/blindport/config/config.json` is a version 3 Docker account
-config. It uses an empty `mappings` list because Docker labels provide the
-mappings:
+config. It omits `mappings` because Docker labels provide the mappings. An
+omitted `state_dir` defaults to
+`$BLINDPORT_STATE_DIR/accounts/<account-name>`:
 
 ```json
 {
@@ -372,13 +373,15 @@ mappings:
   "accounts": [
     {
       "name": "public",
-      "token_file": "/run/secrets/blindport-public",
-      "state_dir": "/var/lib/blindport/accounts/public",
-      "mappings": []
+      "token_file": "/run/secrets/blindport-public"
     }
   ]
 }
 ```
+
+Any mapping object declared in `config.json` is static and must include both
+`subscription_id` and `upstream`. The agent cannot infer a static upstream from
+Docker labels.
 
 Mapping names contain lowercase ASCII letters, digits, underscores, or hyphens,
 start with a letter or digit, and are at most 63 characters. One container may
@@ -407,8 +410,9 @@ labels:
   tech.blindport.mapping.game.upstream: "game:27015"
 ```
 
-With a version 3 config, every Docker mapping must also select one configured
-local account name. Arbitrary account UUIDs and names absent from the config are
+With one account in a version 3 config, Docker mappings automatically use that
+account. With multiple accounts, every mapping must select one configured local
+account name. Arbitrary account UUIDs and names absent from the config are
 rejected:
 
 ```yaml
@@ -419,12 +423,12 @@ labels:
   tech.blindport.mapping.web.upstream: "web:8080"
 ```
 
-The `.account` value is used only inside this `blindportd` process and is never
+The optional `.account` value is used only inside this `blindportd` process and is never
 sent as backend authority. The selected account runtime makes order and
-provisioning requests with its configured bearer token. Single-account version
-1 and 2 Docker deployments omit `.account`; specifying it outside version 3 is
-rejected. A missing or unknown selector invalidates the complete Docker snapshot,
-so every account retains its last valid workers.
+provisioning requests with its configured bearer token. Version 1 and 2 Docker
+deployments omit `.account`; specifying it outside version 3 is rejected. A
+missing selector in a multi-account config or an unknown selector invalidates
+the complete Docker snapshot, so every account retains its last valid workers.
 
 The backend creates a pending subscription exactly once for each mapping name.
 Changing that name's product, domain, transport, or billing term is rejected; use

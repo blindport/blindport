@@ -240,6 +240,23 @@ func TestParseDockerLabelsRequiresConfiguredAccountInV3(t *testing.T) {
 	}
 }
 
+func TestParseDockerLabelsDefaultsSingleConfiguredAccount(t *testing.T) {
+	scope, err := newDockerAccountScope([]string{"public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappings, err := parseDockerLabelsWithinScope("container-id", map[string]string{
+		dockerMappingPrefix + "web.subscription": testSubscriptionID1,
+		dockerMappingPrefix + "web.upstream":     "web:443",
+	}, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mappings) != 1 || mappings[0].AccountName != "public" {
+		t.Fatalf("default account mapping = %+v", mappings)
+	}
+}
+
 func TestDiscoverDockerMappingsScopesSameOrderKeyByAccount(t *testing.T) {
 	fake := &fakeDockerClient{containers: []containertypes.Summary{
 		{ID: "public", Labels: accountOrderLabels("public", "web", "public:443")},

@@ -28,7 +28,8 @@ type dockerContainerLister interface {
 }
 
 type dockerAccountScope struct {
-	allowed map[string]struct{}
+	allowed        map[string]struct{}
+	defaultAccount string
 }
 
 type dockerMappingDiscovery interface {
@@ -135,7 +136,11 @@ func newDockerAccountScope(accountNames []string) (*dockerAccountScope, error) {
 		}
 		allowed[name] = struct{}{}
 	}
-	return &dockerAccountScope{allowed: allowed}, nil
+	defaultAccount := ""
+	if len(accountNames) == 1 {
+		defaultAccount = accountNames[0]
+	}
+	return &dockerAccountScope{allowed: allowed, defaultAccount: defaultAccount}, nil
 }
 
 func newDockerClient(host string) (*client.Client, error) {
@@ -245,7 +250,10 @@ func parseDockerLabelsWithinScope(containerID string, labels map[string]string, 
 			}
 		} else {
 			if !pair.hasAccount {
-				return nil, fmt.Errorf("container %s mapping %q requires an account label", shortContainerID(containerID), name)
+				if scope.defaultAccount == "" {
+					return nil, fmt.Errorf("container %s mapping %q requires an account label when multiple accounts are configured", shortContainerID(containerID), name)
+				}
+				pair.account = scope.defaultAccount
 			}
 			if _, allowed := scope.allowed[pair.account]; !allowed {
 				return nil, fmt.Errorf("container %s mapping %q selects unknown account %q", shortContainerID(containerID), name, pair.account)

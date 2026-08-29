@@ -422,7 +422,7 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
         "<code>awaiting_payment</code>",
         "<code>awaiting_domain</code>",
         "exact DNS-only CNAME",
-        "every Docker mapping must select one configured local account",
+        "multi-account mappings must select one",
     ):
         assert term in guide
     run_section = guide.split('<section id="run">', 1)[1].split("</section>", 1)[0]
@@ -471,9 +471,13 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
 
     assert '"version": 3' in docker_config
     assert '"token_file": "/run/secrets/blindport-public"' in docker_config
-    assert '"state_dir": "/var/lib/blindport/accounts/public"' in docker_config
+    assert '"state_dir"' not in docker_config
+    assert '"mappings"' not in docker_config
+    assert "defaults to <code>/var/lib/blindport/accounts/&lt;account-name&gt;</code>" in guide
+    assert "it is static and must define its own" in guide
     assert 'command: ["--docker", "--config=/etc/blindport/config.json"]' in docker_compose
-    assert 'tech.blindport.mapping.site.account: "public"' in docker_compose
+    assert 'tech.blindport.mapping.site.account: "public"' not in docker_compose
+    assert "labels use it automatically" in guide
     assert "BLINDPORT_TOKEN:" not in docker_compose
     assert "BLINDPORT_BACKEND_URL" not in docker_compose
     assert "${DOCKER_GID:-999}" in docker_compose

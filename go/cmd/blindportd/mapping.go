@@ -209,6 +209,11 @@ func parseStaticConfigV3(path string, data []byte) (staticConfigDocument, error)
 	if cfg.Version != 3 {
 		return staticConfigDocument{}, fmt.Errorf("config %q has unsupported version %d", path, cfg.Version)
 	}
+	for i := range cfg.Accounts {
+		if cfg.Accounts[i].StateDir == "" {
+			cfg.Accounts[i].StateDir = filepath.Join(defaultCredentialStateDir(), "accounts", cfg.Accounts[i].Name)
+		}
+	}
 	if err := validateStaticAccounts(cfg.Accounts, path); err != nil {
 		return staticConfigDocument{}, err
 	}

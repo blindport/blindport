@@ -3,9 +3,7 @@
   "accounts": [
     {
       "name": "public",
-      "token_file": "/run/secrets/blindport-public",
-      "state_dir": "/var/lib/blindport/accounts/public",
-      "mappings": []
+      "token_file": "/run/secrets/blindport-public"
     }
   ]
 }

@@ -8,7 +8,6 @@ services:
     volumes:
       - ./site/index.html:/usr/share/nginx/html/index.html:ro
     labels:
-      tech.blindport.mapping.site.account: "public"
       tech.blindport.mapping.site.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID in .env}"
       tech.blindport.mapping.site.upstream: "site:80"
       tech.blindport.mapping.site.tls_mode: "automatic"

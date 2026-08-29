@@ -50,7 +50,6 @@ services:
       - /opt/blindport/secrets/cloudflare-dns-api-token:/run/secrets/cloudflare-dns-api-token:ro
       - /opt/blindport/traefik-acme:/letsencrypt
     labels:
-      tech.blindport.mapping.edge.account: "public"
       tech.blindport.mapping.edge.subscription: "${BLINDPORT_SUBSCRIPTION_ID:?set BLINDPORT_SUBSCRIPTION_ID}"
       tech.blindport.mapping.edge.upstream: "traefik:443"
       tech.blindport.mapping.edge.http_challenge_upstream: "traefik:80"
