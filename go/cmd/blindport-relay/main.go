@@ -68,6 +68,7 @@ type relay struct {
 	udpAssociationIdle  time.Duration
 	offlineEntitlements *offlineEntitlementConfig
 	bandwidth           *bandwidthReporter
+	portListeners       *portListenerRegistry
 	// tunnels keyed by claim, e.g. "ip:203.0.113.10" or "domain:alice.example.com"
 	mu                  sync.RWMutex
 	tunnels             map[string]*tunnel.Conn
@@ -98,6 +99,7 @@ func main() {
 	maxIngress := flag.Int("max-ingress", envIntDefault("BLINDPORT_RELAY_MAX_INGRESS", 4096), "maximum concurrent public ingress connections")
 	maxSNI := flag.Int("max-sni-peeks", envIntDefault("BLINDPORT_RELAY_MAX_SNI_PEEKS", 512), "maximum concurrent SNI ClientHello inspections")
 	maxChallenges := flag.Int("max-http-challenges", envIntDefault("BLINDPORT_RELAY_MAX_HTTP_CHALLENGES", 64), "maximum concurrent HTTP redirect and HTTP-01 requests")
+	maxPortListeners := flag.Int("max-port-listeners", envIntDefault("BLINDPORT_RELAY_MAX_PORT_LISTENERS", maxDynamicPortListeners), "maximum active shared TCP and UDP port listeners")
 	challengeRate := flag.Int("http-challenge-rate", envIntDefault("BLINDPORT_RELAY_HTTP_CHALLENGE_RATE", 600), "valid HTTP redirect and HTTP-01 requests allowed per minute per direct peer (requests behind one L7 frontend share its allowance)")
 	challengeBurst := flag.Int("http-challenge-burst", envIntDefault("BLINDPORT_RELAY_HTTP_CHALLENGE_BURST", 100), "HTTP redirect and HTTP-01 per-peer burst allowance")
 	maxControlSource := flag.Int("max-control-per-source", envIntDefault("BLINDPORT_RELAY_MAX_CONTROL_PER_SOURCE", 8), "maximum concurrent control handshakes per direct peer")
@@ -177,6 +179,10 @@ func main() {
 		logger.Error("invalid relay concurrency limits", "err", err)
 		os.Exit(2)
 	}
+	if err := validateMaxPortListeners(*maxPortListeners); err != nil {
+		logger.Error("invalid shared port listener limit", "err", err)
+		os.Exit(2)
+	}
 	if *shutdownTimeout <= 0 || *shutdownTimeout > 5*time.Minute || *certMargin <= 0 || *maxStreamsPerTunnel <= 0 || *maxStreamsPerTunnel > tunnel.MaxConcurrentStreams || *udpAssociationIdle < time.Second || *udpAssociationIdle > time.Hour {
 		logger.Error("invalid shutdown or certificate readiness duration")
 		os.Exit(2)
@@ -213,6 +219,7 @@ func main() {
 		tunnelSubscriptions: map[*tunnel.Conn]string{},
 		allTunnels:          map[*tunnel.Conn]struct{}{},
 	}
+	r.portListeners = newPortListenerRegistry(r, *maxPortListeners)
 	if *bandwidthMetrics {
 		reporter, err := newBandwidthReporter(logger, *bandwidthStateFile, *relayEdgeID, *heartbeatToken, *bandwidthInterval, resolver.ReportDailyBandwidth)
 		if err != nil {
@@ -359,6 +366,7 @@ func main() {
 		<-wireguardDone
 	}
 	closeBoundListeners(listeners)
+	r.closePortListeners()
 	r.closeAllTunnels()
 	if !r.handlers.stopAndWait(r.shutdownTimeout) {
 		logger.Warn("relay handler shutdown timed out")
@@ -552,6 +560,12 @@ func (r *relay) handleControlConnWithAdmission(ctx context.Context, conn net.Con
 
 func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello *protocol.Frame, authorization controlAuthorization, handshakeComplete func()) {
 	_ = conn.SetReadDeadline(time.Time{})
+	releasePortListener, err := r.acquirePortListener(ctx, hello.Claim)
+	if err != nil {
+		r.writeErr(conn, "shared port listener unavailable")
+		return
+	}
+	defer releasePortListener()
 	halfClose := hello.HasCapability(protocol.CapabilityTCPHalfClose)
 	flowControl := halfClose && hello.HasCapability(protocol.CapabilityStreamFlowControl)
 	reply := &protocol.Frame{Type: protocol.TypeHelloOK, Version: protocol.CurrentVersion}
@@ -1197,9 +1211,6 @@ func parsePortRange(value, transport string) ([]uint16, error) {
 	if startErr != nil || endErr != nil || start == 0 || start > end {
 		return nil, fmt.Errorf("invalid shared %s port range %q", transport, value)
 	}
-	if end-start+1 > 4096 {
-		return nil, fmt.Errorf("shared %s port range cannot contain more than 4096 ports", transport)
-	}
 	out := make([]uint16, 0, end-start+1)
 	for port := start; port <= end; port++ {
 		out = append(out, uint16(port))
@@ -1241,14 +1252,6 @@ func bindRelayListeners(controlAddrs []string, sniAddr, challengeAddr string, cf
 		for _, rawPort := range cfg.dedicatedPorts {
 			port, _ := strconv.ParseUint(rawPort, 10, 16)
 			specs = append(specs, spec{kind: listenerDedicated, addr: net.JoinHostPort(ip, rawPort), ip: ip, port: uint16(port)})
-		}
-	}
-	for _, ip := range cfg.sharedIPs {
-		for _, port := range cfg.sharedTCPPorts {
-			specs = append(specs, spec{kind: listenerPort, addr: net.JoinHostPort(ip, strconv.Itoa(int(port))), ip: ip, port: port})
-		}
-		for _, port := range cfg.sharedUDPPorts {
-			specs = append(specs, spec{kind: listenerPort, addr: net.JoinHostPort(ip, strconv.Itoa(int(port))), ip: ip, port: port, network: "udp"})
 		}
 	}
 	if sniAddr != "" {

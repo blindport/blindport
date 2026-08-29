@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -645,6 +646,13 @@ func TestParseRelayConfig(t *testing.T) {
 	if len(cfg.sharedUDPPorts) != 8 || cfg.sharedUDPPorts[0] != 11000 || cfg.sharedUDPPorts[7] != 11007 {
 		t.Fatalf("shared UDP ports = %v", cfg.sharedUDPPorts)
 	}
+	fullRange, err := parseRelayConfig("", "", "203.0.113.20", "10000-65535", "")
+	if err != nil {
+		t.Fatalf("parseRelayConfig() full shared range error = %v", err)
+	}
+	if len(fullRange.sharedTCPPorts) != 55536 || fullRange.sharedTCPPorts[0] != 10000 || fullRange.sharedTCPPorts[len(fullRange.sharedTCPPorts)-1] != 65535 {
+		t.Fatalf("full shared TCP range = %d ports from %d to %d", len(fullRange.sharedTCPPorts), fullRange.sharedTCPPorts[0], fullRange.sharedTCPPorts[len(fullRange.sharedTCPPorts)-1])
+	}
 
 	invalid := []struct {
 		name           string
@@ -659,7 +667,6 @@ func TestParseRelayConfig(t *testing.T) {
 		{name: "missing shared IP", dedicatedPorts: "80", sharedTCPPorts: "10000-10007"},
 		{name: "bad TCP range", dedicatedPorts: "80", sharedIPs: "203.0.113.20", sharedTCPPorts: "10007-10000"},
 		{name: "bad UDP range", dedicatedPorts: "80", sharedIPs: "203.0.113.20", sharedUDPPorts: "10007-10000"},
-		{name: "huge range", dedicatedPorts: "80", sharedIPs: "203.0.113.20", sharedTCPPorts: "1-4097"},
 		{name: "duplicate IP", dedicatedIPs: "203.0.113.10,203.0.113.10", dedicatedPorts: "80"},
 		{name: "bad port", dedicatedIPs: "203.0.113.10", dedicatedPorts: "0"},
 	}
@@ -734,7 +741,7 @@ func TestValidateSNIProxyProtocol(t *testing.T) {
 	}
 }
 
-func TestBindRelayListenersAllowsTCPAndUDPOnSamePort(t *testing.T) {
+func TestBindRelayListenersDoesNotBindSharedPortInventory(t *testing.T) {
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -750,18 +757,26 @@ func TestBindRelayListenersAllowsTCPAndUDPOnSamePort(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeBoundListeners(listeners)
-	if len(listeners) != 4 {
-		t.Fatalf("bound listener count = %d, want control, challenge, TCP, and UDP", len(listeners))
+	if len(listeners) != 2 {
+		t.Fatalf("bound listener count = %d, want control and challenge", len(listeners))
 	}
-	var tcpFound, udpFound, challengeFound bool
+	var challengeFound bool
 	for _, listener := range listeners {
-		tcpFound = tcpFound || listener.kind == listenerPort && listener.listener != nil
-		udpFound = udpFound || listener.kind == listenerPort && listener.packetConn != nil
 		challengeFound = challengeFound || listener.kind == listenerChallenge && listener.listener != nil
 	}
-	if !tcpFound || !udpFound || !challengeFound {
-		t.Fatalf("Blindport Port TCP/UDP and challenge listeners = %t/%t/%t", tcpFound, udpFound, challengeFound)
+	if !challengeFound {
+		t.Fatal("challenge listener was not bound")
 	}
+	tcp, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+	if err != nil {
+		t.Fatalf("shared TCP inventory port was bound at startup: %v", err)
+	}
+	defer tcp.Close()
+	udp, err := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+	if err != nil {
+		t.Fatalf("shared UDP inventory port was bound at startup: %v", err)
+	}
+	defer udp.Close()
 }
 
 func TestBindRelayListenersBindsEveryControlAddress(t *testing.T) {
