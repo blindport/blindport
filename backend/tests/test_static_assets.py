@@ -345,7 +345,7 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert landing_inspector.table_cells_without_labels == 0
 
     admin = _inspect(templates[4])
-    assert admin.tables == 5
+    assert admin.tables == 8
     assert admin.captions == admin.tables
     assert admin.unscoped_headers == 0
     assert admin.table_cells_without_labels == 0

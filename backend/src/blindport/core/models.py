@@ -785,6 +785,22 @@ class SubscriptionDailyBandwidth(SQLModel, table=True):
     egress_bytes: int = Field(sa_type=BigInteger)
 
 
+class RelayEdgeDailyBandwidth(SQLModel, table=True):
+    """Privacy-minimized aggregate public bandwidth for one relay edge UTC day."""
+
+    __table_args__ = (
+        CheckConstraint(
+            "ingress_bytes >= 0 AND egress_bytes >= 0",
+            name="ck_relayedgedailybandwidth_bytes_nonnegative",
+        ),
+    )
+
+    edge_id: str = Field(primary_key=True, max_length=63)
+    day: date = Field(primary_key=True)
+    ingress_bytes: int = Field(sa_type=BigInteger)
+    egress_bytes: int = Field(sa_type=BigInteger)
+
+
 class RelayBandwidthCursor(SQLModel, table=True):
     """Per-relay cumulative counter cursor used only to deduplicate daily aggregates."""
 

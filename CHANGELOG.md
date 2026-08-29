@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Admin traffic totals by relay VPS edge, subscription type, and subscription for
+  the current UTC day and rolling 7-day and 30-day periods.
+
 ### Fixed
 
 - Relay TLS ingress behind the production HAProxy edge now preserves real client

@@ -11,6 +11,11 @@
 </nav>
 {% endif %}
 {% endmacro %}
+{% macro traffic_cells(totals) %}
+<td data-label="Today (UTC)"><span class="traffic-direction">Inbound <strong>{{ format_bytes(totals.today_ingress_bytes) }}</strong></span><span class="traffic-direction">Outbound <strong>{{ format_bytes(totals.today_egress_bytes) }}</strong></span></td>
+<td data-label="7 days"><span class="traffic-direction">Inbound <strong>{{ format_bytes(totals.seven_day_ingress_bytes) }}</strong></span><span class="traffic-direction">Outbound <strong>{{ format_bytes(totals.seven_day_egress_bytes) }}</strong></span></td>
+<td data-label="30 days"><span class="traffic-direction">Inbound <strong>{{ format_bytes(totals.thirty_day_ingress_bytes) }}</strong></span><span class="traffic-direction">Outbound <strong>{{ format_bytes(totals.thirty_day_egress_bytes) }}</strong></span></td>
+{% endmacro %}
 {% block title %}Admin | {{ brand_name }}{% endblock %}
 {% block content %}
 <div class="admin-page content-wide">
@@ -83,6 +88,43 @@
       </figure>
     </div>
   </section>
+
+  {% if operations.traffic_total %}
+  <section class="admin-section traffic-workspace" aria-labelledby="traffic-title">
+    <div class="section-heading">
+      <div><p class="eyebrow">Network</p><h2 id="traffic-title">Public traffic</h2></div>
+      <p class="muted">UTC daily counters</p>
+    </div>
+    <div class="metric-strip traffic-metrics">
+      <div><span>Today inbound</span><strong>{{ format_bytes(operations.traffic_total.today_ingress_bytes) }}</strong><small>UTC</small></div>
+      <div><span>Today outbound</span><strong>{{ format_bytes(operations.traffic_total.today_egress_bytes) }}</strong><small>UTC</small></div>
+      <div><span>7d inbound</span><strong>{{ format_bytes(operations.traffic_total.seven_day_ingress_bytes) }}</strong><small>Including today</small></div>
+      <div><span>7d outbound</span><strong>{{ format_bytes(operations.traffic_total.seven_day_egress_bytes) }}</strong><small>Including today</small></div>
+      <div><span>30d inbound</span><strong>{{ format_bytes(operations.traffic_total.thirty_day_ingress_bytes) }}</strong><small>Including today</small></div>
+      <div><span>30d outbound</span><strong>{{ format_bytes(operations.traffic_total.thirty_day_egress_bytes) }}</strong><small>Including today</small></div>
+    </div>
+    <div class="traffic-aggregate-grid">
+      <div>
+        <h3>VPS edges</h3>
+        <div class="table-wrap"><table class="responsive-table traffic-table"><caption>Traffic by relay VPS edge</caption><thead><tr><th scope="col">VPS edge</th><th scope="col">Today (UTC)</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead><tbody>
+        {% for row in operations.traffic_edges %}<tr><td data-label="VPS edge"><strong>{{ row.label }}</strong><code>{{ row.detail }}</code></td>{{ traffic_cells(row.totals) }}</tr>{% else %}<tr><td data-label="Traffic" colspan="4" class="muted">No relay edges configured.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+      <div>
+        <h3>Subscription types</h3>
+        <div class="table-wrap"><table class="responsive-table traffic-table"><caption>Traffic by subscription type</caption><thead><tr><th scope="col">Type</th><th scope="col">Today (UTC)</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead><tbody>
+        {% for row in operations.traffic_products %}<tr><td data-label="Type"><strong>{{ row.label }}</strong><span class="cell-detail">{{ row.detail }}</span></td>{{ traffic_cells(row.totals) }}</tr>{% else %}<tr><td data-label="Traffic" colspan="4" class="muted">No reported traffic.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+    </div>
+    <div class="traffic-subscriptions">
+      <h3>Subscriptions</h3>
+      <div class="table-wrap"><table class="responsive-table traffic-table"><caption>Traffic by subscription, highest 30-day volume first</caption><thead><tr><th scope="col">Subscription</th><th scope="col">Today (UTC)</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead><tbody>
+      {% for row in operations.traffic_subscriptions %}<tr><td data-label="Subscription"><strong>{{ row.label }}</strong><code>{{ row.key }}</code><code>{{ row.detail }}</code></td>{{ traffic_cells(row.totals) }}</tr>{% else %}<tr><td data-label="Traffic" colspan="4" class="muted">No reported traffic.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </section>
+  {% endif %}
 
   <section class="admin-section subscription-workspace" id="accounts-title" aria-labelledby="subscriptions-title">
     <div class="section-heading workspace-heading">
@@ -158,7 +200,6 @@
         <div><dt>Paying customers</dt><dd>{{ operations.active_paying_customers }} active, {{ operations.lapsed_paying_customers }} lapsed</dd></div>
         <div><dt>Accounts with first settled payment, 30d</dt><dd>{{ operations.new_paying_customers_30d }}</dd></div>
         <div><dt>Oldest open payment</dt><dd>{{ operations.oldest_open_payment_age or "None" }}</dd></div>
-        {% if operations.reported_public_ingress_bytes_30d is not none %}<div><dt>Reported public traffic, 30d</dt><dd>Ingress {{ operations.reported_public_ingress_bytes_30d }} bytes, egress {{ operations.reported_public_egress_bytes_30d }} bytes</dd></div>{% endif %}
       </dl>
     </div>
   </section>

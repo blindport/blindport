@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlmodel import Session, select
 
 from ..config import settings
@@ -15,6 +15,7 @@ from ..core.models import (
     Payment,
     PaymentStatus,
     ProductType,
+    RelayEdgeDailyBandwidth,
     RelayHeartbeat,
     RelayHostnameScope,
     RelaySubscriptionConnection,
@@ -81,6 +82,24 @@ class WeeklyActivity:
 
 
 @dataclass(frozen=True, slots=True)
+class TrafficTotals:
+    today_ingress_bytes: int
+    today_egress_bytes: int
+    seven_day_ingress_bytes: int
+    seven_day_egress_bytes: int
+    thirty_day_ingress_bytes: int
+    thirty_day_egress_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class TrafficAggregate:
+    key: str
+    label: str
+    detail: str
+    totals: TrafficTotals
+
+
+@dataclass(frozen=True, slots=True)
 class AdminSubscriptionRow:
     """A customer-account row for the administrator subscription table."""
 
@@ -131,6 +150,10 @@ class OperationsSummary:
     active_subscription_accounts_7d: int
     reported_public_ingress_bytes_30d: int | None
     reported_public_egress_bytes_30d: int | None
+    traffic_total: TrafficTotals | None
+    traffic_edges: tuple[TrafficAggregate, ...]
+    traffic_products: tuple[TrafficAggregate, ...]
+    traffic_subscriptions: tuple[TrafficAggregate, ...]
     status_breakdown: tuple[StatusBreakdownEntry, ...]
     active_product_breakdown: tuple[ActiveProductBreakdownEntry, ...]
     weekly_activity: tuple[WeeklyActivity, ...]
@@ -153,6 +176,21 @@ def _enum_key(value: object) -> str:
 
 def _percentage(value: int, total: int) -> int:
     return round(value * 100 / total) if total else 0
+
+
+def format_bytes(value: int) -> str:
+    """Render an integer byte count without losing the exact stored value."""
+    amount = float(value)
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB")
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{value} B"
+    rendered = f"{amount:.1f}".removesuffix(".0")
+    return f"{rendered} {unit}"
 
 
 def _weekly_activity(session: Session, current: datetime) -> tuple[WeeklyActivity, ...]:
@@ -558,6 +596,162 @@ def _dns_rows(session: Session, current: datetime) -> tuple[DnsOperationsState, 
     return tuple(rows)
 
 
+def _traffic_sum_columns(model, current: datetime) -> tuple[object, ...]:
+    today = current.date()
+    seven_day_start = today - timedelta(days=6)
+    return (
+        func.coalesce(func.sum(case((model.day == today, model.ingress_bytes), else_=0)), 0).label(
+            "today_ingress_bytes"
+        ),
+        func.coalesce(func.sum(case((model.day == today, model.egress_bytes), else_=0)), 0).label(
+            "today_egress_bytes"
+        ),
+        func.coalesce(
+            func.sum(case((model.day >= seven_day_start, model.ingress_bytes), else_=0)), 0
+        ).label("seven_day_ingress_bytes"),
+        func.coalesce(
+            func.sum(case((model.day >= seven_day_start, model.egress_bytes), else_=0)), 0
+        ).label("seven_day_egress_bytes"),
+        func.coalesce(func.sum(model.ingress_bytes), 0).label("thirty_day_ingress_bytes"),
+        func.coalesce(func.sum(model.egress_bytes), 0).label("thirty_day_egress_bytes"),
+    )
+
+
+def _traffic_totals(values: Iterable[object]) -> TrafficTotals:
+    return TrafficTotals(*(int(value or 0) for value in values))
+
+
+def _traffic_aggregates(
+    session: Session, current: datetime
+) -> tuple[
+    TrafficTotals,
+    tuple[TrafficAggregate, ...],
+    tuple[TrafficAggregate, ...],
+    tuple[TrafficAggregate, ...],
+]:
+    thirty_day_start = current.date() - timedelta(days=29)
+    edge_sums = _traffic_sum_columns(RelayEdgeDailyBandwidth, current)
+    edge_totals = {
+        edge_id: _traffic_totals(values)
+        for edge_id, *values in session.exec(
+            select(RelayEdgeDailyBandwidth.edge_id, *edge_sums)
+            .where(
+                RelayEdgeDailyBandwidth.day >= thirty_day_start,
+                RelayEdgeDailyBandwidth.day <= current.date(),
+            )
+            .group_by(RelayEdgeDailyBandwidth.edge_id)
+        ).all()
+    }
+    configured_edges = {edge.id: edge for edge in settings.relay_edges_list}
+    edge_rows = tuple(
+        TrafficAggregate(
+            key=edge_id,
+            label=edge_id,
+            detail=(
+                configured_edges[edge_id].endpoint
+                if edge_id in configured_edges
+                else "Retired or unconfigured edge"
+            ),
+            totals=edge_totals.get(edge_id, TrafficTotals(0, 0, 0, 0, 0, 0)),
+        )
+        for edge_id in (*configured_edges, *(sorted(edge_totals.keys() - configured_edges.keys())))
+    )
+
+    customer = User.is_admin.is_(False)  # type: ignore[union-attr]
+    subscription_sums = _traffic_sum_columns(SubscriptionDailyBandwidth, current)
+    product_rows = tuple(
+        TrafficAggregate(
+            key=f"{_enum_key(product)}-{_enum_key(delivery)}",
+            label={
+                "ip": "Dedicated IP",
+                "port": "Port mapping",
+                "relay": "Relay",
+            }[_enum_key(product)],
+            detail={
+                "framed": "Framed delivery",
+                "wireguard": "WireGuard delivery",
+            }[_enum_key(delivery)],
+            totals=_traffic_totals(values),
+        )
+        for product, delivery, *values in session.exec(
+            select(Subscription.product, Subscription.delivery, *subscription_sums)
+            .select_from(SubscriptionDailyBandwidth)
+            .join(Subscription)
+            .join(User)
+            .where(
+                customer,
+                SubscriptionDailyBandwidth.day >= thirty_day_start,
+                SubscriptionDailyBandwidth.day <= current.date(),
+            )
+            .group_by(Subscription.product, Subscription.delivery)
+            .order_by(Subscription.product, Subscription.delivery)
+        ).all()
+    )
+
+    per_subscription = (
+        select(
+            SubscriptionDailyBandwidth.subscription_id.label("subscription_id"),
+            *subscription_sums,
+        )
+        .where(
+            SubscriptionDailyBandwidth.day >= thirty_day_start,
+            SubscriptionDailyBandwidth.day <= current.date(),
+        )
+        .group_by(SubscriptionDailyBandwidth.subscription_id)
+        .subquery()
+    )
+    subscription_rows = tuple(
+        sorted(
+            (
+                TrafficAggregate(
+                    key=str(subscription.public_id),
+                    label={
+                        "ip": "Dedicated IP",
+                        "port": "Port mapping",
+                        "relay": "Relay",
+                    }[_enum_key(subscription.product)],
+                    detail=_assigned_resource(subscription),
+                    totals=_traffic_totals(values),
+                )
+                for subscription, *values in session.exec(
+                    select(
+                        Subscription,
+                        *(
+                            per_subscription.c[name]
+                            for name in (
+                                "today_ingress_bytes",
+                                "today_egress_bytes",
+                                "seven_day_ingress_bytes",
+                                "seven_day_egress_bytes",
+                                "thirty_day_ingress_bytes",
+                                "thirty_day_egress_bytes",
+                            )
+                        ),
+                    )
+                    .join(per_subscription, per_subscription.c.subscription_id == Subscription.id)
+                    .join(User)
+                    .where(customer)
+                ).all()
+            ),
+            key=lambda row: (
+                -(row.totals.thirty_day_ingress_bytes + row.totals.thirty_day_egress_bytes),
+                row.key,
+            ),
+        )
+    )
+    total = _traffic_totals(
+        (
+            sum(row.totals.today_ingress_bytes for row in subscription_rows),
+            sum(row.totals.today_egress_bytes for row in subscription_rows),
+            sum(row.totals.seven_day_ingress_bytes for row in subscription_rows),
+            sum(row.totals.seven_day_egress_bytes for row in subscription_rows),
+            sum(row.totals.thirty_day_ingress_bytes for row in subscription_rows),
+            sum(row.totals.thirty_day_egress_bytes for row in subscription_rows),
+        )
+    )
+    return total, edge_rows, product_rows, subscription_rows
+
+
 def build_operations_summary(
     session: Session,
     *,
@@ -656,24 +850,16 @@ def build_operations_summary(
     )
     reported_public_ingress_bytes_30d: int | None = None
     reported_public_egress_bytes_30d: int | None = None
+    traffic_total: TrafficTotals | None = None
+    traffic_edges: tuple[TrafficAggregate, ...] = ()
+    traffic_products: tuple[TrafficAggregate, ...] = ()
+    traffic_subscriptions: tuple[TrafficAggregate, ...] = ()
     if settings.BANDWIDTH_METRICS_ENABLED:
-        reported_public_ingress_bytes_30d, reported_public_egress_bytes_30d = (
-            int(value or 0)
-            for value in session.exec(
-                select(
-                    func.coalesce(func.sum(SubscriptionDailyBandwidth.ingress_bytes), 0),
-                    func.coalesce(func.sum(SubscriptionDailyBandwidth.egress_bytes), 0),
-                )
-                .select_from(SubscriptionDailyBandwidth)
-                .join(Subscription)
-                .join(User)
-                .where(
-                    customer,
-                    SubscriptionDailyBandwidth.day >= current.date() - timedelta(days=29),
-                    SubscriptionDailyBandwidth.day <= current.date(),
-                )
-            ).one()
+        traffic_total, traffic_edges, traffic_products, traffic_subscriptions = _traffic_aggregates(
+            session, current
         )
+        reported_public_ingress_bytes_30d = traffic_total.thirty_day_ingress_bytes
+        reported_public_egress_bytes_30d = traffic_total.thirty_day_egress_bytes
     active_customers = _scalar_count(
         session,
         select(func.count(func.distinct(Subscription.user_id)))
@@ -778,6 +964,10 @@ def build_operations_summary(
         active_subscription_accounts_7d=active_subscription_accounts_7d,
         reported_public_ingress_bytes_30d=reported_public_ingress_bytes_30d,
         reported_public_egress_bytes_30d=reported_public_egress_bytes_30d,
+        traffic_total=traffic_total,
+        traffic_edges=traffic_edges,
+        traffic_products=traffic_products,
+        traffic_subscriptions=traffic_subscriptions,
         status_breakdown=status_breakdown,
         active_product_breakdown=active_product_breakdown,
         weekly_activity=_weekly_activity(session, current),

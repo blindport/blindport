@@ -36,6 +36,10 @@ def test_operations_summary_is_zero_for_an_empty_customer_database(app_client) -
     assert summary.active_subscription_accounts_7d == 0
     assert summary.reported_public_ingress_bytes_30d is None
     assert summary.reported_public_egress_bytes_30d is None
+    assert summary.traffic_total is None
+    assert summary.traffic_edges == ()
+    assert summary.traffic_products == ()
+    assert summary.traffic_subscriptions == ()
     assert [(row.key, row.value, row.percent) for row in summary.status_breakdown] == [
         ("active", 0, 0),
         ("pending", 0, 0),
@@ -300,9 +304,12 @@ def test_operations_summary_reports_recent_customer_public_bandwidth_only_when_e
     app_client, monkeypatch
 ) -> None:
     from blindport.core.models import (
+        DeliveryMode,
         ProductType,
+        RelayEdgeDailyBandwidth,
         Subscription,
         SubscriptionDailyBandwidth,
+        Transport,
         User,
     )
     from blindport.db import engine
@@ -311,6 +318,12 @@ def test_operations_summary_reports_recent_customer_public_bandwidth_only_when_e
     _client, _ = app_client
     now = datetime(2026, 1, 31, 12, tzinfo=UTC)
     monkeypatch.setattr(admin_dashboard.settings, "BANDWIDTH_METRICS_ENABLED", True)
+    monkeypatch.setattr(
+        admin_dashboard.settings,
+        "RELAY_EDGES",
+        '[{"id":"edge-a","endpoint":"203.0.113.10:5443"},'
+        '{"id":"edge-b","endpoint":"203.0.113.20:5443"}]',
+    )
     with Session(engine) as session:
         customer = User(hashed_token="bandwidth-customer")
         admin = User(hashed_token="bandwidth-admin", is_admin=True)
@@ -319,6 +332,22 @@ def test_operations_summary_reports_recent_customer_public_bandwidth_only_when_e
         customer_subscription = Subscription(
             user_id=customer.id,
             product=ProductType.IP,
+            delivery=DeliveryMode.WIREGUARD,
+            assigned_ip="198.51.100.10",
+            monthly_price_sats=1,
+        )
+        port_subscription = Subscription(
+            user_id=customer.id,
+            product=ProductType.PORT,
+            assigned_ip="203.0.113.20",
+            assigned_port=10000,
+            transport=Transport.TCP,
+            monthly_price_sats=1,
+        )
+        relay_subscription = Subscription(
+            user_id=customer.id,
+            product=ProductType.RELAY,
+            domain="traffic.relay.test",
             monthly_price_sats=1,
         )
         admin_subscription = Subscription(
@@ -326,7 +355,9 @@ def test_operations_summary_reports_recent_customer_public_bandwidth_only_when_e
             product=ProductType.IP,
             monthly_price_sats=1,
         )
-        session.add_all([customer_subscription, admin_subscription])
+        session.add_all(
+            [customer_subscription, port_subscription, relay_subscription, admin_subscription]
+        )
         session.flush()
         session.add_all(
             [
@@ -355,19 +386,75 @@ def test_operations_summary_reports_recent_customer_public_bandwidth_only_when_e
                     egress_bytes=200,
                 ),
                 SubscriptionDailyBandwidth(
+                    subscription_id=port_subscription.id,
+                    day=now.date() - timedelta(days=6),
+                    ingress_bytes=50,
+                    egress_bytes=5,
+                ),
+                SubscriptionDailyBandwidth(
+                    subscription_id=relay_subscription.id,
+                    day=now.date() - timedelta(days=7),
+                    ingress_bytes=25,
+                    egress_bytes=2,
+                ),
+                SubscriptionDailyBandwidth(
                     subscription_id=admin_subscription.id,
                     day=now.date(),
                     ingress_bytes=3_000,
                     egress_bytes=300,
+                ),
+                RelayEdgeDailyBandwidth(
+                    edge_id="edge-a",
+                    day=now.date() - timedelta(days=29),
+                    ingress_bytes=110,
+                    egress_bytes=11,
+                ),
+                RelayEdgeDailyBandwidth(
+                    edge_id="edge-a",
+                    day=now.date(),
+                    ingress_bytes=220,
+                    egress_bytes=22,
+                ),
+                RelayEdgeDailyBandwidth(
+                    edge_id="retired-edge",
+                    day=now.date() - timedelta(days=6),
+                    ingress_bytes=55,
+                    egress_bytes=6,
                 ),
             ]
         )
         session.commit()
 
         summary = admin_dashboard.build_operations_summary(session, now=now)
+        customer_subscription_id = str(customer_subscription.public_id)
+        port_subscription_id = str(port_subscription.public_id)
+        relay_subscription_id = str(relay_subscription.public_id)
 
-    assert summary.reported_public_ingress_bytes_30d == 300
-    assert summary.reported_public_egress_bytes_30d == 30
+    assert summary.reported_public_ingress_bytes_30d == 375
+    assert summary.reported_public_egress_bytes_30d == 37
+    assert summary.traffic_total is not None
+    assert summary.traffic_total.today_ingress_bytes == 200
+    assert summary.traffic_total.seven_day_ingress_bytes == 250
+    assert summary.traffic_total.thirty_day_ingress_bytes == 375
+    assert [(row.key, row.detail) for row in summary.traffic_edges] == [
+        ("edge-a", "203.0.113.10:5443"),
+        ("edge-b", "203.0.113.20:5443"),
+        ("retired-edge", "Retired or unconfigured edge"),
+    ]
+    assert summary.traffic_edges[0].totals.thirty_day_ingress_bytes == 330
+    assert summary.traffic_edges[1].totals.thirty_day_ingress_bytes == 0
+    assert summary.traffic_edges[2].totals.seven_day_ingress_bytes == 55
+    assert [(row.label, row.detail) for row in summary.traffic_products] == [
+        ("Dedicated IP", "WireGuard delivery"),
+        ("Port mapping", "Framed delivery"),
+        ("Relay", "Framed delivery"),
+    ]
+    assert [row.key for row in summary.traffic_subscriptions] == [
+        customer_subscription_id,
+        port_subscription_id,
+        relay_subscription_id,
+    ]
+    assert summary.traffic_subscriptions[0].detail == "198.51.100.10"
 
 
 def test_admin_panel_renders_monitoring_labels_and_hides_disabled_bandwidth(
@@ -385,15 +472,28 @@ def test_admin_panel_renders_monitoring_labels_and_hides_disabled_bandwidth(
     assert "Weekly subscriptions and settled payments (UTC)" in disabled.text
     assert "Week to date" in disabled.text
     assert "Totals from current heartbeats" in disabled.text
-    assert "Reported public traffic, 30d" not in disabled.text
+    assert "Public traffic" not in disabled.text
     assert "acquisition" not in disabled.text
     assert "Subscription progress" not in disabled.text
 
     monkeypatch.setattr(admin_dashboard.settings, "BANDWIDTH_METRICS_ENABLED", True)
     enabled = client.get("/admin")
 
-    assert "Reported public traffic, 30d" in enabled.text
-    assert "Ingress 0 bytes, egress 0 bytes" in enabled.text
+    assert "Public traffic" in enabled.text
+    assert "Today inbound" in enabled.text
+    assert "VPS edges" in enabled.text
+    assert "Subscription types" in enabled.text
+    assert "30d outbound" in enabled.text
+    assert "0 B" in enabled.text
+
+
+def test_admin_bandwidth_formatter_uses_binary_units() -> None:
+    from blindport.services.admin_dashboard import format_bytes
+
+    assert format_bytes(0) == "0 B"
+    assert format_bytes(1023) == "1023 B"
+    assert format_bytes(1024) == "1 KiB"
+    assert format_bytes(1536) == "1.5 KiB"
 
 
 def test_subscription_rows_combine_customer_account_and_payment_state() -> None:

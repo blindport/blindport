@@ -138,6 +138,9 @@ Relay upgrade and immutable service-price and discount snapshots.
 Migration `0030` retains historical deposit instruction columns as inert compatibility
 columns. Deployed data prevents a lossy downgrade, but runtime no longer returns those
 fields.
+Migration `0031` adds retained relay-edge UTC-day bandwidth totals. These totals contain only the
+stable edge ID, day, and inbound/outbound byte counts. Per-subscription daily totals remain in a
+separate table, so retained traffic reporting does not create an edge-to-subscription record.
 
 NWC pays that same Blindport-owned LND invoice. Account connection URIs are
 AES-256-GCM envelopes bound to the public account UUID and `nwc` purpose; payment

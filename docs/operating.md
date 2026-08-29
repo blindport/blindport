@@ -205,6 +205,13 @@ subscription IDs but no source addresses, upstream addresses, domains, or traffi
 backend retains only the latest health row and per-subscription observation for each configured
 edge. Heartbeat failures never alter Relay readiness; admin fleet and connection state becomes
 stale after `RELAY_HEARTBEAT_STALE_SECONDS`.
+When `BANDWIDTH_METRICS_ENABLED=true` on the backend and
+`BLINDPORT_RELAY_BANDWIDTH_METRICS=true` on each edge, authenticated cumulative reports produce
+UTC-day inbound and outbound totals. Retained subscription/day totals support customer and product
+reporting. Separate edge/day totals support the admin VPS view without retaining an
+edge-to-subscription relationship. Both aggregate tables follow `BANDWIDTH_RETENTION_DAYS`; the
+short-lived edge, boot, and subscription cursors remain only for deduplication and migration `0031`
+uses those available cursors to seed recent edge totals.
 This fallback is limited to framed tunnels. It does not alter routed WireGuard,
 which continues using its enrolled desired-state reconciliation path and never
 uses an entitlement cache or proof. Framed agents refresh provisioning every 30

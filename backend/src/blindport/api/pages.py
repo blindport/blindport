@@ -45,7 +45,11 @@ from ..core.models import (
 from ..db import get_session
 from ..services import ip_leases
 from ..services import subscriptions as subs_svc
-from ..services.admin_dashboard import build_operations_summary, build_subscription_rows
+from ..services.admin_dashboard import (
+    build_operations_summary,
+    build_subscription_rows,
+    format_bytes,
+)
 from ..services.announcements import (
     AnnouncementError,
     cancel_announcement,
@@ -679,6 +683,7 @@ def admin_panel(
             ),
             lease_rows=lease_rows,
             operations=build_operations_summary(session),
+            format_bytes=format_bytes,
             account_pagination=account_pagination,
             payment_pagination=payment_pagination,
             lease_pagination=lease_pagination,

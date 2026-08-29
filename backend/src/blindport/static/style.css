@@ -582,6 +582,15 @@ summary { display: flex; min-height: 44px; align-items: center; cursor: pointer;
 .trend-bar { position: relative; width: min(18px, 42%); height: var(--bar-height); }
 .trend-bar i { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
 .trend-week small { color: var(--muted); font-size: 0.65rem; line-height: 1.2; text-align: center; }
+.traffic-metrics { margin-bottom: 1.5rem; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.traffic-aggregate-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem; }
+.traffic-aggregate-grid h3, .traffic-subscriptions h3 { margin-bottom: 0.65rem; font-size: 1rem; }
+.traffic-subscriptions { margin-top: 1.5rem; }
+.traffic-table th:first-child { min-width: 180px; }
+.traffic-table td:first-child code { display: block; margin-top: 0.2rem; overflow-wrap: anywhere; }
+.traffic-direction { display: flex; min-width: 130px; justify-content: space-between; gap: 0.75rem; color: var(--muted); font-size: 0.72rem; }
+.traffic-direction + .traffic-direction { margin-top: 0.25rem; }
+.traffic-direction strong { color: var(--ink); font-size: 0.78rem; white-space: nowrap; }
 .workspace-heading { align-items: center; }
 .page-size-form { display: grid; grid-template-columns: auto 90px auto; align-items: center; gap: 0.5rem; }
 .page-size-form label { color: var(--muted); font-size: 0.78rem; font-weight: 700; }
@@ -592,6 +601,7 @@ summary { display: flex; min-height: 44px; align-items: center; cursor: pointer;
 .workspace-note { margin-bottom: 0.8rem; color: var(--muted); font-size: 0.78rem; }
 .admin-subscription-table th:first-child { min-width: 275px; }
 .admin-subscription-table td { vertical-align: middle; }
+.admin-subscription-table td:last-child button { min-width: 72px; }
 .admin-subscription-table td > code, .admin-subscription-table td > time, .cell-detail, .resource-value { display: block; }
 .admin-subscription-table td > time { margin-top: 0.15rem; color: var(--muted); font-size: 0.72rem; }
 .id-label { display: block; margin-top: 0.4rem; color: var(--muted); font-size: 0.65rem; font-weight: 750; text-transform: uppercase; }
@@ -693,6 +703,10 @@ td { font-size: 0.88rem; }
   .admin-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .admin-metrics div:nth-child(3) { border-right: 0; }
   .admin-metrics div:nth-child(n + 4) { border-top: 1px solid var(--line); }
+  .traffic-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .traffic-metrics div:nth-child(3) { border-right: 0; }
+  .traffic-metrics div:nth-child(n + 4) { border-top: 1px solid var(--line); }
+  .traffic-aggregate-grid { grid-template-columns: 1fr; }
   .chart-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .trend-chart { grid-column: 1 / -1; }
   .admin-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -737,6 +751,10 @@ td { font-size: 0.88rem; }
   .admin-metrics div:nth-child(3) { border-right: 1px solid var(--line); }
   .admin-metrics div:nth-child(n + 4) { border-top: 1px solid var(--line); }
   .admin-metrics div:nth-child(even) { border-right: 0; }
+  .traffic-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .traffic-metrics div:nth-child(3) { border-right: 1px solid var(--line); }
+  .traffic-metrics div:nth-child(even) { border-right: 0; }
+  .traffic-metrics div:nth-child(n + 3) { border-top: 1px solid var(--line); }
   .admin-page .section-heading, .workspace-heading { align-items: stretch; flex-direction: column; gap: 0.8rem; }
   .chart-grid { grid-template-columns: 1fr; }
   .trend-chart { grid-column: auto; }

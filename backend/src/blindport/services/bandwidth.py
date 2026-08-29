@@ -5,12 +5,21 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
+from sqlalchemy import and_
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..core.models import RelayBandwidthCursor, Subscription, SubscriptionDailyBandwidth
+from ..core.models import (
+    RelayBandwidthCursor,
+    RelayEdgeDailyBandwidth,
+    Subscription,
+    SubscriptionDailyBandwidth,
+)
 from ..db import session_scope
 
 _MAX_INT64 = 9_223_372_036_854_775_807
@@ -38,6 +47,47 @@ class BandwidthReport:
         self.day = day
         self.ingress_bytes = ingress_bytes
         self.egress_bytes = egress_bytes
+
+
+def _edge_daily_bandwidth_insert(session: Session) -> Any:
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        return postgresql_insert(RelayEdgeDailyBandwidth)
+    if dialect == "sqlite":
+        return sqlite_insert(RelayEdgeDailyBandwidth)
+    raise RuntimeError(f"bandwidth metrics do not support database dialect {dialect!r}")
+
+
+def _increment_edge_daily_bandwidth(
+    session: Session,
+    *,
+    edge_id: str,
+    day: date,
+    ingress_delta: int,
+    egress_delta: int,
+) -> None:
+    """Atomically add one accepted cursor delta to an edge UTC-day aggregate."""
+    insert = _edge_daily_bandwidth_insert(session).values(
+        edge_id=edge_id,
+        day=day,
+        ingress_bytes=ingress_delta,
+        egress_bytes=egress_delta,
+    )
+    updated_edge_id = session.execute(
+        insert.on_conflict_do_update(
+            index_elements=["edge_id", "day"],
+            set_={
+                "ingress_bytes": RelayEdgeDailyBandwidth.ingress_bytes + ingress_delta,
+                "egress_bytes": RelayEdgeDailyBandwidth.egress_bytes + egress_delta,
+            },
+            where=and_(
+                RelayEdgeDailyBandwidth.ingress_bytes <= _MAX_INT64 - ingress_delta,
+                RelayEdgeDailyBandwidth.egress_bytes <= _MAX_INT64 - egress_delta,
+            ),
+        ).returning(RelayEdgeDailyBandwidth.edge_id)
+    ).scalar_one_or_none()
+    if updated_edge_id is None:
+        raise BandwidthAggregateOverflowError("daily bandwidth aggregate exceeds int64")
 
 
 def ingest_daily_bandwidth(
@@ -121,6 +171,13 @@ def ingest_daily_bandwidth(
             aggregate.ingress_bytes += ingress_delta
             aggregate.egress_bytes += egress_delta
             session.add(aggregate)
+        _increment_edge_daily_bandwidth(
+            session,
+            edge_id=edge_id,
+            day=report.day,
+            ingress_delta=ingress_delta,
+            egress_delta=egress_delta,
+        )
         if cursor is None:
             session.add(
                 RelayBandwidthCursor(
@@ -140,8 +197,10 @@ def ingest_daily_bandwidth(
             session.add(cursor)
 
 
-def cleanup_daily_bandwidth(session: Session, *, now: datetime | None = None) -> tuple[int, int]:
-    """Delete bounded stale cursor rows before bounded expired daily aggregates."""
+def cleanup_daily_bandwidth(
+    session: Session, *, now: datetime | None = None
+) -> tuple[int, int, int]:
+    """Delete bounded stale cursors, subscription aggregates, and edge aggregates."""
     current = now or datetime.now(UTC)
     source_cutoff = current.date() - timedelta(days=settings.BANDWIDTH_INGEST_MAX_AGE_DAYS)
     aggregate_cutoff = current.date() - timedelta(days=settings.BANDWIDTH_RETENTION_DAYS)
@@ -158,7 +217,7 @@ def cleanup_daily_bandwidth(session: Session, *, now: datetime | None = None) ->
     for row in source_rows:
         session.delete(row)
     if len(source_rows) == settings.BANDWIDTH_CLEANUP_BATCH_SIZE:
-        return len(source_rows), 0
+        return len(source_rows), 0, 0
 
     aggregate_rows = session.exec(
         select(SubscriptionDailyBandwidth)
@@ -168,7 +227,15 @@ def cleanup_daily_bandwidth(session: Session, *, now: datetime | None = None) ->
     ).all()
     for row in aggregate_rows:
         session.delete(row)
-    return len(source_rows), len(aggregate_rows)
+    edge_aggregate_rows = session.exec(
+        select(RelayEdgeDailyBandwidth)
+        .where(RelayEdgeDailyBandwidth.day < aggregate_cutoff)
+        .order_by(RelayEdgeDailyBandwidth.day, RelayEdgeDailyBandwidth.edge_id)
+        .limit(settings.BANDWIDTH_CLEANUP_BATCH_SIZE)
+    ).all()
+    for row in edge_aggregate_rows:
+        session.delete(row)
+    return len(source_rows), len(aggregate_rows), len(edge_aggregate_rows)
 
 
 async def run_bandwidth_cleanup(stop_event: asyncio.Event) -> None:

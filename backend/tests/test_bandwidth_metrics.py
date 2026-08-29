@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import pytest
 from sqlmodel import Session, select
 
 
@@ -106,12 +107,93 @@ def test_daily_bandwidth_ingestion_is_idempotent_and_owner_scoped(app_client, mo
             "egress_bytes": "70",
         }
     ]
+    from blindport.core.models import RelayEdgeDailyBandwidth
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        edge_aggregate = session.get(
+            RelayEdgeDailyBandwidth,
+            ("edge-a", datetime.now(UTC).date()),
+        )
+    assert edge_aggregate is not None
+    assert (edge_aggregate.ingress_bytes, edge_aggregate.egress_bytes) == (150, 70)
     assert (
         client.get(
             f"/api/v2/subscriptions/{subscription['id']}/bandwidth", headers=_auth(other["token"])
         ).status_code
         == 404
     )
+
+
+def test_daily_bandwidth_aggregates_two_subscriptions_by_edge_and_day(
+    app_client, monkeypatch
+) -> None:
+    client, factory = app_client
+    headers = _enable(monkeypatch)
+    owner = client.post("/api/v1/signup").json()
+    first = _activate(client, factory, owner["token"])
+    second = _activate(client, factory, owner["token"])
+    day = datetime.now(UTC).date()
+    assert (
+        client.post(
+            "/internal/v1/relay/bandwidth/daily",
+            json={
+                "edge_id": "edge-a",
+                "boot_id": str(uuid4()),
+                "sequence": 1,
+                "reports": [
+                    {
+                        "subscription_id": first["id"],
+                        "day": day.isoformat(),
+                        "ingress_bytes": 10,
+                        "egress_bytes": 4,
+                    },
+                    {
+                        "subscription_id": second["id"],
+                        "day": day.isoformat(),
+                        "ingress_bytes": 20,
+                        "egress_bytes": 6,
+                    },
+                ],
+            },
+            headers=headers,
+        ).status_code
+        == 200
+    )
+
+    from blindport.core.models import RelayEdgeDailyBandwidth, SubscriptionDailyBandwidth
+    from blindport.db import engine
+    from blindport.services.bandwidth import BandwidthReport, ingest_daily_bandwidth
+
+    with Session(engine) as session, session.begin():
+        ingest_daily_bandwidth(
+            session,
+            edge_id="edge-b",
+            boot_id=uuid4(),
+            sequence=1,
+            reports=[
+                BandwidthReport(
+                    subscription_id=UUID(first["id"]),
+                    day=day,
+                    ingress_bytes=30,
+                    egress_bytes=10,
+                )
+            ],
+        )
+
+    with Session(engine) as session:
+        edge_rows = session.exec(
+            select(RelayEdgeDailyBandwidth).order_by(RelayEdgeDailyBandwidth.edge_id)
+        ).all()
+        subscription_rows = session.exec(select(SubscriptionDailyBandwidth)).all()
+    assert [(row.edge_id, row.ingress_bytes, row.egress_bytes) for row in edge_rows] == [
+        ("edge-a", 30, 10),
+        ("edge-b", 30, 10),
+    ]
+    assert sorted((row.ingress_bytes, row.egress_bytes) for row in subscription_rows) == [
+        (20, 6),
+        (40, 14),
+    ]
 
 
 def test_daily_bandwidth_rejects_counter_decrease_without_partial_write(
@@ -237,7 +319,7 @@ def test_disabled_bandwidth_query_is_hidden_before_subscription_lookup(
     assert response.headers["cache-control"] == "no-store"
 
 
-def test_daily_bandwidth_rejects_int64_aggregate_overflow_without_partial_write(
+def test_daily_bandwidth_rejects_int64_edge_aggregate_overflow_without_partial_write(
     app_client, monkeypatch
 ) -> None:
     client, factory = app_client
@@ -289,12 +371,82 @@ def test_daily_bandwidth_rejects_int64_aggregate_overflow_without_partial_write(
     ).json()["rows"]
     assert first_rows == []
     assert second_rows[0]["ingress_bytes"] == str(maximum)
+    from blindport.core.models import RelayEdgeDailyBandwidth
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        edge_aggregate = session.get(
+            RelayEdgeDailyBandwidth,
+            ("edge-a", datetime.now(UTC).date()),
+        )
+    assert edge_aggregate is not None
+    assert (edge_aggregate.ingress_bytes, edge_aggregate.egress_bytes) == (maximum, 0)
+
+
+def test_daily_bandwidth_subscription_overflow_rolls_back_edge_aggregate(
+    app_client, monkeypatch
+) -> None:
+    client, factory = app_client
+    headers = _enable(monkeypatch)
+    owner = client.post("/api/v1/signup").json()
+    first = _activate(client, factory, owner["token"])
+    second = _activate(client, factory, owner["token"])
+    maximum = 9_223_372_036_854_775_807
+    assert (
+        client.post(
+            "/internal/v1/relay/bandwidth/daily",
+            json=_payload(
+                second["id"],
+                boot_id=str(uuid4()),
+                sequence=1,
+                ingress=maximum,
+                egress=0,
+            ),
+            headers=headers,
+        ).status_code
+        == 200
+    )
+
+    from blindport.core.models import RelayEdgeDailyBandwidth, SubscriptionDailyBandwidth
+    from blindport.db import engine
+    from blindport.services.bandwidth import (
+        BandwidthAggregateOverflowError,
+        BandwidthReport,
+        ingest_daily_bandwidth,
+    )
+
+    day = datetime.now(UTC).date()
+    with (
+        pytest.raises(BandwidthAggregateOverflowError),
+        Session(engine) as session,
+        session.begin(),
+    ):
+        ingest_daily_bandwidth(
+            session,
+            edge_id="edge-b",
+            boot_id=uuid4(),
+            sequence=1,
+            reports=[
+                BandwidthReport(UUID(first["id"]), day, 10, 0),
+                BandwidthReport(UUID(second["id"]), day, maximum, 0),
+            ],
+        )
+
+    with Session(engine) as session:
+        edge_rows = session.exec(select(RelayEdgeDailyBandwidth)).all()
+        subscription_rows = session.exec(select(SubscriptionDailyBandwidth)).all()
+    assert [(row.edge_id, row.ingress_bytes) for row in edge_rows] == [("edge-a", maximum)]
+    assert [(row.ingress_bytes, row.egress_bytes) for row in subscription_rows] == [(maximum, 0)]
 
 
 def test_cleanup_removes_only_expired_privacy_minimized_rows(app_client, monkeypatch) -> None:
     client, factory = app_client
     headers = _enable(monkeypatch)
-    from blindport.core.models import RelayBandwidthCursor, SubscriptionDailyBandwidth
+    from blindport.core.models import (
+        RelayBandwidthCursor,
+        RelayEdgeDailyBandwidth,
+        SubscriptionDailyBandwidth,
+    )
     from blindport.db import engine
     from blindport.services import bandwidth
 
@@ -315,13 +467,82 @@ def test_cleanup_removes_only_expired_privacy_minimized_rows(app_client, monkeyp
     with Session(engine) as session:
         cursor = session.exec(select(RelayBandwidthCursor)).one()
         aggregate = session.exec(select(SubscriptionDailyBandwidth)).one()
+        edge_aggregate = session.exec(select(RelayEdgeDailyBandwidth)).one()
         cursor.day = datetime.now(UTC).date() - timedelta(days=4)
         aggregate.day = datetime.now(UTC).date() - timedelta(days=401)
+        edge_aggregate.day = datetime.now(UTC).date() - timedelta(days=401)
         session.add(cursor)
         session.add(aggregate)
+        session.add(edge_aggregate)
         session.commit()
     with Session(engine) as session:
-        assert bandwidth.cleanup_daily_bandwidth(session) == (1, 1)
+        assert bandwidth.cleanup_daily_bandwidth(session) == (1, 1, 1)
         session.commit()
         assert session.exec(select(RelayBandwidthCursor)).all() == []
         assert session.exec(select(SubscriptionDailyBandwidth)).all() == []
+        assert session.exec(select(RelayEdgeDailyBandwidth)).all() == []
+
+
+def test_cleanup_daily_bandwidth_batches_subscription_and_edge_aggregates(
+    app_client, monkeypatch
+) -> None:
+    client, factory = app_client
+    from blindport.core.models import (
+        RelayEdgeDailyBandwidth,
+        Subscription,
+        SubscriptionDailyBandwidth,
+    )
+    from blindport.db import engine
+    from blindport.services import bandwidth
+
+    monkeypatch.setattr(bandwidth.settings, "BANDWIDTH_CLEANUP_BATCH_SIZE", 1)
+    monkeypatch.setattr(bandwidth.settings, "BANDWIDTH_RETENTION_DAYS", 1)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _activate(client, factory, token)
+    first_day = datetime.now(UTC).date() - timedelta(days=3)
+    second_day = datetime.now(UTC).date() - timedelta(days=2)
+    with Session(engine) as session:
+        persisted_subscription = session.exec(
+            select(Subscription).where(Subscription.public_id == UUID(subscription["id"]))
+        ).one()
+        assert persisted_subscription.id is not None
+        session.add_all(
+            [
+                SubscriptionDailyBandwidth(
+                    subscription_id=persisted_subscription.id,
+                    day=first_day,
+                    ingress_bytes=1,
+                    egress_bytes=1,
+                ),
+                SubscriptionDailyBandwidth(
+                    subscription_id=persisted_subscription.id,
+                    day=second_day,
+                    ingress_bytes=2,
+                    egress_bytes=2,
+                ),
+                RelayEdgeDailyBandwidth(
+                    edge_id="edge-a",
+                    day=first_day,
+                    ingress_bytes=1,
+                    egress_bytes=1,
+                ),
+                RelayEdgeDailyBandwidth(
+                    edge_id="edge-b",
+                    day=second_day,
+                    ingress_bytes=2,
+                    egress_bytes=2,
+                ),
+            ]
+        )
+        session.commit()
+
+    with Session(engine) as session:
+        assert bandwidth.cleanup_daily_bandwidth(session) == (0, 1, 1)
+        session.commit()
+        assert len(session.exec(select(SubscriptionDailyBandwidth)).all()) == 1
+        assert len(session.exec(select(RelayEdgeDailyBandwidth)).all()) == 1
+    with Session(engine) as session:
+        assert bandwidth.cleanup_daily_bandwidth(session) == (0, 1, 1)
+        session.commit()
+        assert session.exec(select(SubscriptionDailyBandwidth)).all() == []
+        assert session.exec(select(RelayEdgeDailyBandwidth)).all() == []
