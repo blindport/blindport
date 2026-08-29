@@ -707,6 +707,33 @@ func TestParseControlListeners(t *testing.T) {
 	}
 }
 
+func TestValidateSNIProxyProtocol(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		listen  string
+		enabled bool
+		wantErr bool
+	}{
+		{name: "disabled", listen: ":4443"},
+		{name: "IPv4 loopback", value: "v2", listen: "127.0.0.1:4443", enabled: true},
+		{name: "IPv6 loopback", value: "v2", listen: "[::1]:4443", enabled: true},
+		{name: "unsupported version", value: "v1", listen: "127.0.0.1:4443", wantErr: true},
+		{name: "wildcard IPv4", value: "v2", listen: ":4443", wantErr: true},
+		{name: "public IPv4", value: "v2", listen: "192.0.2.10:4443", wantErr: true},
+		{name: "hostname", value: "v2", listen: "localhost:4443", wantErr: true},
+		{name: "disabled listener", value: "v2", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			enabled, err := validateSNIProxyProtocol(tt.value, tt.listen)
+			if (err != nil) != tt.wantErr || enabled != tt.enabled {
+				t.Fatalf("validateSNIProxyProtocol() = (%t, %v), want (%t, error=%t)", enabled, err, tt.enabled, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestBindRelayListenersAllowsTCPAndUDPOnSamePort(t *testing.T) {
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

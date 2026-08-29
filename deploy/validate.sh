@@ -329,6 +329,7 @@ assert 'acl api_host hdr(host),field(1,:) -i "${API_DOMAIN}"' in config
 assert "use_backend api_http if api_host" in config
 assert "default_backend relay_http" in config
 assert "backend relay_http" in config
+assert "server relay 127.0.0.1:4443 send-proxy-v2 check" in config
 assert "acl acme_path" not in config
 assert "relay_acme" not in config
 PY
@@ -349,6 +350,9 @@ assert "path /internal/v1/* /internal/v2/* /internal/v3/*" in caddy
 assert "remote_ip {$RELAY_PRIVATE_CIDRS}" in caddy
 assert caddy.index("handle @relay_internal") < caddy.index("handle @internal")
 assert "RELAY_PRIVATE_CIDRS: ${RELAY_PRIVATE_CIDRS}" in compose
+assert "BLINDPORT_RELAY_SNI: 127.0.0.1:4443" in compose
+assert "BLINDPORT_RELAY_SNI_PROXY_PROTOCOL: v2" in compose
+assert "BLINDPORT_RELAY_MAX_INGRESS_PER_SOURCE: ${RELAY_MAX_INGRESS_PER_SOURCE:-128}" in compose
 assert "RELAY_PRIVATE_CIDRS=198.51.100.30/32" in environment
 PY
 }

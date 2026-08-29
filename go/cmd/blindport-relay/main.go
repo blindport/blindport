@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +20,7 @@ import (
 	"log/slog"
 
 	"github.com/blindport/blindport/internal/protocol"
+	"github.com/blindport/blindport/internal/proxyproto"
 	"github.com/blindport/blindport/internal/relayauth"
 	"github.com/blindport/blindport/internal/sniproxy"
 	"github.com/blindport/blindport/internal/tcpproxy"
@@ -83,6 +86,7 @@ func main() {
 	sharedTCPPorts := flag.String("shared-ports", os.Getenv("BLINDPORT_RELAY_SHARED_TCP_PORTS"), "inclusive Blindport Port TCP range, for example 10000-10007")
 	sharedUDPPorts := flag.String("shared-udp-ports", os.Getenv("BLINDPORT_RELAY_SHARED_UDP_PORTS"), "inclusive Blindport Port UDP range, for example 10000-10007")
 	sniListen := flag.String("sni", envDefault("BLINDPORT_RELAY_SNI", ":4443"), "shared-pool SNI listen address (set empty to disable)")
+	sniProxyProtocol := flag.String("sni-proxy-protocol", os.Getenv("BLINDPORT_RELAY_SNI_PROXY_PROTOCOL"), "trusted PROXY protocol for SNI ingress (empty or v2; v2 requires an explicit loopback bind)")
 	challengeListen := flag.String("http-challenge", os.Getenv("BLINDPORT_RELAY_HTTP_CHALLENGE"), "HTTP listen address for HTTPS redirects and HTTP-01 forwarding, for example :80 (empty disables it; safe behind an L7 frontend)")
 	mtlsHosts := flag.String("mtls-hosts", os.Getenv("BLINDPORT_RELAY_MTLS_HOSTS"), "comma-separated SAN hostnames for the relay server cert")
 	certificateCacheDir := flag.String("certificate-cache-dir", os.Getenv("BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR"), "owner-only directory for persistent relay certificate cache (empty disables persistence)")
@@ -156,6 +160,11 @@ func main() {
 	controlAddrs, err := parseControlListeners(*control, *extraControlListeners)
 	if err != nil {
 		logger.Error("invalid control listener configuration", "err", err)
+		os.Exit(2)
+	}
+	sniProxyProtocolEnabled, err := validateSNIProxyProtocol(*sniProxyProtocol, *sniListen)
+	if err != nil {
+		logger.Error("invalid SNI PROXY protocol configuration", "err", err)
 		os.Exit(2)
 	}
 
@@ -289,6 +298,13 @@ func main() {
 	if err != nil {
 		logger.Error("relay listener setup failed", "err", err)
 		os.Exit(1)
+	}
+	if sniProxyProtocolEnabled {
+		if err := wrapSNIProxyProtocol(listeners, 2*time.Second); err != nil {
+			closeBoundListeners(listeners)
+			logger.Error("SNI PROXY protocol setup failed", "err", err)
+			os.Exit(1)
+		}
 	}
 	adminListener, err := net.Listen("tcp", *adminAddr)
 	if err != nil {
@@ -1054,6 +1070,38 @@ func parseControlListeners(primary, extras string) ([]string, error) {
 		listeners = append(listeners, addr)
 	}
 	return listeners, nil
+}
+
+func validateSNIProxyProtocol(value, sniAddr string) (bool, error) {
+	if value == "" {
+		return false, nil
+	}
+	if value != "v2" {
+		return false, errors.New("SNI PROXY protocol must be v2")
+	}
+	host, _, err := net.SplitHostPort(sniAddr)
+	if err != nil {
+		return false, errors.New("SNI PROXY protocol requires a valid SNI listen address")
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !addr.IsLoopback() {
+		return false, errors.New("SNI PROXY protocol requires an explicit loopback IP bind")
+	}
+	return true, nil
+}
+
+func wrapSNIProxyProtocol(listeners []boundRelayListener, timeout time.Duration) error {
+	for index := range listeners {
+		if listeners[index].kind != listenerSNI {
+			continue
+		}
+		wrapped, err := proxyproto.WrapListener(listeners[index].listener, timeout)
+		if err != nil {
+			return err
+		}
+		listeners[index].listener = wrapped
+	}
+	return nil
 }
 
 func parseRelayConfig(dedicatedIPs, dedicatedPorts, sharedIPs, sharedTCPPorts, sharedUDPPorts string) (relayListenerConfig, error) {

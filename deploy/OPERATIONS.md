@@ -398,13 +398,12 @@ versioned artifact in place. Also publish `install.sh`, the current
 `blindportd-linux-{amd64,arm64,armv7}` aliases, and their checksums. Stage and
 verify all current-release aliases before renaming them into place together.
 
-HAProxy sends PROXY v2 only on the API path, and Caddy accepts it only from loopback,
-so Caddy and the backend receive the API client address in `X-Forwarded-For`. The
-relay protocol does not accept PROXY headers. Every SNI connection therefore appears
-to come from HAProxy; the Compose file deliberately sets relay per-source ingress to
-the total ingress limit while retaining the total and SNI-peek bounds. HTTP ingress
-rate limits also see HAProxy as one source and are explicitly sized for redirects and
-multi-vantage ACME retries.
+HAProxy sends PROXY v2 to both loopback TLS backends. Caddy and the relay require it
+only on their explicit loopback listeners, so Caddy receives the API client address
+in `X-Forwarded-For` and the relay passes the client address through the tunnel for
+origin-side PROXY v2 mappings. Never enable the relay's SNI PROXY protocol mode on a
+public or wildcard listener. HTTP ingress rate limits still see HAProxy as one source
+and are explicitly sized for redirects and multi-vantage ACME retries.
 
 For independently hosted Relay edges, set `RELAY_PRIVATE_CIDRS` to their fixed source
 addresses. Caddy permits those sources to reach `/internal/v1/*`, `/internal/v2/*`, and
