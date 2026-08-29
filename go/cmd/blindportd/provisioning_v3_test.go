@@ -111,6 +111,25 @@ func TestProvisioningV3FallbackOnlyOnNotFound(t *testing.T) {
 	defer malformed.Close()
 	if _, err := fetchProvisioning(context.Background(), malformed.Client(), malformed.URL, "token", credentials, false); err == nil || v2Calls != 0 {
 		t.Fatalf("malformed v3 downgraded, error = %v, v2 calls %d", err, v2Calls)
+	} else if !strings.Contains(err.Error(), "response envelope validation failed") {
+		t.Fatalf("malformed v3 error = %v", err)
+	}
+}
+
+func TestProvisioningV3ValidationReportsSafeStage(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	config := testV3WildcardConfig(t, now, "11111111-2222-4333-8444-555555555555", 7)
+	config.Subscriptions[0].Edges[0].Claim.Domain = "other.example"
+	_, err := parseProvisioningV3(testJSON(t, config), now)
+	if err == nil || err.Error() != "provisioning edge claim validation failed" {
+		t.Fatalf("edge claim error = %v", err)
+	}
+
+	config = testV3WildcardConfig(t, now, "11111111-2222-4333-8444-555555555555", 7)
+	config.Subscriptions[0].Edges[0].Entitlement += "x"
+	_, err = parseProvisioningV3(testJSON(t, config), now)
+	if err == nil || err.Error() != "provisioning entitlement metadata validation failed" {
+		t.Fatalf("entitlement error = %v", err)
 	}
 }
 

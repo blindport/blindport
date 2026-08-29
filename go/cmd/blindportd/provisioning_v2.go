@@ -207,6 +207,7 @@ const (
 type provisioningFetchError struct {
 	kind   provisioningFailureKind
 	status int
+	stage  v3ValidationStage
 }
 
 func (e *provisioningFetchError) Error() string {
@@ -224,6 +225,9 @@ func (e *provisioningFetchError) Error() string {
 		default:
 			return fmt.Sprintf("provisioning request failed (HTTP %d %s)", e.status, http.StatusText(e.status))
 		}
+	}
+	if e.stage != v3ValidationUnknown {
+		return e.stage.message()
 	}
 	return "provisioning authorization or protocol failure"
 }
@@ -303,7 +307,7 @@ func fetchProvisioningWithCache(ctx context.Context, client *http.Client, backen
 			return provisioningResult{}, &provisioningFetchError{kind: provisioningInfrastructure}
 		}
 		if v3Err.kind != v2FeatureUnavailable {
-			return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal, status: v3Err.status}
+			return provisioningResult{}, &provisioningFetchError{kind: provisioningTerminal, status: v3Err.status, stage: v3Err.stage}
 		}
 		config, raw, err := fetchProvisioningV2(ctx, client, backend, token, identity.instanceID)
 		if err == nil {

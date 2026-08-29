@@ -89,6 +89,50 @@ type provisioningV3Claim struct {
 	Scope     string             `json:"scope"`
 }
 
+type v3ValidationStage uint8
+
+const (
+	v3ValidationUnknown v3ValidationStage = iota
+	v3ValidationEnvelope
+	v3ValidationSubscription
+	v3ValidationEdgeMetadata
+	v3ValidationEdgeClaim
+	v3ValidationEntitlement
+	v3ValidationEntitlementTime
+	v3ValidationIdentity
+)
+
+func (s v3ValidationStage) message() string {
+	switch s {
+	case v3ValidationEnvelope:
+		return "provisioning response envelope validation failed"
+	case v3ValidationSubscription:
+		return "provisioning subscription metadata validation failed"
+	case v3ValidationEdgeMetadata:
+		return "provisioning edge metadata validation failed"
+	case v3ValidationEdgeClaim:
+		return "provisioning edge claim validation failed"
+	case v3ValidationEntitlement:
+		return "provisioning entitlement metadata validation failed"
+	case v3ValidationEntitlementTime:
+		return "provisioning entitlement time validation failed"
+	case v3ValidationIdentity:
+		return "provisioning response identity binding validation failed"
+	default:
+		return "provisioning response validation failed"
+	}
+}
+
+type v3ValidationError struct {
+	stage v3ValidationStage
+}
+
+func (e *v3ValidationError) Error() string { return e.stage.message() }
+
+func newV3ValidationError(stage v3ValidationStage) error {
+	return &v3ValidationError{stage: stage}
+}
+
 func (c *provisioningV3Claim) UnmarshalJSON(raw []byte) error {
 	if !hasExactJSONFields(raw, "kind", "ip", "port", "transport", "domain", "scope") {
 		return errors.New("invalid v3 claim")
@@ -123,44 +167,56 @@ func provisioningScope(value string) (protocol.RelayHostnameScope, error) {
 
 func parseProvisioningV3(raw []byte, now time.Time) (*provisioningV3, error) {
 	if len(raw) == 0 || len(raw) > maxProvisioningJSON || rejectDuplicateJSONKeys(raw) != nil {
-		return nil, errors.New("invalid v3 provisioning")
+		return nil, newV3ValidationError(v3ValidationEnvelope)
 	}
 	var config provisioningV3
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil || rejectTrailingJSON(decoder) != nil || validateProvisioningV3(&config, now) != nil {
-		return nil, errors.New("invalid v3 provisioning")
+	if err := decoder.Decode(&config); err != nil || rejectTrailingJSON(decoder) != nil {
+		return nil, newV3ValidationError(v3ValidationEnvelope)
+	}
+	if err := validateProvisioningV3(&config, now); err != nil {
+		return nil, err
 	}
 	return &config, nil
 }
 
 func validateProvisioningV3(config *provisioningV3, now time.Time) error {
 	if config.Version != 3 || len(config.Subscriptions) > maxV2Subscriptions {
-		return errors.New("invalid")
+		return newV3ValidationError(v3ValidationEnvelope)
 	}
 	seenSubscriptions := make(map[string]struct{}, len(config.Subscriptions))
 	for _, subscription := range config.Subscriptions {
 		if !hasV3SubscriptionFields(subscription) || validateSubscriptionID(subscription.SubscriptionID) != nil {
-			return errors.New("invalid")
+			return newV3ValidationError(v3ValidationSubscription)
 		}
 		if _, exists := seenSubscriptions[subscription.SubscriptionID]; exists {
-			return errors.New("invalid")
+			return newV3ValidationError(v3ValidationSubscription)
 		}
 		seenSubscriptions[subscription.SubscriptionID] = struct{}{}
 		scope, err := provisioningScope(subscription.RelayHostnameScope)
 		if err != nil || validateV3Subscription(subscription, scope) != nil || len(subscription.Edges) == 0 || len(subscription.Edges) > maxV2Edges {
-			return errors.New("invalid")
+			return newV3ValidationError(v3ValidationSubscription)
 		}
 		seenIDs, seenEndpoints := map[string]struct{}{}, map[string]struct{}{}
 		for _, edge := range subscription.Edges {
-			if !v2EdgeID.MatchString(edge.ID) || validateCanonicalEndpoint(edge.Endpoint) != nil || !hasV3EdgeFields(edge) || validateV3EdgeBinding(subscription, scope, edge) != nil || validateV3Entitlement(edge.Entitlement, subscription.SubscriptionID, edge, now) != nil || validateEntitlementTimesV3(edge, now) != nil {
-				return errors.New("invalid")
+			if !v2EdgeID.MatchString(edge.ID) || validateCanonicalEndpoint(edge.Endpoint) != nil || !hasV3EdgeFields(edge) {
+				return newV3ValidationError(v3ValidationEdgeMetadata)
+			}
+			if validateV3EdgeBinding(subscription, scope, edge) != nil {
+				return newV3ValidationError(v3ValidationEdgeClaim)
+			}
+			if validateV3Entitlement(edge.Entitlement, subscription.SubscriptionID, edge, now) != nil {
+				return newV3ValidationError(v3ValidationEntitlement)
+			}
+			if validateEntitlementTimesV3(edge, now) != nil {
+				return newV3ValidationError(v3ValidationEntitlementTime)
 			}
 			if _, exists := seenIDs[edge.ID]; exists {
-				return errors.New("invalid")
+				return newV3ValidationError(v3ValidationEdgeMetadata)
 			}
 			if _, exists := seenEndpoints[edge.Endpoint]; exists {
-				return errors.New("invalid")
+				return newV3ValidationError(v3ValidationEdgeMetadata)
 			}
 			seenIDs[edge.ID], seenEndpoints[edge.Endpoint] = struct{}{}, struct{}{}
 		}
@@ -230,6 +286,7 @@ func validateEntitlementTimesV3(edge provisioningV3Edge, now time.Time) error {
 type v3FetchError struct {
 	kind   v2FetchKind
 	status int
+	stage  v3ValidationStage
 }
 
 func (e *v3FetchError) Error() string { return "v3 provisioning failure" }
@@ -271,8 +328,16 @@ func fetchProvisioningV3(ctx context.Context, client *http.Client, backend, toke
 		return nil, nil, &v3FetchError{kind: v2Terminal}
 	}
 	config, err := parseProvisioningV3(raw, time.Now())
-	if err != nil || validateV3Identity(config, instanceID, -1) != nil {
-		return nil, nil, &v3FetchError{kind: v2Terminal}
+	if err != nil {
+		stage := v3ValidationEnvelope
+		var validationError *v3ValidationError
+		if errors.As(err, &validationError) {
+			stage = validationError.stage
+		}
+		return nil, nil, &v3FetchError{kind: v2Terminal, stage: stage}
+	}
+	if validateV3Identity(config, instanceID, -1) != nil {
+		return nil, nil, &v3FetchError{kind: v2Terminal, stage: v3ValidationIdentity}
 	}
 	return config, raw, nil
 }
