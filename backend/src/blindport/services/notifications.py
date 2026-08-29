@@ -477,7 +477,8 @@ def _render_subscription_event(
     else:
         raise ValueError("subscription notification kind is invalid")
     return RenderedNotification(
-        subject=subject, body=f"{detail}{period_line}\n\nSign in to Blindport."
+        subject=subject,
+        body=f"{detail}{period_line}\n\nSign in to Blindport: {config.settings.PUBLIC_SITE_URL}",
     )
 
 

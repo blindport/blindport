@@ -237,6 +237,7 @@ def test_lifecycle_notification_eligibility_and_rendering(
 
     engine, user_id, subscription_id = _setup(tmp_path)
     monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    monkeypatch.setattr(config.settings, "PUBLIC_SITE_URL", "https://blindport.example")
     with Session(engine) as session:
         user = session.get(User, user_id)
         subscription = session.get(Subscription, subscription_id)
@@ -258,6 +259,7 @@ def test_lifecycle_notification_eligibility_and_rendering(
         rendered = render_notification(delivery, subscription=subscription)
         assert subject in rendered.subject
         assert "Blindport IP" in rendered.body
+        assert rendered.body.endswith("\n\nSign in to Blindport: https://blindport.example")
         assert _is_delivery_eligible(delivery, user, subscription, None, datetime.now(UTC))
 
 
