@@ -22,9 +22,8 @@ services:
         condition: service_started
     command: ["--docker", "--config=/etc/blindport/accounts.json"]
     group_add:
-      - "${DOCKER_GID:?set DOCKER_GID in .env}"
+      - "${DOCKER_GID:-999}"
     environment:
-      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
       BLINDPORT_ACME_EMAIL: "${ACME_EMAIL:-}"
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro

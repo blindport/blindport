@@ -44,7 +44,9 @@ Set:
 
 - `DOMAIN` to the active Relay hostname, for the verification command below.
 - `BLINDPORT_SUBSCRIPTION_ID` to the active Relay subscription UUID.
-- `DOCKER_GID` to `stat -c '%g' /var/run/docker.sock`.
+
+Compose defaults the Docker socket group to `999`. If the host uses another
+group, set `DOCKER_GID` to `stat -c '%g' /var/run/docker.sock`.
 
 Read the current [Let's Encrypt agreements](https://letsencrypt.org/repository/).
 Change `ACME_TERMS_ACCEPTED=false` to `true` only after accepting the Subscriber
@@ -147,8 +149,6 @@ services:
     init: true
     restart: unless-stopped
     command: ["--wireguard", "--token-file=/run/blindport/token", "--state-dir=/var/lib/blindport"]
-    environment:
-      BLINDPORT_BACKEND_URL: "${BLINDPORT_BACKEND_URL:-https://blindport.com}"
     volumes:
       - ./secrets/wireguard-token:/run/blindport/token:ro
       - blindport-wireguard-state:/var/lib/blindport

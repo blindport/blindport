@@ -49,8 +49,9 @@ sudo install -o root -g root -m 0600 /dev/null secrets/cloudflare-dns-api-token
 sudoedit secrets/cloudflare-dns-api-token
 ```
 
-Set `BASE_DOMAIN`, `APP_HOSTNAME`, `BLINDPORT_SUBSCRIPTION_ID`, `ACME_EMAIL`, and
-`DOCKER_GID` in `.env`. The account token must own the active wildcard subscription.
+Set `BASE_DOMAIN`, `APP_HOSTNAME`, `BLINDPORT_SUBSCRIPTION_ID`, and `ACME_EMAIL`
+in `.env`. Docker group ID `999` is the default; override `DOCKER_GID` when the
+host socket uses another group. The account token must own the active wildcard subscription.
 Use a Cloudflare API token limited to DNS edits for the selected zone. Keep the
 Blindport state and Traefik ACME volumes across upgrades and back them up as secrets.
 

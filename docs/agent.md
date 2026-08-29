@@ -318,7 +318,7 @@ services:
     restart: unless-stopped
     command: ["--docker", "--config=/etc/blindport/accounts.json"]
     group_add:
-      - "${DOCKER_GID}"
+      - "${DOCKER_GID:-999}"
     environment:
       BLINDPORT_BACKEND_URL: "https://api.blindport.example"
     volumes:
@@ -444,9 +444,10 @@ publish internal services and, for an NWC-enabled account, initiate bounded
 subscription spending. Restrict deployment authority and enforce a wallet-side
 NWC budget.
 
-The published image runs as UID/GID `10001`. Set `DOCKER_GID` to the numeric
-group owner of the host socket so Compose grants only the required supplementary
-group. A named volume inherits the image's private state ownership on first use.
+The published image runs as UID/GID `10001`. Compose defaults `DOCKER_GID` to
+`999`; override it with the numeric group owner of the host socket when needed so
+the container receives only the required supplementary group. A named volume
+inherits the image's private state ownership on first use.
 
 The v3 Docker examples mount each account's owner-only `token_file`; they never
 put bearer tokens in Compose environment or rendered output. Make each mounted
@@ -511,8 +512,6 @@ services:
     init: true
     restart: unless-stopped
     command: ["--wireguard", "--token-file=/run/blindport/token", "--state-dir=/var/lib/blindport"]
-    environment:
-      BLINDPORT_BACKEND_URL: "https://blindport.com"
     volumes:
       - ./secrets/wireguard-token:/run/blindport/token:ro
       - blindport-wireguard-state:/var/lib/blindport

@@ -201,8 +201,26 @@ def test_dashboard_shell_quotes_request_origin_in_commands(app_client) -> None:
     )
     guide = html.unescape(client.get(f"http://{host}/guide").text)
     assert f"curl -fsSL {shlex.quote(origin + '/downloads/install.sh')} | sh" in guide
-    assert f"BLINDPORT_BACKEND_URL: {json.dumps(origin)}" in guide
+    assert "BLINDPORT_BACKEND_URL" not in guide
     assert f"sudo blindportd -wireguard -backend={shlex.quote(origin)}" in guide
+
+
+def test_production_guide_uses_configured_https_origin_behind_http_proxy(
+    app_client, monkeypatch
+) -> None:
+    from blindport.api import pages
+    from blindport.config import EnvironmentMode
+
+    client, _ = app_client
+    monkeypatch.setattr(pages.settings, "ENVIRONMENT", EnvironmentMode.PRODUCTION)
+    monkeypatch.setattr(pages.settings, "PUBLIC_SITE_URL", "https://public.example")
+
+    guide = html.unescape(client.get("http://internal-proxy.example/guide").text)
+
+    assert "curl -fsSL https://public.example/downloads/install.sh | sh" in guide
+    assert "sudo blindportd -wireguard -backend=https://public.example" in guide
+    assert "http://internal-proxy.example" not in guide
+    assert "BLINDPORT_BACKEND_URL" not in guide
 
 
 def test_generated_nonrelay_mappings_use_passthrough_to_local_port_8080(app_client) -> None:

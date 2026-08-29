@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from ..config import DEFAULT_BRAND_NAME, DEFAULT_BRAND_TAGLINE, settings
+from ..config import DEFAULT_BRAND_NAME, DEFAULT_BRAND_TAGLINE, EnvironmentMode, settings
 from ..core import tokens
 from ..core.auth import (
     create_admin_browser_session,
@@ -143,14 +143,18 @@ def _is_onion_request(request: Request) -> bool:
 
 
 def _ctx(request: Request, **extra) -> dict:
-    request_origin = f"{request.url.scheme}://{request.url.netloc}"
+    public_origin = (
+        f"http://{settings.ONION_HOST}" if _is_onion_request(request) else settings.PUBLIC_SITE_URL
+    )
+    request_origin = (
+        public_origin
+        if settings.ENVIRONMENT == EnvironmentMode.PRODUCTION
+        else f"{request.url.scheme}://{request.url.netloc}"
+    )
     backend_flag_shell = (
         ""
         if request_origin == "https://blindport.com"
         else f" -backend={shlex.quote(request_origin)}"
-    )
-    public_origin = (
-        f"http://{settings.ONION_HOST}" if _is_onion_request(request) else settings.PUBLIC_SITE_URL
     )
     share_titles = {
         "/guide": f"Guide | {settings.BRAND_NAME}",
@@ -212,7 +216,6 @@ def _ctx(request: Request, **extra) -> dict:
         "announcement_email_enabled": settings.ANNOUNCEMENT_EMAIL_ENABLED,
         "smtp_egress_fee_sats": settings.WIREGUARD_SMTP_EGRESS_FEE_SATS,
         "request_origin_shell": shlex.quote(request_origin),
-        "request_origin_json": json.dumps(request_origin),
         "backend_flag_shell": backend_flag_shell,
         "install_script_url_shell": shlex.quote(f"{request_origin}/downloads/install.sh"),
         "passkeys_enabled": settings.PASSKEYS_ENABLED and not _is_onion_request(request),

@@ -430,6 +430,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     assert "canonical, unique UUIDv4 values" in guide
     assert "BLINDPORT_DOWNLOAD_BASE_URL" not in guide
     assert "BLINDPORT_INSTALL_DIR" not in guide
+    assert "BLINDPORT_BACKEND_URL" not in guide
+    assert "${DOCKER_GID:-999}" in guide
     assert "Traefik" not in guide
 
     base = _asset("templates/base.html")
@@ -446,6 +448,7 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
     docker_compose = _repository_file("examples/docker/compose.yaml")
     docker_config = _repository_file("examples/docker/config/accounts.json")
     docker_env = _repository_file("examples/docker/.env.example")
+    traefik_compose = _repository_file("examples/docker-traefik/compose.yaml")
 
     forbidden_rollout_term = "can" + "ary"
     for document in (guide, agent, docker_readme, docker_compose, docker_config, docker_env):
@@ -457,6 +460,10 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
     assert 'command: ["--docker", "--config=/etc/blindport/accounts.json"]' in docker_compose
     assert 'tech.blindport.mapping.site.account: "public"' in docker_compose
     assert "BLINDPORT_TOKEN:" not in docker_compose
+    assert "BLINDPORT_BACKEND_URL" not in docker_compose
+    assert "${DOCKER_GID:-999}" in docker_compose
+    assert "BLINDPORT_BACKEND_URL" not in traefik_compose
+    assert "${DOCKER_GID:-999}" in traefik_compose
     assert "BLINDPORT_TOKEN=" not in docker_env
     assert "owner-only token file" in docker_readme
     assert "non-overlapping state directory" in docker_readme
