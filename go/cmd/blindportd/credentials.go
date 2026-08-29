@@ -449,7 +449,7 @@ func (m *credentialManager) enroll(ctx context.Context, instanceID string, gener
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return storedCredential{}, fmt.Errorf("client certificate status %d", resp.StatusCode)
+		return storedCredential{}, clientCertificateStatusError(resp.StatusCode)
 	}
 	var issued clientCertificateV2
 	if err := decodeBoundedJSON(resp.Body, maxCertificateResponse, &issued); err != nil {
@@ -468,6 +468,21 @@ func (m *credentialManager) enroll(ctx context.Context, instanceID string, gener
 		ClientCertPEM: issued.ClientCertPEM, Serial: issued.Serial,
 		NotBefore: issued.NotBefore, NotAfter: issued.NotAfter, RenewAfter: issued.RenewAfter,
 	}, nil
+}
+
+func clientCertificateStatusError(status int) error {
+	switch status {
+	case http.StatusUnauthorized:
+		return errors.New("client certificate enrollment rejected the account token (HTTP 401 Unauthorized)")
+	case http.StatusForbidden:
+		return errors.New("client certificate enrollment denied the account (HTTP 403 Forbidden)")
+	case http.StatusConflict:
+		return errors.New("client identity conflict (HTTP 409 Conflict): another identity is already enrolled; restore the previous state_dir containing credential.json or request an authorized identity reset, and do not delete existing state before recovery")
+	case http.StatusTooManyRequests:
+		return errors.New("client certificate enrollment rate limited (HTTP 429 Too Many Requests); retry later")
+	default:
+		return fmt.Errorf("client certificate enrollment failed (HTTP %d %s)", status, http.StatusText(status))
+	}
 }
 
 func (m *credentialManager) install(stored storedCredential) error {

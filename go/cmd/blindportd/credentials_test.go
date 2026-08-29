@@ -214,6 +214,29 @@ func TestCredentialManagerPersistsPendingIdentityBeforeEnrollment(t *testing.T) 
 	}
 }
 
+func TestCredentialEnrollmentConflictExplainsStateRecovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer server.Close()
+	stateDir := privateStateDir(t)
+
+	_, err := openCredentialManager(context.Background(), server.Client(), server.URL, "test-token", stateDir)
+	if err == nil {
+		t.Fatal("conflicting client identity was accepted")
+	}
+	for _, expected := range []string{
+		"client identity conflict (HTTP 409 Conflict)",
+		"restore the previous state_dir containing credential.json",
+		"request an authorized identity reset",
+		"do not delete existing state",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("conflict error missing %q: %v", expected, err)
+		}
+	}
+}
+
 func TestCredentialManagerResumesPendingIdentity(t *testing.T) {
 	harness := newEnrollmentServer(t)
 	stateDir := privateStateDir(t)

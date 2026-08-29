@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -549,6 +550,25 @@ func TestNotifyAgentUpdateLogsInstallerCommand(t *testing.T) {
 		if !strings.Contains(logged, expected) {
 			t.Errorf("update log missing %q: %s", expected, logged)
 		}
+	}
+}
+
+func TestNotifyAgentUpdateSkipsMainChannel(t *testing.T) {
+	oldVersion := version
+	version = "main-1234567890abcdef"
+	t.Cleanup(func() { version = oldVersion })
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"version":"v9.9.9"}`)
+	}))
+	defer server.Close()
+	var output bytes.Buffer
+
+	notifyAgentUpdate(context.Background(), slog.New(slog.NewTextHandler(&output, nil)), server.Client(), server.URL, "secret")
+
+	if requests.Load() != 0 || output.Len() != 0 {
+		t.Fatalf("main channel update check made %d requests and logged %q", requests.Load(), output.String())
 	}
 }
 

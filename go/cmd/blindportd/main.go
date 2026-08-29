@@ -880,7 +880,7 @@ func fetchConfigWithClient(ctx context.Context, client *http.Client, backend, to
 }
 
 func notifyAgentUpdate(ctx context.Context, logger *slog.Logger, client *http.Client, backend, token string) {
-	if version == "" || version == "dev" {
+	if version == "" || version == "dev" || version == "main" || strings.HasPrefix(version, "main-") {
 		return
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
