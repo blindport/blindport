@@ -48,3 +48,14 @@ def test_release_workflow_pins_primary_and_encryption_subkey_fingerprints() -> N
     assert "18EDE4726C1414844923D6FF14EABFF739C16205" in workflow
     assert "1EFA5E7F8BC29A869CF53F2E91D63CDB51FEA639" in workflow
     assert "backend/src/blindport/public/blindport-release-key.asc" in workflow
+
+
+def test_main_agent_image_channel_does_not_replace_latest_release() -> None:
+    ci_workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yaml").read_text()
+    release_workflow = (REPOSITORY_ROOT / ".github/workflows/release.yaml").read_text()
+
+    assert "github.ref == 'refs/heads/main'" in ci_workflow
+    assert "needs: e2e" in ci_workflow
+    assert "tags: ghcr.io/blindport/blindportd:main" in ci_workflow
+    assert "ghcr.io/blindport/blindportd:latest" not in ci_workflow
+    assert '--tag "$image:latest"' in release_workflow
