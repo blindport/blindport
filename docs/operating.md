@@ -411,10 +411,12 @@ operating models:
    a unique target such as `<32-lowercase-hex>.pool.example.net` at subscription
    creation. The customer publishes one CNAME from the canonical requested
    hostname to that exact target. A wildcard claim instead requires only TXT ownership
-   proof at `_blindport-challenge.<base>` before payment. Its DNS-only `*.<base>`
-   CNAME to the selected pool target controls routing and can be added after setup.
-   The wildcard price routes the base plus all descendants, but pointing the base
-   is optional and neither routing record is checked for payment. Use CNAME
+   proof at `<base>` before payment. Publish `blindport-verification=<token>` as an
+   additional TXT value at that name, alongside existing SPF or site-verification
+   TXT values. Its DNS-only `*.<base>` CNAME to the selected pool target controls
+   routing and can be added after setup. The wildcard price routes the base plus all
+   descendants, but pointing the base is optional and neither routing record is
+   checked for payment. Use CNAME
    for a subdomain base, or provider ALIAS, ANAME, or CNAME flattening at a zone
    apex. Blindport checks the applicable proof automatically when creating each
    initial or renewal invoice;
@@ -424,11 +426,10 @@ operating models:
    `RELAY_DOMAIN_CLAIM_TTL_SECONDS` (one hour by default) to bound unpaid name
    holds. `ACCOUNT_MAX_PENDING_RELAY_CLAIMS` limits one account to two unpaid
    Relay claims. Configure
-   `RELAY_DNS_TIMEOUT_SECONDS` to bound each recursive lookup. The initial
-   customer deadline also applies after successful verification; verification
-   does not extend it. Existing pending exact rows with a legacy TXT token
-   continue using their returned `_blindport-challenge.<hostname>` TXT record
-   only until the existing claim deadline. New exact claims have no TXT token;
+   `RELAY_DNS_TIMEOUT_SECONDS` to bound each ownership check's total DNS lifetime.
+   The initial customer deadline also applies after successful verification;
+   verification does not extend it. Any pending token-bearing claim uses its
+   claimed hostname as the TXT owner name. New exact claims have no TXT token;
    wildcard claims retain their TXT token for renewal verification.
 3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
    sets through multiple explicit recursive resolvers and retains one latest sanitized
@@ -475,16 +476,22 @@ limits across all managed names. Let's Encrypt currently documents a limit of 50
 new certificates per registered domain per seven days; keep `RELAY_MANAGED_DOMAIN_CAP`
 conservative and prefer customer-owned domains as usage grows.
 
-The backend is a recursive DNS client, not an authoritative DNS server. Give it
-access to a trustworthy recursive resolver over the network, and monitor `502`
-or `503` verification responses as resolver failures. For exact claims it queries
-the direct CNAME record with resolver search disabled and a configured total
-lifetime. For wildcard claims it queries only TXT ownership. NXDOMAIN, missing
-proof records, nonmatching direct exact-name targets (including chains and
-alternate pool names), and lookup timeouts are ordinary unsuccessful verification
-results and do not create payments. A/AAAA flattening is not valid proof for an
-exact-name CNAME. Wildcard routing records are not queried and may be changed
-independently because the retained TXT challenge is the ownership proof.
+The backend is not an authoritative DNS server. Give it access to a trustworthy
+recursive resolver over the network, and monitor `502` or `503` verification
+responses as resolver failures. For exact claims it queries the direct CNAME
+record with resolver search disabled and a configured total lifetime. For wildcard
+TXT proof, it uses that recursive resolver only to find the closest authoritative
+zone, its NS targets, and their A/AAAA addresses. It then queries one vetted,
+globally routable authoritative numeric address at a time with recursion disabled
+and requires the AA response bit. Recursive TXT answers are never proof. One
+matching authoritative server is sufficient while secondaries converge; private,
+loopback, link-local, multicast, reserved, documentation, and other non-global
+NS addresses are rejected before egress. NXDOMAIN, missing proof records,
+nonmatching TXT values, nonmatching direct exact-name targets (including chains
+and alternate pool names), and lookup timeouts are ordinary unsuccessful
+verification results and do not create payments. A/AAAA flattening is not valid
+proof for an exact-name CNAME. Wildcard routing records are not queried and may
+be changed independently because the retained TXT challenge is the ownership proof.
 
 For every `RELAY_POOL_DOMAINS` base, publish wildcard A/AAAA or CNAME ingress
 records for its generated children. A pool base can contain at most 220 ASCII

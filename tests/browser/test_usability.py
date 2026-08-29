@@ -1396,6 +1396,7 @@ def test_dashboard_payment_controls_require_successful_dns_check(
         assert (
             "Only the TXT record is checked for ownership and payment" in dns_guidance
         )
+        assert "alongside existing SPF or site-verification TXT values" in dns_guidance
         assert "CNAME can be added later for a no-downtime cutover" in dns_guidance
         stablecoin.click(force=True)
         page.wait_for_timeout(100)

@@ -32,19 +32,23 @@ class _TxtRecord:
 class _Resolver:
     def __init__(self, answers: dict[tuple[str, str], object]) -> None:
         self.answers = answers
-        self.calls: list[tuple[str, str, bool, float]] = []
+        self.calls: list[tuple[str, str]] = []
 
-    def resolve(self, name: str, rdtype: str, *, search: bool, lifetime: float):
-        self.calls.append((name, rdtype, search, lifetime))
-        return self.answers[(name, rdtype)]
+    def verify_txt(self, name: str, expected_value: str):
+        from blindport.services.domain_verification import DomainVerificationResult
+
+        self.calls.append((name, expected_value))
+        answers = self.answers[(name, "TXT")]
+        for answer in answers:
+            if b"".join(answer.strings) == expected_value.encode("ascii"):
+                return DomainVerificationResult(True, "domain ownership verified")
+        return DomainVerificationResult(False, "challenge TXT value did not match")
 
 
 def _set_resolver_verifier(client, resolver: _Resolver) -> None:
     from blindport.api import v1
-    from blindport.services.domain_verification import DnsPythonDomainVerifier
 
-    verifier = DnsPythonDomainVerifier(resolver=resolver, lifetime=0.5)
-    client.app.dependency_overrides[v1._domain_verifier_dependency] = lambda: lambda: verifier
+    client.app.dependency_overrides[v1._domain_verifier_dependency] = lambda: lambda: resolver
 
 
 def _wildcard_answers(subscription: dict) -> dict[tuple[str, str], object]:
@@ -116,7 +120,7 @@ def test_anonymous_wildcard_order_snapshots_wildcard_price(app_client, monkeypat
     assert subscription["relay_hostname_scope"] == "wildcard"
     assert subscription["tls_passthrough_only"] is True
     assert subscription["domain_is_managed"] is False
-    assert subscription["domain_challenge_name"] == "_blindport-challenge.wild.example"
+    assert subscription["domain_challenge_name"] == "wild.example"
     assert subscription["record_type"] == "CNAME"
     assert subscription["record_name"] == "*.wild.example"
     assert subscription["record_target"] in {"relay1.test", "relay2.test"}
@@ -197,7 +201,7 @@ def test_wildcard_dns_verification_and_renewal_require_only_txt_ownership(app_cl
         == subscription["domain_challenge_value"]
     )
     assert resolver.calls == [
-        ("_blindport-challenge.renew-wild.example", "TXT", False, 0.5),
+        ("renew-wild.example", subscription["domain_challenge_value"]),
     ]
 
     resolver.calls.clear()
@@ -220,7 +224,7 @@ def test_wildcard_dns_verification_and_renewal_require_only_txt_ownership(app_cl
     )
     assert renewal.status_code == 200, renewal.text
     assert resolver.calls == [
-        ("_blindport-challenge.renew-wild.example", "TXT", False, 0.5),
+        ("renew-wild.example", subscription["domain_challenge_value"]),
     ]
 
 
@@ -246,7 +250,7 @@ def test_wildcard_payment_rejects_wrong_txt_without_querying_routing_cname(app_c
     assert payment.status_code == 400
     assert payment.json()["detail"] == "challenge TXT value did not match"
     assert resolver.calls == [
-        ("_blindport-challenge.wrong-proof.example", "TXT", False, 0.5),
+        ("wrong-proof.example", subscription["domain_challenge_value"]),
     ]
 
 

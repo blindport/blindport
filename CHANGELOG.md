@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Customer-owned wildcard Relay subscriptions require only their retained TXT
   ownership challenge before initial and renewal payments. Routing CNAME records
   can be changed later for a no-downtime migration.
+- Customer-owned Relay TXT ownership proof now uses the claimed base domain as an
+  additional TXT value and is read directly from vetted authoritative nameservers.
 - Legacy NIP-04-only NWC providers can be enabled explicitly while NIP-44 v2
   remains preferred and required by default.
 

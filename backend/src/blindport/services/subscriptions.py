@@ -88,10 +88,9 @@ def _aware(value: datetime | None) -> datetime | None:
 
 def domain_challenge_name(domain: str) -> str:
     """Return the stable TXT owner name for a canonical customer domain."""
-    name = f"_blindport-challenge.{domain}"
-    if len(name) > 253:
+    if len(domain) > 253:
         raise ValueError("domain is too long for DNS ownership verification")
-    return name
+    return domain
 
 
 def domain_challenge_value(token: str) -> str:

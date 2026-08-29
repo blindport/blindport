@@ -13,12 +13,14 @@ trusted only on Traefik's private entrypoints.
 Complete the Blindport ownership and routing records shown by the dashboard:
 
 ```text
-_blindport-challenge.example.com  TXT    <Blindport token>
+example.com                       TXT    blindport-verification=<Blindport token>
 *.example.com                     CNAME  <subscription pool target>
 ```
 
-Point the base separately if it should also be reachable. A subdomain base can use
-CNAME. A zone apex needs provider ALIAS, ANAME, or CNAME flattening.
+Publish the Blindport value alongside any existing SPF or site-verification TXT
+values at `example.com`. Point the base separately if it should also be reachable.
+A subdomain base can use CNAME. A zone apex needs provider ALIAS, ANAME, or CNAME
+flattening.
 
 The default Traefik router requests one certificate containing `example.com` and
 `*.example.com`. ACME wildcard issuance requires DNS-01, so Traefik creates this

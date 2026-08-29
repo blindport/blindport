@@ -189,13 +189,15 @@ whose lowercase child label contains 128 bits of cryptographic randomness. The
 target is stored in the existing pool-domain field and remains stable for the
 retained claim. Exact customer claims cannot create a payment until the requested
 hostname has one direct CNAME answer exactly equal to that target. Pending exact
-rows with a pre-rollout TXT token retain the legacy TXT path until their existing
-claim expires; new exact rows never receive a token.
+rows with a retained TXT token use the claimed hostname as the TXT owner name;
+new exact rows never receive a token.
 
-Customer-owned wildcard claims retain a TXT ownership token and one selected
-Relay pool base. Payment requires only the TXT ownership proof. The displayed
-`*.<base>` CNAME and optional base record control routing and are deliberately
-outside payment verification, allowing the customer to move traffic after setup.
+Customer-owned wildcard claims retain a TXT ownership token at the claimed base
+and one selected Relay pool base. Payment requires only the TXT ownership proof.
+The token is an additional TXT value, so it coexists with SPF and site-verification
+records at that name. The displayed `*.<base>` CNAME and optional base record
+control routing and are deliberately outside payment verification, allowing the
+customer to move traffic after setup.
 The same wildcard price and claim route the base plus all descendants. Exact SNI
 routes take precedence, then a wildcard at the requested base, then the longest
 matching wildcard suffix.
@@ -364,10 +366,14 @@ Blindport Relay has three DNS operating models:
    requested hostname to the unique target returned by the subscription API.
    The control plane makes a bounded direct CNAME query with resolver search
    disabled and requires the one returned absolute target to equal the assigned
-   target after canonicalization. A wildcard customer publishes TXT ownership
-   proof before payment and later points a wildcard CNAME to the selected Relay
-   pool when ready to route traffic. Neither that CNAME nor the wildcard's optional
-   base record is verified for payment. Subdomain
+   target after canonicalization. A wildcard customer publishes its TXT ownership
+   value at the claimed base before payment, alongside any SPF or site-verification
+   TXT values, and later points a wildcard CNAME to the selected Relay pool when
+   ready to route traffic. TXT proof discovery uses the configured recursive resolver
+   to find the closest zone, nameservers, and their addresses, then queries vetted
+   globally routable authoritative addresses directly without recursion and requires
+   the authoritative answer bit. Neither that CNAME nor the wildcard's optional base
+   record is verified for payment. Subdomain
    bases can use CNAME; zone apexes require provider ALIAS, ANAME, or CNAME
    flattening. Exact-name verification does not follow CNAME chains or accept
    failed lookups.
@@ -377,8 +383,9 @@ Blindport Relay has three DNS operating models:
    authoritative-DNS adapter may create or withdraw records and invoke the same control-plane
    subscription and verification endpoints.
 
-Blindport is not currently authoritative for customer DNS. Its backend only
-queries an external recursive resolver, and operators remain responsible for
+Blindport is not currently authoritative for customer DNS. Its backend uses an
+external recursive resolver for authority discovery and directly queries the
+discovered authoritative servers for TXT proof; operators remain responsible for
 the wildcard, A, and AAAA records that direct traffic to relay ingress.
 Operators must publish wildcard ingress records below every configured relay
 pool base so generated customer targets resolve at the relay edges.

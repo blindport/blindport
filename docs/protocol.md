@@ -181,9 +181,14 @@ resolver search expansion, accepts one absolute target, and requires canonical
 exact equality. CNAME chains, A/AAAA flattening, other pool targets, and resolver
 failures do not prove control.
 
-A customer-owned wildcard claim retains a TXT ownership token at
-`_blindport-challenge.<base>`, which is the only DNS proof required before payment.
-The displayed DNS-only `*.<base>` CNAME to the selected Relay pool target controls
+A customer-owned wildcard claim retains a TXT ownership token at `<base>`, which
+is the only DNS proof required before payment. It is published as an additional
+TXT value and therefore coexists with SPF and site-verification records. Blindport
+uses recursive DNS only to discover the closest authoritative zone and its NS
+addresses, then makes the TXT query directly to vetted globally routable NS IPs
+without recursion and requires AA. A recursive TXT cache answer is never proof;
+one matching authoritative server is sufficient while secondaries converge. The
+displayed DNS-only `*.<base>` CNAME to the selected Relay pool target controls
 routing and can be added later for a no-downtime cutover. The claim routes both
 `<base>` and all descendants. Pointing `<base>` to the same target is optional and
 is not checked before payment. A subdomain base can use CNAME; a DNS zone apex
@@ -200,9 +205,9 @@ Blindport itself is not currently an authoritative DNS server. DNS verification
 changes subscription eligibility only; the relay does not authorize the claim
 until payment activates the subscription. Managed names have a 30-minute initial
 payment deadline; customer-owned names have a one-hour DNS and payment deadline.
-Verification does not reset that deadline. Pending exact claims created before
-the CNAME rollout retain their existing TXT challenge only until that bounded
-claim expires. Wildcard claims retain their TXT token for renewal proof.
+Verification does not reset that deadline. Any retained token-bearing claim uses
+the claimed hostname as its TXT owner name. Wildcard claims retain their TXT token
+for renewal proof.
 
 At the end of an active Blindport Relay billing period, the backend removes the name
 from resolution immediately. A bounded renewal grace reserves the name to the

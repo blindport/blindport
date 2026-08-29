@@ -25,13 +25,18 @@ class _Resolver:
     def __init__(self, answers: dict[tuple[str, str], object]) -> None:
         self.answers = answers
 
-    def resolve(self, name: str, rdtype: str, *, search: bool, lifetime: float):
-        return self.answers[(name, rdtype)]
+    def verify_txt(self, name: str, expected_value: str):
+        from blindport.services.domain_verification import DomainVerificationResult
+
+        answers = self.answers[(name, "TXT")]
+        for answer in answers:
+            if b"".join(answer.strings) == expected_value.encode("ascii"):
+                return DomainVerificationResult(True, "domain ownership verified")
+        return DomainVerificationResult(False, "challenge TXT value did not match")
 
 
 def _set_resolver_verifier(client, subscription: dict) -> None:
     from blindport.api import v1
-    from blindport.services.domain_verification import DnsPythonDomainVerifier
 
     resolver = _Resolver(
         {
@@ -40,8 +45,7 @@ def _set_resolver_verifier(client, subscription: dict) -> None:
             ],
         }
     )
-    verifier = DnsPythonDomainVerifier(resolver=resolver, lifetime=0.5)
-    client.app.dependency_overrides[v1._domain_verifier_dependency] = lambda: lambda: verifier
+    client.app.dependency_overrides[v1._domain_verifier_dependency] = lambda: lambda: resolver
 
 
 def _set_active_exact(

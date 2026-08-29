@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import dns.exception
+import dns.flags
+import dns.message
 import dns.name
 import dns.resolver
 import pytest
@@ -40,6 +43,25 @@ class FakeCnameRecord:
         self.target = dns.name.from_text(target) if isinstance(target, str) else target
 
 
+class FakeNsRecord:
+    def __init__(self, target: str) -> None:
+        self.target = dns.name.from_text(target)
+
+
+class FakeAddressRecord:
+    def __init__(self, address: str) -> None:
+        self.address = address
+
+
+class FakeAuthoritativeAnswer:
+    def __init__(self, records: list[object], flags: int = dns.flags.AA) -> None:
+        self._records = records
+        self.response = SimpleNamespace(flags=flags)
+
+    def __iter__(self):
+        return iter(self._records)
+
+
 class FakeResolver:
     def __init__(self, answer: object) -> None:
         self.answer = answer
@@ -50,6 +72,74 @@ class FakeResolver:
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
+
+
+class AuthoritativeDiscoveryResolver:
+    def __init__(self, answers: dict[tuple[str, str], object]) -> None:
+        self.answers = answers
+        self.calls: list[tuple[str, str, bool, float]] = []
+
+    def resolve(self, name: str | dns.name.Name, rdtype: str, *, search: bool, lifetime: float):
+        text = name.to_text() if isinstance(name, dns.name.Name) else name
+        self.calls.append((text, rdtype, search, lifetime))
+        answer = self.answers[(text, rdtype)]
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+def _configure_authoritative_txt_resolvers(
+    monkeypatch,
+    recursive: AuthoritativeDiscoveryResolver,
+    answers: dict[str, object],
+) -> tuple[list[tuple[str, str, str, bool, float, int | None]], list[tuple[object, float]]]:
+    from blindport.services import domain_verification
+
+    direct_calls: list[tuple[str, str, str, bool, float, int | None]] = []
+    zone_calls: list[tuple[object, float]] = []
+
+    def zone_for_name(name, *, resolver, lifetime, **_kwargs):
+        zone_calls.append((resolver, lifetime))
+        assert name == "claim.example"
+        return dns.name.from_text("example.")
+
+    class DirectResolver:
+        def __init__(self, *, configure: bool) -> None:
+            assert configure is False
+            self.nameservers: list[str] = []
+            self.flags: int | None = None
+
+        def resolve(self, name: str, rdtype: str, *, search: bool, lifetime: float):
+            address = self.nameservers[0]
+            direct_calls.append((address, name, rdtype, search, lifetime, self.flags))
+            answer = answers[address]
+            if callable(answer):
+                answer = answer()
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+    monkeypatch.setattr(domain_verification.dns.resolver, "zone_for_name", zone_for_name)
+    monkeypatch.setattr(domain_verification.dns.resolver, "Resolver", DirectResolver)
+    return direct_calls, zone_calls
+
+
+def _authoritative_discovery_answers(*addresses: str) -> dict[tuple[str, str], object]:
+    records: dict[tuple[str, str], object] = {
+        ("example.", "NS"): [
+            FakeNsRecord(f"ns{index}.example.") for index in range(1, len(addresses) + 1)
+        ]
+    }
+    for index, address in enumerate(addresses, start=1):
+        records[(f"ns{index}.example.", "A")] = [FakeAddressRecord(address)]
+        records[(f"ns{index}.example.", "AAAA")] = dns.resolver.NoAnswer()
+    return records
+
+
+def _authoritative_response() -> dns.message.Message:
+    response = dns.message.make_response(dns.message.make_query("claim.example.", "TXT"))
+    response.flags |= dns.flags.AA
+    return response
 
 
 def _set_verifier(client, verifier) -> None:
@@ -152,6 +242,247 @@ def test_custom_subscriptions_expose_unique_stable_cname_targets(app_client) -> 
     listed = client.get("/api/v1/subscriptions", headers=_auth(token)).json()
     assert listed[0]["record_target"] == sub["record_target"]
     assert listed[1]["record_target"] == other["record_target"]
+
+
+def test_txt_uses_authoritative_servers_not_recursive_cache_and_accepts_converged_ns(
+    monkeypatch,
+) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier
+
+    expected = "blindport-verification=expected-token"
+    recursive = AuthoritativeDiscoveryResolver(
+        _authoritative_discovery_answers("8.8.8.8", "1.1.1.1")
+    )
+    direct_calls, zone_calls = _configure_authoritative_txt_resolvers(
+        monkeypatch,
+        recursive,
+        {
+            "8.8.8.8": FakeAuthoritativeAnswer([FakeTxtRecord(b"blindport-verification=old")]),
+            "1.1.1.1": FakeAuthoritativeAnswer([FakeTxtRecord(expected.encode("ascii"))]),
+        },
+    )
+
+    result = DnsPythonDomainVerifier(resolver=recursive, lifetime=1.25).verify_txt(
+        "claim.example", expected
+    )
+
+    assert result.verified is True
+    assert zone_calls[0][0] is recursive
+    assert all(0 < lifetime <= 1.25 for _, lifetime in zone_calls)
+    assert ("claim.example", "TXT") not in {
+        (name, record_type) for name, record_type, _, _ in recursive.calls
+    }
+    assert [
+        (address, name, record_type, search, flags)
+        for address, name, record_type, search, _, flags in direct_calls
+    ] == [
+        ("8.8.8.8", "claim.example", "TXT", False, 0),
+        ("1.1.1.1", "claim.example", "TXT", False, 0),
+    ]
+    assert all(0 < lifetime <= 1.25 for _, _, _, _, lifetime, _ in direct_calls)
+
+
+def test_txt_rejects_non_authoritative_responses(monkeypatch) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier, ResolverFailureError
+
+    recursive = AuthoritativeDiscoveryResolver(_authoritative_discovery_answers("8.8.8.8"))
+    _configure_authoritative_txt_resolvers(
+        monkeypatch,
+        recursive,
+        {
+            "8.8.8.8": FakeAuthoritativeAnswer(
+                [FakeTxtRecord(b"blindport-verification=expected-token")], flags=0
+            )
+        },
+    )
+
+    with pytest.raises(ResolverFailureError, match="did not answer authoritatively"):
+        DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+            "claim.example", "blindport-verification=expected-token"
+        )
+
+
+@pytest.mark.parametrize(
+    "first_answer",
+    [
+        FakeAuthoritativeAnswer([FakeTxtRecord(b"blindport-verification=expected-token")], flags=0),
+        FakeAuthoritativeAnswer([SimpleNamespace(strings=None)]),
+    ],
+)
+def test_txt_tries_later_authority_after_invalid_response(monkeypatch, first_answer) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier
+
+    expected = "blindport-verification=expected-token"
+    recursive = AuthoritativeDiscoveryResolver(
+        _authoritative_discovery_answers("8.8.8.8", "1.1.1.1")
+    )
+    direct_calls, _ = _configure_authoritative_txt_resolvers(
+        monkeypatch,
+        recursive,
+        {
+            "8.8.8.8": first_answer,
+            "1.1.1.1": FakeAuthoritativeAnswer([FakeTxtRecord(expected.encode("ascii"))]),
+        },
+    )
+
+    result = DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+        "claim.example", expected
+    )
+
+    assert result.verified is True
+    assert [call[0] for call in direct_calls] == ["8.8.8.8", "1.1.1.1"]
+    assert direct_calls[0][4] < direct_calls[1][4]
+
+
+@pytest.mark.parametrize(
+    "unsafe_address",
+    [
+        "0.0.0.0",
+        "10.0.0.1",
+        "127.0.0.1",
+        "169.254.1.1",
+        "192.0.2.1",
+        "224.0.0.1",
+        "::1",
+        "2001:db8::1",
+        "fe80::1",
+        "ff02::1",
+    ],
+)
+def test_txt_blocks_non_global_authoritative_egress(monkeypatch, unsafe_address: str) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier, ResolverFailureError
+
+    recursive = AuthoritativeDiscoveryResolver(_authoritative_discovery_answers(unsafe_address))
+    direct_calls, _ = _configure_authoritative_txt_resolvers(monkeypatch, recursive, {})
+
+    with pytest.raises(
+        ResolverFailureError, match="authoritative server address is unsafe"
+    ) as error:
+        DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+            "claim.example", "blindport-verification=expected-token"
+        )
+
+    assert str(error.value) == "DNS authoritative server address is unsafe"
+    assert unsafe_address not in str(error.value)
+    assert direct_calls == []
+
+
+def test_txt_rejects_mixed_private_and_public_authoritative_addresses(monkeypatch) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier, ResolverFailureError
+
+    discovery = _authoritative_discovery_answers("8.8.8.8")
+    discovery[("ns1.example.", "A")] = [
+        FakeAddressRecord("192.168.1.10"),
+        FakeAddressRecord("8.8.8.8"),
+    ]
+    recursive = AuthoritativeDiscoveryResolver(discovery)
+    direct_calls, _ = _configure_authoritative_txt_resolvers(monkeypatch, recursive, {})
+
+    with pytest.raises(ResolverFailureError, match="authoritative server address is unsafe"):
+        DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+            "claim.example", "blindport-verification=expected-token"
+        )
+
+    assert direct_calls == []
+
+
+@pytest.mark.parametrize("timeout_stage", ["zone", "nameservers"])
+def test_authoritative_discovery_timeout_is_an_unsuccessful_verification(
+    monkeypatch, timeout_stage: str
+) -> None:
+    from blindport.services import domain_verification
+    from blindport.services.domain_verification import DnsPythonDomainVerifier
+
+    recursive = AuthoritativeDiscoveryResolver({("example.", "NS"): dns.exception.Timeout()})
+
+    def zone_for_name(*_args, **_kwargs):
+        if timeout_stage == "zone":
+            raise dns.exception.Timeout
+        return dns.name.from_text("example.")
+
+    monkeypatch.setattr(domain_verification.dns.resolver, "zone_for_name", zone_for_name)
+
+    result = DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+        "claim.example", "blindport-verification=expected-token"
+    )
+
+    assert result == type(result)(False, "DNS lookup timed out")
+
+
+def test_authoritative_txt_timeout_is_an_unsuccessful_verification(monkeypatch) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier
+
+    recursive = AuthoritativeDiscoveryResolver(_authoritative_discovery_answers("8.8.8.8"))
+    _configure_authoritative_txt_resolvers(
+        monkeypatch,
+        recursive,
+        {"8.8.8.8": dns.exception.Timeout()},
+    )
+
+    result = DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+        "claim.example", "blindport-verification=expected-token"
+    )
+
+    assert result == type(result)(False, "DNS lookup timed out")
+
+
+def test_authoritative_txt_does_not_accept_a_match_after_the_total_deadline(monkeypatch) -> None:
+    from blindport.services import domain_verification
+    from blindport.services.domain_verification import DnsPythonDomainVerifier
+
+    expected = "blindport-verification=expected-token"
+    clock = [0.0]
+    monkeypatch.setattr(domain_verification.time, "monotonic", lambda: clock[0])
+    recursive = AuthoritativeDiscoveryResolver(_authoritative_discovery_answers("8.8.8.8"))
+
+    def delayed_match():
+        clock[0] = 0.5
+        return FakeAuthoritativeAnswer([FakeTxtRecord(expected.encode("ascii"))])
+
+    _configure_authoritative_txt_resolvers(
+        monkeypatch,
+        recursive,
+        {"8.8.8.8": delayed_match},
+    )
+
+    result = DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+        "claim.example", expected
+    )
+
+    assert result == type(result)(False, "DNS lookup timed out")
+
+
+@pytest.mark.parametrize(
+    ("answer", "detail"),
+    [
+        (
+            FakeAuthoritativeAnswer([FakeTxtRecord(b"blindport-verification=wrong")]),
+            "did not match",
+        ),
+        (dns.resolver.NoAnswer(response=_authoritative_response()), "was not found"),
+        (
+            dns.resolver.NXDOMAIN(
+                qnames=[dns.name.from_text("claim.example.")],
+                responses={dns.name.from_text("claim.example."): _authoritative_response()},
+            ),
+            "does not exist",
+        ),
+    ],
+)
+def test_authoritative_txt_missing_or_wrong_values_are_not_verified(
+    monkeypatch, answer, detail: str
+) -> None:
+    from blindport.services.domain_verification import DnsPythonDomainVerifier
+
+    recursive = AuthoritativeDiscoveryResolver(_authoritative_discovery_answers("8.8.8.8"))
+    _configure_authoritative_txt_resolvers(monkeypatch, recursive, {"8.8.8.8": answer})
+
+    result = DnsPythonDomainVerifier(resolver=recursive, lifetime=0.5).verify_txt(
+        "claim.example", "blindport-verification=expected-token"
+    )
+
+    assert result.verified is False
+    assert detail in result.detail
 
 
 def test_exact_direct_cname_verifies_with_bounded_nonsearching_lookup(app_client) -> None:
@@ -435,7 +766,7 @@ def test_resolver_setup_is_lazy_for_managed_and_verified_idempotent_calls(
     assert setup_calls == 1
 
 
-def test_existing_pending_txt_claim_retains_legacy_verification(app_client) -> None:
+def test_existing_pending_txt_claim_uses_apex_verification(app_client) -> None:
     client, factory = app_client
     token = _signup(client)
     created = _subscribe(client, token, "legacy.example")
@@ -454,17 +785,25 @@ def test_existing_pending_txt_claim_retains_legacy_verification(app_client) -> N
     legacy = client.get("/api/v1/subscriptions", headers=_auth(token)).json()[0]
     expected = f"blindport-verification={legacy_token}"
     assert legacy["record_type"] == "TXT"
-    assert legacy["record_name"] == "_blindport-challenge.legacy.example"
+    assert legacy["record_name"] == "legacy.example"
     assert legacy["record_target"] == expected
     assert legacy["domain_challenge_name"] == legacy["record_name"]
     assert legacy["domain_challenge_value"] == expected
 
-    resolver = FakeResolver(
-        [FakeTxtRecord(b"unrelated"), FakeTxtRecord(expected[:20].encode(), expected[20:].encode())]
-    )
-    from blindport.services.domain_verification import DnsPythonDomainVerifier
+    class MatchingTxtVerifier:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
 
-    _set_verifier(client, DnsPythonDomainVerifier(resolver=resolver, lifetime=0.75))
+        def verify_txt(self, name: str, expected_value: str):
+            self.calls.append((name, expected_value))
+            from blindport.services.domain_verification import DomainVerificationResult
+
+            return DomainVerificationResult(
+                name == "legacy.example" and expected_value == expected, ""
+            )
+
+    verifier = MatchingTxtVerifier()
+    _set_verifier(client, verifier)
     response = client.post(
         f"/api/v1/subscriptions/{created['id']}/verify-domain",
         headers=_auth(token),
@@ -473,7 +812,7 @@ def test_existing_pending_txt_claim_retains_legacy_verification(app_client) -> N
     assert response.status_code == 200, response.text
     assert response.json()["verified"] is True
     assert response.json()["subscription"]["domain_challenge_value"] is None
-    assert resolver.calls == [(legacy["record_name"], "TXT", False, 0.75)]
+    assert verifier.calls == [("legacy.example", expected)]
 
     payment = client.post(
         "/api/v1/payments",

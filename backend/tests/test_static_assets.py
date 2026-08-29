@@ -182,6 +182,10 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     assert "Only the TXT record is checked for ownership and payment." in _asset(
         "templates/dashboard.html"
     )
+    assert "alongside existing SPF or site-verification TXT values" in _asset(
+        "templates/dashboard.html"
+    )
+    assert "_blindport-challenge." not in _asset("templates/dashboard.html")
     assert "standard CNAME when the base is a subdomain" in _asset("templates/dashboard.html")
     assert "ALIAS, ANAME, or CNAME flattening" in _asset("templates/dashboard.html")
     assert "Neither routing record is verified for payment." in _asset("templates/guide.html")

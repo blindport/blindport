@@ -101,16 +101,17 @@
                     <h4>{% if s.relay_hostname_scope.value == "wildcard" %}Configure wildcard DNS routing{% else %}Point this exact hostname to Blindport{% endif %}</h4>
                     {% if s.relay_hostname_scope.value == "wildcard" %}
                       <span>Type</span><code>TXT</code>
-                      <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
+                      <span>Name</span><code>{{ s.domain }}</code>
                       <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
                       <span>Routing record type</span><code>CNAME</code>
                       <span>Name</span><code>*.{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
-                      <p class="field-help">Only the TXT record is checked for ownership and payment. Add the wildcard CNAME when you are ready to route traffic. To also route <code>{{ s.domain }}</code>, point it to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain; at a DNS zone apex, use your provider's ALIAS, ANAME, or CNAME flattening.</p>
+                      <p class="field-help">Only the TXT record is checked for ownership and payment. Add this value alongside existing SPF or site-verification TXT values at the same base domain. Add the wildcard CNAME when you are ready to route traffic. To also route <code>{{ s.domain }}</code>, point it to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain; at a DNS zone apex, use your provider's ALIAS, ANAME, or CNAME flattening.</p>
                     {% elif s.domain_verification_token %}
                       <span>Type</span><code>TXT</code>
-                      <span>Name</span><code>_blindport-challenge.{{ s.domain }}</code>
+                      <span>Name</span><code>{{ s.domain }}</code>
                       <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
+                      <p class="field-help">Add this value alongside existing SPF or site-verification TXT values at the same hostname.</p>
                     {% else %}
                       <span>Type</span><code>CNAME</code>
                       <span>Name</span><code>{{ s.domain }}</code>
