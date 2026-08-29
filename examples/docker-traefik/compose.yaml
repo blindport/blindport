@@ -78,6 +78,7 @@ services:
       - /opt/blindport/state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
     security_opt: ["no-new-privileges:true"]
     tmpfs: ["/tmp:size=16m,mode=1777"]
 

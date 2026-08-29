@@ -333,6 +333,7 @@ services:
       - /opt/blindport/state:/var/lib/blindport
     read_only: true
     cap_drop: [ALL]
+    cap_add: [NET_ADMIN]
     security_opt:
       - no-new-privileges:true
     tmpfs:
@@ -346,9 +347,14 @@ networks:
         - subnet: 172.30.0.0/24
 ```
 
+The published `v0.3.0` image's executable carries the `NET_ADMIN` file
+capability, so the container must retain that capability to start. The example
+drops every capability and adds back only `NET_ADMIN`; Docker discovery does not
+otherwise use it.
+
 The mounted `/opt/blindport/config/config.json` is a version 3 Docker account
-config. It
-uses an empty `mappings` list because Docker labels provide the mappings:
+config. It uses an empty `mappings` list because Docker labels provide the
+mappings:
 
 ```json
 {

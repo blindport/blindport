@@ -439,6 +439,8 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     assert "https://github.com/blindport/blindport/issues" in base
     assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in guide
     assert "/opt/blindport/state:/var/lib/blindport" in guide
+    assert "cap_add: [NET_ADMIN]" in guide
+    assert "executable carries that file capability" in guide
 
 
 def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> None:
@@ -470,11 +472,15 @@ def test_agent_and_docker_examples_document_v3_token_files_and_boundaries() -> N
     assert "BLINDPORT_TOKEN:" not in docker_compose
     assert "BLINDPORT_BACKEND_URL" not in docker_compose
     assert "${DOCKER_GID:-999}" in docker_compose
+    assert "cap_drop: [ALL]" in docker_compose
+    assert "cap_add: [NET_ADMIN]" in docker_compose
     assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in docker_compose
     assert "/opt/blindport/state:/var/lib/blindport" in docker_compose
     assert "ipv4_address: 172.30.0.2" in docker_compose
     assert "BLINDPORT_BACKEND_URL" not in traefik_compose
     assert "${DOCKER_GID:-999}" in traefik_compose
+    assert "cap_drop: [ALL]" in traefik_compose
+    assert "cap_add: [NET_ADMIN]" in traefik_compose
     assert 'command: ["--docker", "--config=/etc/blindport/config.json"]' in traefik_compose
     assert "/opt/blindport/config/config.json:/etc/blindport/config.json:ro" in traefik_compose
     assert "/opt/blindport/traefik-acme:/letsencrypt" in traefik_compose

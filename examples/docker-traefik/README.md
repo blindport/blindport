@@ -67,6 +67,11 @@ keys and should be backed up as secrets. A production deployment should use
 digest-pinned images and a narrowly authorized Docker socket proxy. Version 3
 account configs require `blindportd v0.3.0` or newer.
 
+The published `v0.3.0` image's executable carries the `NET_ADMIN` file
+capability, so the container must retain that capability to start. The Compose
+file drops every capability and adds back only `NET_ADMIN`. Docker discovery
+does not otherwise use it.
+
 If `172.30.0.0/24` conflicts with an existing network, change the Compose subnet,
 the two fixed container addresses, and both Traefik `trustedips` values together.
 

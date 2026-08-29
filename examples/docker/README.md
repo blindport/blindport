@@ -72,6 +72,11 @@ matching Blindport release for a durable deployment. Version 3 account configs
 require `blindportd v0.3.0` or newer. An untagged image is not refreshed
 automatically, so pull before recreating the service.
 
+The published `v0.3.0` image's executable carries the `NET_ADMIN` file
+capability, so the container must retain that capability to start. The Compose
+file drops every capability and adds back only `NET_ADMIN`. Docker discovery
+does not otherwise use it.
+
 ## 3. Start and verify
 
 ```sh

@@ -457,6 +457,7 @@ assert services["blindportd"]["command"] == [
 ]
 assert services["blindportd"]["read_only"] is True
 assert services["blindportd"]["cap_drop"] == ["ALL"]
+assert services["blindportd"]["cap_add"] == ["NET_ADMIN"]
 assert services["blindportd"]["security_opt"] == ["no-new-privileges:true"]
 
 labels = services["site"]["labels"]
@@ -580,6 +581,7 @@ for name in ("blindportd", "traefik"):
 
 assert services["blindportd"]["read_only"] is True
 assert services["blindportd"]["cap_drop"] == ["ALL"]
+assert services["blindportd"]["cap_add"] == ["NET_ADMIN"]
 assert services["blindportd"]["security_opt"] == ["no-new-privileges:true"]
 
 agent_volumes = {volume["target"]: volume for volume in services["blindportd"]["volumes"]}
