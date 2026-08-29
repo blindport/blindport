@@ -73,10 +73,10 @@ func runPreparedAccountRuntimes(ctx context.Context, logger *slog.Logger, accoun
 	return runAccountRuntimes(ctx, logger, runtimes, func(runtimeCtx context.Context, accountLogger *slog.Logger, runtime accountRuntime) error {
 		token, err := loadStaticAccountToken(runtime.tokenFile)
 		if err != nil {
-			return errors.New("load account token")
+			return fmt.Errorf("load account token: %w", err)
 		}
 		if err := prepareCredentialStateDir(runtime.stateDir); err != nil {
-			return errors.New("initialize account state")
+			return fmt.Errorf("initialize account state: %w", err)
 		}
 		notifyAgentUpdate(runtimeCtx, accountLogger, outbound.httpClient, runtime.options.backend, token)
 		return provision(runtimeCtx, accountLogger, runtime, token)
@@ -104,12 +104,15 @@ func runAccountRuntimes(ctx context.Context, logger *slog.Logger, runtimes []acc
 	}
 
 	unsuccessful := 0
+	failures := make([]error, 0, len(runtimes))
 	for range runtimes {
 		result := <-results
 		if ctx.Err() == nil {
 			if result.err != nil {
 				unsuccessful++
-				logger.Error("account runtime stopped", "account", result.accountName)
+				failure := fmt.Errorf("account %q: %w", result.accountName, result.err)
+				failures = append(failures, failure)
+				logger.Error("account runtime stopped", "account", result.accountName, "err", result.err)
 			} else {
 				logger.Warn("account runtime stopped", "account", result.accountName)
 			}
@@ -120,7 +123,7 @@ func runAccountRuntimes(ctx context.Context, logger *slog.Logger, runtimes []acc
 		return nil
 	}
 	if unsuccessful == len(runtimes) {
-		return fmt.Errorf("all %d account runtimes terminated unsuccessfully", len(runtimes))
+		return fmt.Errorf("all %d account runtimes terminated unsuccessfully: %w", len(runtimes), errors.Join(failures...))
 	}
 	return nil
 }

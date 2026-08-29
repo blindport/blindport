@@ -55,28 +55,43 @@ func validateToken(token string) error {
 
 func loadStaticAccountToken(path string) (string, error) {
 	if err := validateStaticConfigPath(path, "token_file"); err != nil {
-		return "", errors.New("invalid account token file")
+		return "", fmt.Errorf("invalid account token file %q: %w", path, err)
 	}
 	pathInfo, err := os.Lstat(path)
-	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("unsafe account token file")
+	if err != nil {
+		return "", fmt.Errorf("inspect account token file %q: %w", path, err)
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("account token file %q must not be a symbolic link", path)
 	}
 	file, err := openStaticConfig(path)
 	if err != nil {
-		return "", errors.New("open account token file")
+		return "", fmt.Errorf("open account token file %q: %w", path, err)
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || validateAccountTokenOwner(info) != nil {
-		return "", errors.New("unsafe account token file")
+	if err != nil {
+		return "", fmt.Errorf("inspect opened account token file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("account token file %q must be a regular file", path)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("account token file %q must be owner-only (mode 0600 or stricter), got %04o", path, info.Mode().Perm())
+	}
+	if err := validateAccountTokenOwner(info); err != nil {
+		return "", fmt.Errorf("account token file %q: %w", path, err)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 8193))
-	if err != nil || len(data) > 8192 {
-		return "", errors.New("invalid account token file")
+	if err != nil {
+		return "", fmt.Errorf("read account token file %q: %w", path, err)
+	}
+	if len(data) > 8192 {
+		return "", fmt.Errorf("account token file %q exceeds 8192 bytes", path)
 	}
 	token := strings.TrimSpace(string(data))
 	if err := validateToken(token); err != nil {
-		return "", errors.New("invalid account token")
+		return "", fmt.Errorf("invalid token in account token file %q: %w", path, err)
 	}
 	return token, nil
 }

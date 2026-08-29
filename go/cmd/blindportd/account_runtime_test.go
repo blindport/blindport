@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -28,8 +30,8 @@ func TestLoadStaticAccountTokenRequiresPrivateRegularFile(t *testing.T) {
 	if err := os.Chmod(path, 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadStaticAccountToken(path); err == nil {
-		t.Fatal("group-readable account token was accepted")
+	if _, err := loadStaticAccountToken(path); err == nil || !strings.Contains(err.Error(), "must be owner-only (mode 0600 or stricter), got 0640") {
+		t.Fatalf("group-readable account token error = %v", err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
@@ -144,11 +146,29 @@ func TestAccountRuntimeFailureDoesNotCancelOtherAccounts(t *testing.T) {
 }
 
 func TestAccountRuntimeReturnsErrorWhenAllAccountsFail(t *testing.T) {
-	err := runAccountRuntimes(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), testAccountRuntimes(), func(context.Context, *slog.Logger, accountRuntime) error {
-		return errors.New("failed")
+	var output bytes.Buffer
+	err := runAccountRuntimes(context.Background(), slog.New(slog.NewTextHandler(&output, nil)), testAccountRuntimes(), func(_ context.Context, _ *slog.Logger, runtime accountRuntime) error {
+		return fmt.Errorf("%s failed", runtime.name)
 	})
-	if err == nil || !strings.Contains(err.Error(), "all 2 account runtimes") {
+	if err == nil || !strings.Contains(err.Error(), "all 2 account runtimes") || !strings.Contains(err.Error(), `account "public": public failed`) || !strings.Contains(err.Error(), `account "private": private failed`) {
 		t.Fatalf("runAccountRuntimes() error = %v", err)
+	}
+	logged := output.String()
+	for _, expected := range []string{`account=public err="public failed"`, `account=private err="private failed"`} {
+		if !strings.Contains(logged, expected) {
+			t.Errorf("runtime log missing %q: %s", expected, logged)
+		}
+	}
+}
+
+func TestPreparedAccountRuntimePreservesTokenFailureCause(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-token")
+	accounts := []staticAccount{{Name: "public", TokenFile: missing, StateDir: filepath.Join(t.TempDir(), "state")}}
+	err := runPreparedAccountRuntimes(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), accounts, nil, framedRuntimeOptions{}, func(context.Context, *slog.Logger, accountRuntime, string) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), `account "public": load account token: inspect account token file`) || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("runPreparedAccountRuntimes() error = %v", err)
 	}
 }
 
