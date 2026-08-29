@@ -106,7 +106,7 @@
                       <span>Routing record type</span><code>CNAME</code>
                       <span>Name</span><code>*.{{ s.domain }}</code>
                       <span>Target</span><code>{{ s.relay_pool_domain }}</code>
-                      <p class="field-help">Only the TXT record is checked for ownership and payment. Add this value alongside existing SPF or site-verification TXT values at the same base domain. Add the wildcard CNAME when you are ready to route traffic. To also route <code>{{ s.domain }}</code>, point it to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain; at a DNS zone apex, use your provider's ALIAS, ANAME, or CNAME flattening.</p>
+                      <p class="field-help">Only the TXT record is checked for ownership and payment. Add this value alongside existing SPF or site-verification TXT values at the same base domain. Add the wildcard CNAME when you are ready to route traffic. It does not match the base itself. To also route <code>{{ s.domain }}</code>, point it separately to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain. At a DNS zone apex, mandatory NS and SOA records prevent a conventional CNAME; use the authoritative DNS service's ALIAS, ANAME, or CNAME-flattening feature, which normally returns synthesized A and/or AAAA answers.</p>
                     {% elif s.domain_verification_token %}
                       <span>Type</span><code>TXT</code>
                       <span>Name</span><code>{{ s.domain }}</code>

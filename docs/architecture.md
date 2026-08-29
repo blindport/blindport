@@ -373,10 +373,12 @@ Blindport Relay has three DNS operating models:
    to find the closest zone, nameservers, and their addresses, then queries vetted
    globally routable authoritative addresses directly without recursion and requires
    the authoritative answer bit. Neither that CNAME nor the wildcard's optional base
-   record is verified for payment. Subdomain
-   bases can use CNAME; zone apexes require provider ALIAS, ANAME, or CNAME
-   flattening. Exact-name verification does not follow CNAME chains or accept
-   failed lookups.
+   record is verified for payment. The wildcard record does not match the base itself,
+   so base routing uses a separate record to the same pool target. Subdomain bases can
+   use CNAME. Mandatory NS and SOA records prevent a conventional CNAME at a zone
+   apex, which instead uses the authoritative DNS service's ALIAS, ANAME, or
+   CNAME-flattening feature. Exact-name verification does not follow CNAME chains or
+   accept failed lookups.
 3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
    sets through multiple explicit recursive resolvers and retains one latest sanitized
    observation per name. It does not mutate authoritative DNS. A future fenced registrar or

@@ -187,7 +187,13 @@ def test_order_assets_use_anonymous_order_only_without_a_browser_token() -> None
     )
     assert "_blindport-challenge." not in _asset("templates/dashboard.html")
     assert "standard CNAME when the base is a subdomain" in _asset("templates/dashboard.html")
-    assert "ALIAS, ANAME, or CNAME flattening" in _asset("templates/dashboard.html")
+    assert "mandatory NS and SOA records prevent a conventional CNAME" in _asset(
+        "templates/dashboard.html"
+    )
+    assert "ALIAS, ANAME, or CNAME-flattening feature" in _asset("templates/dashboard.html")
+    assert "normally returns synthesized A and/or AAAA answers" in _asset(
+        "templates/dashboard.html"
+    )
     assert "Neither routing record is verified for payment." in _asset("templates/guide.html")
     assert "including a zone apex" in _asset("templates/guide.html")
     assert "`${body.domain} + *.${body.domain} (TLS passthrough)`" in landing

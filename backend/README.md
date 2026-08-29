@@ -112,4 +112,7 @@ it with a CNAME before payment. Wildcard claims instead retain a TXT ownership t
 base domain, which is the only proof required before payment. Publish it as an additional TXT value so
 it coexists with SPF and site-verification records. Their wildcard CNAME to a selected pool base
 controls routing and can be added later for a no-downtime cutover. The wildcard scope routes its base
-plus all descendants; pointing the base is optional and is not checked before payment.
+plus all descendants, although the wildcard DNS record does not match the base itself. Pointing the
+base separately to the same target is optional and is not checked before payment. Use CNAME for a
+subdomain base. At a zone apex, mandatory NS and SOA records prevent a conventional CNAME, so use the
+authoritative DNS service's ALIAS, ANAME, or CNAME-flattening feature.

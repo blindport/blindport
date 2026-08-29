@@ -56,10 +56,12 @@ Blindport Relay supports provider-managed names strictly below configured wildca
 suffixes, exact customer-owned names for 3,000 sats per 30 days, and customer-owned
 wildcard bases for 7,500 sats per 30 days. Exact customer names use one direct CNAME
 to a subscription-specific random target. Wildcard bases use a TXT ownership challenge
-and a wildcard CNAME to a Relay pool target. Their existing price routes both the base
+and a `*.<base>` CNAME to a Relay pool target. Their existing price routes both the base
 hostname and all descendants, and requires TLS passthrough to the customer origin.
-Pointing the base is optional and is not part of payment verification. A subdomain base
-can use CNAME; a DNS zone apex requires provider ALIAS, ANAME, or CNAME flattening.
+The wildcard record does not point the base itself; base routing is optional and is not
+part of payment verification. A subdomain base can use CNAME to the same target. At a
+DNS zone apex, where NS and SOA records prevent a conventional CNAME, use the
+authoritative DNS service's ALIAS, ANAME, or CNAME-flattening feature to that target.
 When pointed, the base needs origin certificate coverage separate from wildcard-only
 descendant coverage. The managed suffix apex is reserved for the provider and cannot be
 leased. Blindport currently reads customer DNS through a recursive resolver; it is not

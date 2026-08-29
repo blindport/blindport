@@ -1392,7 +1392,11 @@ def test_dashboard_payment_controls_require_successful_dns_check(
         assert "routing record type" in dns_guidance.lower()
         assert "*.payment-dns-failure.example" in dns_guidance
         assert "standard CNAME when the base is a subdomain" in dns_guidance
-        assert "ALIAS, ANAME, or CNAME flattening" in dns_guidance
+        assert (
+            "mandatory NS and SOA records prevent a conventional CNAME" in dns_guidance
+        )
+        assert "ALIAS, ANAME, or CNAME-flattening feature" in dns_guidance
+        assert "normally returns synthesized A and/or AAAA answers" in dns_guidance
         assert (
             "Only the TXT record is checked for ownership and payment" in dns_guidance
         )

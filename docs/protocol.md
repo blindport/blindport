@@ -190,9 +190,11 @@ without recursion and requires AA. A recursive TXT cache answer is never proof;
 one matching authoritative server is sufficient while secondaries converge. The
 displayed DNS-only `*.<base>` CNAME to the selected Relay pool target controls
 routing and can be added later for a no-downtime cutover. The claim routes both
-`<base>` and all descendants. Pointing `<base>` to the same target is optional and
-is not checked before payment. A subdomain base can use CNAME; a DNS zone apex
-requires provider ALIAS, ANAME, or CNAME flattening. Wildcard claims use TLS
+`<base>` and all descendants, but the wildcard DNS record does not match `<base>`.
+Pointing `<base>` separately to the same target is optional and is not checked before
+payment. A subdomain base can use CNAME. Because a DNS zone apex must retain its NS
+and SOA records, it cannot use a conventional CNAME; use the authoritative DNS
+service's ALIAS, ANAME, or CNAME-flattening feature there. Wildcard claims use TLS
 passthrough, and an origin certificate must cover every pointed name, including
 the base separately from wildcard descendants.
 

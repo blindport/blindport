@@ -15,12 +15,18 @@ Complete the Blindport ownership and routing records shown by the dashboard:
 ```text
 example.com                       TXT    blindport-verification=<Blindport token>
 *.example.com                     CNAME  <subscription pool target>
+example.com                       ALIAS  <subscription pool target>  # Optional base route
 ```
 
 Publish the Blindport value alongside any existing SPF or site-verification TXT
-values at `example.com`. Point the base separately if it should also be reachable.
-A subdomain base can use CNAME. A zone apex needs provider ALIAS, ANAME, or CNAME
-flattening.
+values at `example.com`. The wildcard CNAME routes descendants but does not match
+`example.com`, so publish the optional third record when the base should also be
+reachable. `ALIAS` is representative syntax: use the ALIAS, ANAME, or CNAME-flattening
+feature offered by the authoritative DNS service. A conventional CNAME cannot be used
+at a zone apex because that name also contains mandatory NS and SOA records. Apex alias
+features behave like a hostname target in the control panel and typically return
+synthesized A and/or AAAA answers to resolvers. For a subdomain base, use a normal CNAME
+to the same subscription pool target instead.
 
 The default Traefik router requests one certificate containing `example.com` and
 `*.example.com`. ACME wildcard issuance requires DNS-01, so Traefik creates this

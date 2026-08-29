@@ -414,11 +414,21 @@ operating models:
    proof at `<base>` before payment. Publish `blindport-verification=<token>` as an
    additional TXT value at that name, alongside existing SPF or site-verification
    TXT values. Its DNS-only `*.<base>` CNAME to the selected pool target controls
-   routing and can be added after setup. The wildcard price routes the base plus all
-   descendants, but pointing the base is optional and neither routing record is
-   checked for payment. Use CNAME
-   for a subdomain base, or provider ALIAS, ANAME, or CNAME flattening at a zone
-   apex. Blindport checks the applicable proof automatically when creating each
+   routing and can be added after setup. The wildcard record does not match `<base>`
+   itself. The wildcard price routes the base plus all descendants, but pointing the
+   base separately to the same pool target is optional and neither routing record is
+   checked for payment. Use CNAME for a subdomain base. A conventional CNAME cannot
+   be used at a zone apex because that owner name must also contain NS and SOA records.
+   [RFC 2181 section 6.1](https://www.rfc-editor.org/rfc/rfc2181.html#section-6.1)
+   requires those apex records, while
+   [section 10.1](https://www.rfc-editor.org/rfc/rfc2181.html#section-10.1)
+   prohibits other data at a CNAME owner. For Blindport's
+   hostname target, use the authoritative DNS service's ALIAS, ANAME, or
+   CNAME-flattening feature at the apex. These non-standard features normally resolve
+   the target and synthesize A and/or AAAA answers for clients. Direct apex A/AAAA
+   records are standards-compliant only when their addresses are explicitly maintained;
+   do not copy transient addresses resolved from the Relay pool target. Blindport checks
+   the applicable proof automatically when creating each
    initial or renewal invoice;
    `POST /api/v1/subscriptions/{public_id}/verify-domain` remains available for immediate
    feedback before paying. Configure
