@@ -372,15 +372,19 @@ class OfflineEntitlementSigner:
             "port": port,
             "transport": transport,
             "domain": claim_domain,
-            "iat": issued_at,
-            "nbf": issued_at,
-            "paid_through": paid_through,
-            "grace_through": grace_through,
-            "generation": payload_generation,
-            "jti": _b64url(token_id),
         }
         if scope == RelayHostnameScope.WILDCARD:
             payload["scope"] = scope.value
+        payload.update(
+            {
+                "iat": issued_at,
+                "nbf": issued_at,
+                "paid_through": paid_through,
+                "grace_through": grace_through,
+                "generation": payload_generation,
+                "jti": _b64url(token_id),
+            }
+        )
         raw_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         signature = self._key.sign(raw_payload)
         artifact = f"{_ARTIFACT_PREFIX}.{_b64url(raw_payload)}.{_b64url(signature)}"

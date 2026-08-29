@@ -48,6 +48,12 @@ def _payload(artifact: str) -> dict[str, object]:
     return json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
 
 
+def _payload_keys(artifact: str) -> list[str]:
+    encoded = artifact.split(".")[1]
+    raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    return list(json.loads(raw, object_pairs_hook=dict))
+
+
 def test_v3_provisioning_scopes_claims_and_legacy_omits_wildcards(
     app_client, monkeypatch, tmp_path
 ) -> None:
@@ -154,6 +160,8 @@ def test_v3_provisioning_scopes_claims_and_legacy_omits_wildcards(
     wildcard_payload = _payload(rows[wildcard["id"]]["edges"][0]["entitlement"])
     assert wildcard_payload["v"] == 2
     assert wildcard_payload["scope"] == "wildcard"
+    wildcard_keys = _payload_keys(rows[wildcard["id"]]["edges"][0]["entitlement"])
+    assert wildcard_keys.index("domain") < wildcard_keys.index("scope") < wildcard_keys.index("iat")
 
 
 def test_v3_resolve_is_strict_and_returns_exact_subscription_attribution(app_client) -> None:
