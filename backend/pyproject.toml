@@ -1,6 +1,6 @@
 [project]
 name = "blindport"
-version = "0.2.3"
+version = "0.3.0"
 description = "Blindport backend: dedicated IP, reserved TCP/UDP port, and SNI-routed relay subscriptions."
 authors = [{ name = "Blindport", email = "support@blindport.com" }]
 license = "MIT"

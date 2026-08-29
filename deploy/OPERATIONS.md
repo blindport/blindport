@@ -35,7 +35,7 @@ but report vulnerabilities through the process in [SECURITY.md](../SECURITY.md).
 
 If GitHub Actions and GHCR are inside your trust boundary, use an immutable
 release reference for every Blindport image, for example
-`ghcr.io/blindport/blindport-relay:v0.2.3@sha256:<manifest-digest>`. Download the
+`ghcr.io/blindport/blindport-relay:v0.3.0@sha256:<manifest-digest>`. Download the
 `blindport-images.env` asset from the matching
 [GitHub release](https://github.com/blindport/blindport/releases). Otherwise,
 follow the self-hosting guide to verify the signed source and build local images.

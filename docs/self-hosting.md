@@ -60,8 +60,8 @@ network policy are configured and tested.
    gpg --show-keys --fingerprint release-key.asc
    gpg --import release-key.asc
    git fetch --tags origin
-   git verify-tag v0.2.3
-   git switch --detach v0.2.3
+   git verify-tag v0.3.0
+   git switch --detach v0.3.0
    git verify-commit HEAD
 
    docker build -f docker/backend.Dockerfile --target runtime \

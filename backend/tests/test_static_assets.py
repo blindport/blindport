@@ -669,7 +669,7 @@ def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) ->
 
     assert swagger.status_code == 200
     assert "Swagger UI" in swagger.text
-    assert openapi.json()["info"]["version"] == "0.2.3"
+    assert openapi.json()["info"]["version"] == "0.3.0"
     assert signup["account_id"] in dashboard.text
     assert "User #" not in dashboard.text
     assert "User</th>" not in admin.text

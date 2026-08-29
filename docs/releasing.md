@@ -36,13 +36,13 @@ access to the release workflow and release maintainers.
 
 ```sh
 git status --short
-git tag -s v0.2.3 -u 18EDE4726C1414844923D6FF14EABFF739C16205 \
-  -m "Blindport v0.2.3"
-git verify-tag v0.2.3
-git push origin v0.2.3
+git tag -s v0.3.0 -u 18EDE4726C1414844923D6FF14EABFF739C16205 \
+  -m "Blindport v0.3.0"
+git verify-tag v0.3.0
+git push origin v0.3.0
 ```
 
-Prereleases such as `v0.2.3-rc.1` publish only their exact image tags. Stable
+Prereleases such as `v0.3.0-rc.1` publish only their exact image tags. Stable
 releases also promote `vMAJOR.MINOR` and `latest`; versions beginning with `v1`
 or later also promote `vMAJOR`.
 
