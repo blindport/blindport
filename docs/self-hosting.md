@@ -107,16 +107,21 @@ network policy are configured and tested.
 
    ```sh
    cd deploy/production
-   docker compose --env-file .env -f compose.yaml pull
+   ./compose.sh pull
    ```
 
    Then run the one-shot migration and start the single-host topology:
 
    ```sh
-   docker compose --env-file .env -f compose.yaml --profile tools run --rm migrate
-   docker compose --env-file .env -f compose.yaml up -d
-   docker compose --env-file .env -f compose.yaml ps
+   ./compose.sh --profile tools run --rm migrate
+   ./compose.sh up -d
+   ./compose.sh ps
    ```
+
+   When `WIREGUARD_PUBLIC_IPS` is configured, pass `--wireguard` for the
+   single-host routed topology or `--wireguard-control` when this host controls
+   a separate routed Relay. The wrapper refuses a base-only operation while
+   routed inventory is configured.
 
 For split deployment, migrate and start `deploy/split/control` first, then start
 `deploy/split/relay`. Verify readiness and exercise one real path for every

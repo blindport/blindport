@@ -430,11 +430,16 @@ plaintext HTTP upstream is absent; normal Blindport Relay TLS remains on its usu
 Run the migration as a one-shot job before starting or replacing the API:
 
 ```sh
-docker compose --env-file .env -f compose.yaml pull
-docker compose --env-file .env -f compose.yaml --profile tools run --rm migrate
-docker compose --env-file .env -f compose.yaml up -d
-docker compose --env-file .env -f compose.yaml ps
+./compose.sh pull
+./compose.sh --profile tools run --rm migrate
+./compose.sh up -d
+./compose.sh ps
 ```
+
+Use `compose.sh` for every production Compose operation. When
+`WIREGUARD_PUBLIC_IPS` is nonempty, it refuses to invoke Docker unless the
+operator selects `--wireguard` for the single-host routed topology or
+`--wireguard-control` when production controls a separate routed Relay host.
 
 ## Split control host
 
@@ -475,14 +480,16 @@ do not grant `NET_ADMIN`, and do not mount the key. Apply
 single overlay configures both services:
 
 ```sh
-docker compose --env-file .env -f compose.yaml -f compose.wireguard.yaml up -d
+./compose.sh --wireguard up -d
 ```
 
 When the one-host production backend provisions routed inventory through a separate
 split relay host, apply `compose.wireguard-control.yaml` on the production host and
 `compose.wireguard.yaml` in `deploy/split/relay` on the relay host. The control-only
 overlay does not grant `NET_ADMIN`, mount the relay private key, or enable WireGuard
-on the production host's local Relay.
+on the production host's local Relay. Run production control operations through
+`./compose.sh --wireguard-control` so configured inventory cannot be hidden by an
+accidental base-only deployment.
 
 Persist IPv4 forwarding only on each routed relay host before enabling its overlay:
 

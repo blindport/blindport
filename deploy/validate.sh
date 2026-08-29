@@ -12,6 +12,112 @@ compose_check() {
         config --quiet
 }
 
+production_compose_guard_check() {
+    guard="$root/deploy/production/compose.sh"
+    guard_tmp="$(mktemp -d "${TMPDIR:-/tmp}/blindport-compose-guard.XXXXXX")"
+    trap 'rm -rf "$guard_tmp"' 0 1 2 15
+
+    fake_docker="$guard_tmp/docker"
+    cat > "$fake_docker" <<'EOF'
+#!/bin/sh
+set -eu
+: "${BLINDPORT_COMPOSE_CAPTURE:?}"
+printf '%s\n' "$@" > "$BLINDPORT_COMPOSE_CAPTURE"
+EOF
+    chmod 0700 "$fake_docker"
+
+    empty_env="$guard_tmp/empty.env"
+    enabled_env="$guard_tmp/enabled.env"
+    capture="$guard_tmp/args"
+    error_output="$guard_tmp/error"
+    printf 'WIREGUARD_PUBLIC_IPS=\n' > "$empty_env"
+    printf 'WIREGUARD_PUBLIC_IPS=192.0.2.10\n' > "$enabled_env"
+
+    BLINDPORT_DOCKER_BIN="$fake_docker" \
+        BLINDPORT_ENV_FILE="$empty_env" \
+        BLINDPORT_COMPOSE_CAPTURE="$capture" \
+        "$guard" config --quiet
+    python3 - "$capture" "$empty_env" "$root/deploy/production/compose.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+actual = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+assert actual == ["compose", "--env-file", sys.argv[2], "-f", sys.argv[3], "config", "--quiet"]
+PY
+
+    rm -f "$capture"
+    if BLINDPORT_DOCKER_BIN="$fake_docker" \
+        BLINDPORT_ENV_FILE="$enabled_env" \
+        BLINDPORT_COMPOSE_CAPTURE="$capture" \
+        "$guard" config --quiet 2> "$error_output"; then
+        printf '%s\n' 'production Compose guard accepted routed inventory without an overlay' >&2
+        exit 1
+    fi
+    test ! -e "$capture"
+    python3 - "$error_output" <<'PY'
+import sys
+from pathlib import Path
+
+error = Path(sys.argv[1]).read_text(encoding="utf-8")
+assert "select --wireguard or --wireguard-control" in error
+PY
+
+    BLINDPORT_DOCKER_BIN="$fake_docker" \
+        BLINDPORT_ENV_FILE="$enabled_env" \
+        BLINDPORT_COMPOSE_CAPTURE="$capture" \
+        "$guard" --wireguard-control up -d backend
+    python3 - \
+        "$capture" \
+        "$enabled_env" \
+        "$root/deploy/production/compose.yaml" \
+        "$root/deploy/production/compose.wireguard-control.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+actual = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+assert actual == [
+    "compose",
+    "--env-file",
+    sys.argv[2],
+    "-f",
+    sys.argv[3],
+    "-f",
+    sys.argv[4],
+    "up",
+    "-d",
+    "backend",
+]
+PY
+
+    BLINDPORT_DOCKER_BIN="$fake_docker" \
+        BLINDPORT_ENV_FILE="$enabled_env" \
+        BLINDPORT_COMPOSE_CAPTURE="$capture" \
+        "$guard" --wireguard ps
+    python3 - \
+        "$capture" \
+        "$enabled_env" \
+        "$root/deploy/production/compose.yaml" \
+        "$root/deploy/production/compose.wireguard.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+actual = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+assert actual == [
+    "compose",
+    "--env-file",
+    sys.argv[2],
+    "-f",
+    sys.argv[3],
+    "-f",
+    sys.argv[4],
+    "ps",
+]
+PY
+
+    rm -rf "$guard_tmp"
+    trap - 0 1 2 15
+}
+
 backend_healthcheck_policy_check() {
     directory="$1"
     docker compose \
@@ -753,6 +859,7 @@ compose_check deploy/split/control
 compose_check deploy/split/relay
 compose_check deploy/ha-lab
 compose_check examples/docker
+production_compose_guard_check
 backend_healthcheck_policy_check deploy/production
 backend_healthcheck_policy_check deploy/split/control
 port_capacity_policy_check deploy/production deploy/production
