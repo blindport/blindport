@@ -30,7 +30,6 @@ RUN apk add --no-cache ca-certificates iproute2 libcap-utils nftables \
  && install -d -o blindport -g blindport -m 0700 /var/lib/blindport \
  && setcap cap_net_admin=ep /usr/sbin/nft
 COPY --from=build /out/blindportd /usr/local/bin/blindportd
-RUN setcap cap_net_admin=ep /usr/local/bin/blindportd
 USER 10001:10001
 ENV BLINDPORT_STATE_DIR=/var/lib/blindport
 ENTRYPOINT ["blindportd"]
