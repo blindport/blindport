@@ -219,7 +219,7 @@ def test_landing_explanation_has_no_horizontal_overflow(
             )
             assert ONION_HOST not in page.locator(".site-footer").inner_text()
             assert page.get_by_role("link", name="Onion", exact=True).count() == 0
-            page.get_by_role("link", name="Choose Relay").click()
+            page.get_by_role("link", name="Start with Relay").click()
             assert page.locator(
                 'input[name="orderProduct"][value="relay"]'
             ).is_checked()

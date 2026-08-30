@@ -1,21 +1,21 @@
 {% extends "base.html" %}
-{% block title %}{{ brand_name }} | Private-origin ingress{% endblock %}
+{% block title %}{{ brand_name }} | Public ingress for self-hosting{% endblock %}
 {% block content %}
 <section class="intro content-width" aria-labelledby="intro-title">
   <div class="intro-copy">
-    <p class="eyebrow">Best-effort public ingress beta</p>
+    <p class="eyebrow">Public ingress for self-hosters</p>
     <h1 id="intro-title">{{ brand_name }}</h1>
-    <p class="lead">A leased public endpoint for self-hosted services you intend to keep online.</p>
-    <p>Publish from your own hardware, even behind CGNAT, without inbound port forwarding in framed mode or sending ordinary visitors to your residential IP. Your service and data stay on your host, where the agent handles automatic Relay HTTPS.</p>
+    <p class="lead">Put a self-hosted service on the public internet without publishing your residential IP or handing the ingress provider your TLS keys.</p>
+    <p><code>blindportd</code> opens an outbound tunnel from your Linux host, so Relay and Port work behind CGNAT without router changes or DDNS. For web services, Blindport routes the encrypted TLS stream by visible SNI; your host owns the certificate and decrypts the request.</p>
     <div class="intro-actions">
-      <a class="button-link" href="#products">Choose a public endpoint</a>
-      <a class="text-link" href="#tls-title">See the TLS boundary</a>
+      <a class="button-link product-jump" href="#order" data-order-product="relay">Start with Relay</a>
+      <a class="text-link" href="#products">Compare endpoints</a>
     </div>
   </div>
   <dl class="intro-facts" aria-label="Service summary">
-    <div><dt>Leased identity</dt><dd>TLS hostname, exact socket, or a routed dedicated /32</dd></div>
+    <div><dt>Origin network</dt><dd>Relay and Port visitors reach Blindport, not your residential address</dd></div>
+    <div><dt>Relay TLS</dt><dd>Certificate keys and plaintext stay on your host</dd></div>
     <div><dt>Account</dt><dd>One bearer token; no email, name, or profile required</dd></div>
-    <div><dt>Service term</dt><dd>Relay and Port: {% if yearly_billing_enabled %}30 or 365 days{% else %}30 days{% endif %}. Blindport IP: one routed dedicated /32 over WireGuard, annual-only for 365 days; Bitcoin via {% if stablecoin_enabled %}Lightning or stablecoin checkout{% else %}direct Lightning payment{% endif %}</dd></div>
   </dl>
 </section>
 
@@ -33,7 +33,7 @@
     {% set ip_wireguard_available = ip.available and ip.capacity.wireguard_available %}
     <article>
       <h3>Blindport Relay</h3>
-      <p class="product-purpose">One exact hostname, or a wildcard price for <code>base</code> plus <code>*.base</code></p>
+      <p class="product-purpose">Best for a blog, web app, dashboard, or API</p>
       <p class="price-line">{{ relay.relay_scopes.exact.monthly_price_sats }} <span>sats / 30 days for one exact hostname{% set relay_usd = approximate_usd(relay.relay_scopes.exact.monthly_price_sats) %}{% if relay_usd %} · about {{ relay_usd }} USD{% endif %}</span></p>
       <p class="price-line">{{ relay.relay_scopes.wildcard.monthly_price_sats }} <span>sats / 30 days for <code>base</code> plus <code>*.base</code>{% set relay_wildcard_usd = approximate_usd(relay.relay_scopes.wildcard.monthly_price_sats) %}{% if relay_wildcard_usd %} · about {{ relay_wildcard_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
@@ -46,7 +46,7 @@
     </article>
     <article>
       <h3>Blindport Port</h3>
-      <p class="product-purpose">One TCP or UDP socket</p>
+      <p class="product-purpose">One TCP or UDP socket for a raw service</p>
       <p class="price-line">{{ port.monthly_price_sats }} <span>sats / 30 days{% set port_usd = approximate_usd(port.monthly_price_sats) %}{% if port_usd %} · about {{ port_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>Exact shared public IP, port, and transport</li>
@@ -58,7 +58,7 @@
     </article>
     <article{% if not ip_wireguard_available %} class="is-unavailable"{% endif %}>
       <h3>Blindport IP</h3>
-      <p class="product-purpose">One routed dedicated /32 over WireGuard</p>
+      <p class="product-purpose">Best for a complete public IPv4 interface</p>
       <p class="price-line">{{ ip.yearly_price_sats }} <span>sats / 365 days, annual-only over WireGuard{% set ip_usd = approximate_usd(ip.yearly_price_sats) %}{% if ip_usd %} · about {{ ip_usd }} USD{% endif %}</span></p>
       <ul class="check-list">
         <li>One routed dedicated /32 is carried over WireGuard in both directions</li>
@@ -81,8 +81,8 @@
       <p>One daemon can keep every framed mapping in an account connected. The paid endpoint remains assigned while the tunnel reconnects.</p>
     </header>
     <ol class="workflow-steps">
-      <li><span>1</span><div><strong>Choose</strong><p>Pick a hostname, exact socket, or routed dedicated /32.</p></div></li>
-      <li><span>2</span><div><strong>Pay</strong><p>Settle one invoice for the fixed service term{% if stablecoin_enabled %}, directly or through stablecoin checkout{% endif %}.</p></div></li>
+      <li><span>1</span><div><strong>Choose</strong><p>Start with Relay for a blog or web app. Choose Port for raw TCP or UDP, or IP for a complete public IPv4 interface.</p></div></li>
+      <li><span>2</span><div><strong>Pay</strong><p>Back up the account token, then settle one invoice for the fixed service term{% if stablecoin_enabled %}, directly or through stablecoin checkout{% endif %}.</p></div></li>
       <li><span>3</span><div><strong>Connect</strong><p>Run <code>blindportd</code> beside the service; it dials outward.</p></div></li>
     </ol>
   </div>
@@ -92,8 +92,9 @@
   <div class="content-width tls-layout">
     <div class="tls-copy">
       <p class="eyebrow">Blindport Relay HTTPS</p>
-      <h2 id="tls-title">Automatic HTTPS, local app port</h2>
-      <p>After you accept the Let's Encrypt agreement, <code>blindportd</code> obtains and renews the certificate, handles HTTPS on your host, and forwards plaintext to your app at a local target such as <code>127.0.0.1:8080</code>.</p>
+      <h2 id="tls-title">TLS terminates on your host</h2>
+      <p>After you accept the Let's Encrypt agreement, <code>blindportd</code> obtains and renews the certificate, decrypts HTTPS on your host, and forwards plaintext only to your local app at a target such as <code>127.0.0.1:8080</code>.</p>
+      <p>The Blindport edge uses the visible SNI hostname to route the original encrypted stream. It does not receive the certificate private key or HTTP plaintext.</p>
       <p>Advanced TLS passthrough remains available when your existing server must keep the certificate and terminate TLS itself.</p>
       <p><a href="/guide#tls">Read the TLS guide</a>.</p>
     </div>
@@ -101,9 +102,9 @@
       <div class="tls-path" role="img" aria-label="Visitor HTTPS passes through Blindport to the local agent and app">
         <span class="tls-node">Visitor<small>Starts TLS</small></span>
         <span class="tls-link" aria-hidden="true"></span>
-        <span class="tls-node tls-node-relay">Blindport<small>Routes the connection</small></span>
+        <span class="tls-node tls-node-relay">Blindport<small>Routes by visible SNI</small></span>
         <span class="tls-link" aria-hidden="true"></span>
-        <span class="tls-node tls-node-origin">Your host<small>Agent HTTPS to local app</small></span>
+        <span class="tls-node tls-node-origin">Your host<small>Terminates TLS</small></span>
       </div>
       <figcaption id="tls-caption">Blindport still observes SNI, connection timing, volume, and active network addresses. Encrypted ClientHello cannot be routed by the current Relay service.</figcaption>
     </figure>
@@ -140,7 +141,7 @@
     <header class="section-heading">
       <p class="eyebrow">Pricing and configuration</p>
       <h2 id="order-title">Choose public ingress</h2>
-      <p>Choose a fixed service term and create a pending order. A new account needs no identity profile and uses one bearer token, shown once; payment happens in the dashboard.</p>
+      <p>Most blogs, dashboards, and web apps should start with Relay. Choose a managed hostname to skip DNS setup. A new account needs no identity profile and uses one bearer token, shown once; payment happens in the dashboard.</p>
     </header>
 
     <div class="order-shell">
@@ -188,7 +189,7 @@
                 <span class="availability">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not yearly_billing_enabled %}Annual billing disabled{% elif not ip.enabled %}Unavailable{% else %}No free WireGuard inventory{% endif %}</span>
               </label>
             </div>
-            <p id="ipAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days.</p>
+            <p id="ipAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, annual-only for 365 days.</p>
           </fieldset>
           <div class="form-actions form-actions-end">
             <button type="button" id="toConfigBtn" disabled>Configure plan</button>
@@ -197,7 +198,7 @@
 
         <section id="configPanel" class="order-panel" aria-labelledby="config-heading" hidden>
           <h3 id="config-heading">Configure <span id="configProductName"></span></h3>
-          <div id="ipConfig" class="notice" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days. It requires Linux kernel WireGuard with <code>CAP_NET_ADMIN</code> or equivalent root privileges.</div>
+          <div id="ipConfig" class="notice" hidden>Blindport IP is one routed dedicated /32 over WireGuard, annual-only for 365 days. It requires Linux kernel WireGuard with <code>CAP_NET_ADMIN</code> or equivalent root privileges.</div>
           <fieldset id="portConfig" hidden>
             <legend>Transport</legend>
             <div class="segmented">

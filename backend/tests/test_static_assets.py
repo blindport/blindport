@@ -364,10 +364,11 @@ def test_content_covers_product_boundaries_and_client_operations() -> None:
     for term in (
         "CGNAT",
         "residential IP",
-        "A leased public endpoint",
+        "without publishing your residential IP",
+        "Certificate keys and plaintext stay on your host",
         "Live pricing and availability",
         "Three steps, no inbound router changes",
-        "Automatic HTTPS, local app port",
+        "TLS terminates on your host",
         "Automatic HTTPS to a local plaintext app port",
         "Different tools optimize for different jobs",
         "Quick preview tunnel",
@@ -650,7 +651,9 @@ def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monke
     assert (
         '<meta name="description" content="Public reach for self-hosted services.' in response.text
     )
-    assert '<meta property="og:title" content="Blindport">' in response.text
+    assert (
+        '<meta property="og:title" ' 'content="Blindport | Public ingress for self-hosters">'
+    ) in response.text
     assert '<meta property="og:type" content="website">' in response.text
     assert '<meta property="og:url" content="https://blindport.test/">' in response.text
     assert (
@@ -676,7 +679,10 @@ def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monke
     monkeypatch.setattr(pages.settings, "BRAND_NAME", "Bridge")
     monkeypatch.setattr(pages.settings, "BRAND_TAGLINE", "Public ingress for private origins.")
     customized = client.get("/")
-    assert '<meta property="og:title" content="Bridge">' in customized.text
+    assert (
+        '<meta property="og:title" content="Bridge | Public ingress for self-hosters">'
+        in customized.text
+    )
     assert (
         '<meta property="og:image" content="https://blindport.test/static/brand-avatar.png">'
     ) in customized.text
@@ -854,10 +860,7 @@ def test_landing_ip_order_uses_annual_wireguard_only_metadata(app_client, monkey
     assert 'name="orderProduct" value="ip" data-monthly-price=' not in landing.text
     assert 'id="orderTermControl"' in landing.text
     assert 'id="ipAnnualOnlyHint" class="field-help" hidden' in landing.text
-    assert (
-        "one routed dedicated /32 over WireGuard, available annual-only for 365 days"
-        in landing.text
-    )
+    assert "one routed dedicated /32 over WireGuard, annual-only for 365 days" in landing.text
 
 
 def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monkeypatch) -> None:

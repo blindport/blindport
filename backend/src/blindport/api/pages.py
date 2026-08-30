@@ -161,6 +161,7 @@ def _ctx(request: Request, **extra) -> dict:
         else f" -backend={shlex.quote(request_origin)}"
     )
     share_titles = {
+        "/": f"{settings.BRAND_NAME} | Public ingress for self-hosters",
         "/guide": f"Guide | {settings.BRAND_NAME}",
         "/terms": f"Service terms | {settings.BRAND_NAME}",
     }

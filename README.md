@@ -1,11 +1,10 @@
 # Blindport
 
-Blindport is an experimental Bitcoin-paid reachability service for self-hosted
-origins. Framed delivery uses an authenticated outbound tunnel to multiplex TCP
-streams or UDP datagrams to configured local upstreams. Routed Blindport IP delivery
-uses WireGuard to assign a static provider-routed public IPv4 `/32` directly to
-the customer host without NAT. The same address receives inbound traffic and
-sources outbound traffic sent through the interface.
+Blindport gives self-hosters a public endpoint without publishing a residential
+origin address or terminating Relay TLS at the provider edge. The customer agent
+creates an authenticated outbound tunnel, so Relay and Port work behind CGNAT
+without router changes or DDNS. Routed Blindport IP uses WireGuard to assign a
+static provider-routed public IPv4 `/32` directly to the customer host without NAT.
 
 Use framed Relay or Port delivery by default for domains and individual services:
 it needs no network-administration capability and works with ordinary relay ingress
@@ -25,6 +24,42 @@ placements, and `brand-social.png` for 1200 by 630 link previews.
 
 > Blindport is pre-1.0 software. Review the threat model, deployment manifests,
 > and operational requirements before exposing production services.
+
+## Hosted quick start
+
+For a blog, dashboard, web app, or API, start with **Blindport Relay**:
+
+1. Make sure the service is reachable on the Linux host where you will run
+   `blindportd`, for example at `127.0.0.1:8080`.
+2. At [blindport.com](https://blindport.com/#order), choose Relay and a managed
+   hostname to avoid DNS setup. Create the order, then store the one-time account
+   token in a password manager. No email or identity profile is required.
+3. In the dashboard, pay the Lightning invoice. After the endpoint activates,
+   open **Connect your service**, enter the local target, and accept the Let's
+   Encrypt Subscriber Agreement for automatic HTTPS.
+4. Install the agent, use the dashboard's **Copy config install** command, then
+   start a persistent user service with that generated configuration:
+
+   ```sh
+   curl -fsSL https://blindport.com/downloads/install.sh | sh
+   export PATH="$HOME/.local/bin:$PATH"
+   blindportd -install-user-service
+   ```
+
+5. Confirm the agent is connected, then open the assigned HTTPS hostname:
+
+   ```sh
+   systemctl --user status blindportd.service
+   journalctl --user -u blindportd.service -f
+   curl --fail --show-error "https://YOUR_ASSIGNED_HOSTNAME/"
+   ```
+
+The dashboard generates the owner-only token path and mapping configuration for
+the active account. Keep the token and agent state private and backed up. For a
+container deployment, use the runnable [Docker Relay example](examples/docker/README.md).
+See the [hosted installation guide](https://blindport.com/guide) for the guided
+setup and the [agent reference](docs/agent.md) for static mappings, Docker labels,
+multiple accounts, PROXY protocol, and Tor transport.
 
 The three products use distinct ingress identities:
 
@@ -148,25 +183,6 @@ See [Self-hosting Blindport](docs/self-hosting.md) for control-plane and relay
 deployment. The [high-availability notes](docs/ha.md) describe the local fault lab and
 the additional infrastructure required for a two-provider deployment. Agent configuration is documented in [docs/agent.md](docs/agent.md).
 Maintainer release steps are documented in [docs/releasing.md](docs/releasing.md).
-
-For active hosted endpoints, install the Linux agent as your normal user:
-
-```sh
-curl -fsSL https://blindport.com/downloads/install.sh | sh
-```
-
-In the dashboard, set each local target (for example, `127.0.0.1:8080`), explicitly
-accept the Let's Encrypt Subscriber Agreement for automatic Relay HTTPS, and install
-the generated version 2 config. Then start the persistent user service:
-
-```sh
-blindportd -install-user-service
-```
-
-The command prompts for the account token if needed. Docker deployments use
-`BLINDPORT_TOKEN` and a named volume for client identity and certificate state.
-The runnable [Docker example](examples/docker/README.md) connects an existing
-paid Relay directly to an application container without adding a reverse proxy.
 
 ## Development stack
 
