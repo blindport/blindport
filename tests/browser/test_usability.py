@@ -207,7 +207,7 @@ def test_landing_explanation_has_no_horizontal_overflow(
         ):
             page.goto(browser_server.base_url, wait_until="networkidle")
             assert page.get_by_role(
-                "heading", name="Different tools optimize for different jobs"
+                "heading", name="Managed simplicity, local privacy"
             ).is_visible()
             assert (
                 page.get_by_role("heading", name="Blindport", exact=True).count() == 1
@@ -219,7 +219,7 @@ def test_landing_explanation_has_no_horizontal_overflow(
             )
             assert ONION_HOST not in page.locator(".site-footer").inner_text()
             assert page.get_by_role("link", name="Onion", exact=True).count() == 0
-            page.get_by_role("link", name="Start with Relay").click()
+            page.get_by_role("link", name="Choose your address").click()
             assert page.locator(
                 'input[name="orderProduct"][value="relay"]'
             ).is_checked()
@@ -237,7 +237,7 @@ def test_landing_ip_order_is_wireguard_and_annual_only(
     page = context.new_page()
     try:
         page.goto(browser_server.base_url, wait_until="networkidle")
-        page.get_by_role("link", name="Choose IP").click()
+        page.locator('input[name="orderProduct"][value="ip"]').check()
         assert page.locator('input[name="orderProduct"][value="ip"]').is_checked()
         assert page.locator(
             'input[name="orderBillingTerm"][value="yearly"]'
@@ -368,7 +368,7 @@ def test_landing_wildcard_relay_order_uses_wildcard_price_and_scope(
     page = context.new_page()
     try:
         page.goto(browser_server.base_url, wait_until="networkidle")
-        page.get_by_role("link", name="Choose Relay").click()
+        page.locator('input[name="orderProduct"][value="relay"]').check()
         page.locator("#toConfigBtn").click()
         page.locator('input[name="relayHostnameScope"][value="wildcard"]').check()
         assert page.locator("#managedMode").is_disabled()

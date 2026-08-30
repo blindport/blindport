@@ -277,10 +277,8 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert "Enter the exact hostname to publish" in dashboard
     assert 'name="relayHostnameScope"' in landing
     assert 'name="dashboardRelayHostnameScope"' in dashboard
-    assert (
-        "Automatic HTTPS to a local plaintext app port for exact names; TLS passthrough for "
-        "wildcard bases" in landing
-    )
+    assert 'id="why" class="explain-band"' in landing
+    assert "landing-boundaries" in landing
     assert 'id="accountToken" type="password" readonly' in dashboard
     assert 'id="copyInvoiceBtn"' in dashboard
     assert 'id="qrBox" role="img" aria-label="Lightning invoice QR code"' in dashboard
@@ -337,10 +335,9 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert '<a href="mailto:security@blindport.com">security@blindport.com</a>' in guide
     assert "18ED E472 6C14 1484 4923 D6FF 14EA BFF7 39C1 6205" in guide
 
-    assert landing.count('class="tls-path" role="img" aria-label=') == 1
     landing_inspector = _inspect(landing)
-    assert landing_inspector.tables == 1
-    assert landing_inspector.captions == 1
+    assert landing_inspector.tables == 0
+    assert landing_inspector.captions == 0
     assert landing_inspector.unscoped_headers == 0
     assert landing_inspector.table_cells_without_labels == 0
 
@@ -357,37 +354,43 @@ def test_templates_have_accessible_external_only_structure() -> None:
     assert "{{ reminder.subscription_id }}" not in templates[4]
 
 
-def test_content_covers_product_boundaries_and_client_operations() -> None:
+def test_content_covers_landing_promise_and_client_operations() -> None:
     landing = _asset("templates/landing.html")
     guide = _asset("templates/guide.html")
 
     for term in (
-        "CGNAT",
         "residential IP",
-        "without publishing your residential IP",
-        "Certificate keys and plaintext stay on your host",
-        "Live pricing and availability",
-        "Three steps, no inbound router changes",
-        "TLS terminates on your host",
-        "Automatic HTTPS to a local plaintext app port",
-        "Different tools optimize for different jobs",
-        "Quick preview tunnel",
-        "Managed application gateway",
-        "Community or self-hosted relay",
-        "fully MIT-licensed, self-hostable stack",
-        "routed public IPv4 /32",
-        "best effort",
+        "cloud gateway",
+        "maintaining a VPS",
+        "durable public HTTPS address",
+        "An HTTPS subdomain is included",
+        "pay in sats over Lightning",
+        "Managed simplicity, local privacy",
+        "Preview tunnels are useful for short-lived sharing",
+        "Easy to start",
+        "Private by design",
+        "Shared cost",
+        "Online in three steps",
+        "generated agent command",
+        "No router changes required",
+        "best-effort beta",
         "not an anonymity network",
-        "Tor SOCKS5",
         "One routed dedicated /32 over WireGuard",
-        "One TCP or UDP socket",
+        "One shared-IP tuple",
         "Managed subdomain",
         "Bring your own subdomain",
         "exact DNS-only CNAME record",
-        "fixed service term",
-        "amd64",
+        "CAP_NET_ADMIN",
     ):
         assert term in landing
+    for removed_term in (
+        "Live pricing and availability",
+        "TLS terminates on your host",
+        "Different tools optimize for different jobs",
+        "Quick preview tunnel",
+        "Advanced TLS passthrough remains available",
+    ):
+        assert removed_term not in landing
     assert not re.search(r"\d+ available", landing)
 
     for term in (
@@ -563,8 +566,8 @@ def test_css_defines_mobile_layout_targets_and_responsive_tables() -> None:
     assert ":focus-visible" in css
     assert "scroll-padding-top: 80px" in css
     assert "scroll-margin-top: 80px" in css
-    assert ".tls-path" in css
-    assert "clip-path: polygon(0 0, 100% 50%, 0 100%)" in css
+    assert ".concept-list" in css
+    assert ".landing-boundaries" in css
     assert 'content: ""' in css
     assert ".dashboard-grid" in css
     assert ".dashboard-sidebar" in css
@@ -855,7 +858,7 @@ def test_landing_ip_order_uses_annual_wireguard_only_metadata(app_client, monkey
 
     landing = client.get("/")
 
-    assert 'data-order-product="ip">Choose IP</a>' in landing.text
+    assert 'name="orderProduct" value="ip"' in landing.text
     assert 'name="orderProduct" value="ip" data-yearly-price=' in landing.text
     assert 'name="orderProduct" value="ip" data-monthly-price=' not in landing.text
     assert 'id="orderTermControl"' in landing.text
@@ -890,7 +893,7 @@ def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monke
 
     assert "Prices are denominated in Bitcoin (BTC)." in landing.text
     assert "One bitcoin is 100 million satoshis (sats)." in landing.text
-    assert "about $48.00 USD" in landing.text
+    assert "about $1.92 USD" in landing.text
     assert 'data-btc-usd="64000"' in dashboard.text
     assert "about $0.96 USD" in dashboard.text
 
