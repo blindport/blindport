@@ -414,6 +414,18 @@ function describeNwcPaymentError(code) {
   return messages[code] || null;
 }
 
+function describeClinkPaymentError(code) {
+  const messages = {
+    denied: "The CLINK wallet denied this payment request.",
+    expired: "The CLINK wallet rejected the expired payment request.",
+    invalid_amount: "The CLINK wallet does not allow this payment amount.",
+    invalid_pointer: "This CLINK debit pointer is no longer valid.",
+    rate_limited: "The CLINK wallet is rate limiting payment requests.",
+    temporary_failure: "The CLINK wallet could not process this payment.",
+  };
+  return messages[code] || null;
+}
+
 async function checkNwcBudget(status, requiredSats = null) {
   let budget;
   try {
@@ -475,7 +487,7 @@ function preparePaymentPanel(method) {
 }
 
 function setCardPaymentButtonsDisabled(card, disabled) {
-  card.querySelectorAll(".payBtn, .stablecoinPayBtn, .nwcPayBtn").forEach((button) => {
+  card.querySelectorAll(".payBtn, .stablecoinPayBtn, .walletPayBtn").forEach((button) => {
     button.disabled = disabled;
     if (!disabled && button.dataset.originalText) {
       button.textContent = button.dataset.originalText;
@@ -640,8 +652,10 @@ async function pollPayment(payment, status) {
       return true;
     }
     if (current.status === "expired" || current.status === "failed") {
-      const errorMessage = describeNwcPaymentError(current.nwc_error_code);
-      if (current.method === "nwc" && errorMessage) {
+      const errorMessage = current.method === "clink"
+        ? describeNwcPaymentError(current.nwc_error_code) || describeClinkPaymentError(current.clink_error_code)
+        : describeNwcPaymentError(current.nwc_error_code);
+      if (["nwc", "clink"].includes(current.method) && errorMessage) {
         status.textContent = errorMessage;
         return false;
       }
@@ -654,7 +668,7 @@ async function pollPayment(payment, status) {
   return false;
 }
 
-async function startNwcFlow(subId, term, trigger, budgetNotice = "") {
+async function startWalletFlow(subId, term, trigger, method, budgetNotice = "") {
   const originalText = trigger.dataset.originalText || trigger.textContent;
   const cardStatus = trigger.closest(".subscription-card")?.querySelector(".cardStatus");
   const status = cardStatus || document.getElementById("nwcStatus") || trigger;
@@ -667,16 +681,18 @@ async function startNwcFlow(subId, term, trigger, budgetNotice = "") {
     const payment = await jsonFetch("/api/v1/payments", {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ subscription_id: subId, method: "nwc", billing_term: term }),
+      body: JSON.stringify({ subscription_id: subId, method, billing_term: term }),
     });
-    const errorMessage = describeNwcPaymentError(payment.nwc_error_code);
+    const errorMessage = method === "clink"
+      ? describeNwcPaymentError(payment.nwc_error_code) || describeClinkPaymentError(payment.clink_error_code)
+      : describeNwcPaymentError(payment.nwc_error_code);
     if (payment.status === "failed" && errorMessage) {
       status.textContent = errorMessage;
       trigger.disabled = false;
       trigger.textContent = originalText;
       return;
     }
-    status.textContent = `Wallet payment ${payment.nwc_state || payment.status}.`;
+    status.textContent = `Wallet payment ${payment.nwc_state || payment.clink_state || payment.status}.`;
     const paid = await pollPayment(payment, status);
     if (paid) return;
   } catch (error) {
@@ -755,20 +771,72 @@ document.querySelectorAll(".stablecoinPayBtn").forEach((button) => {
   });
 });
 
-document.querySelectorAll(".nwcPayBtn").forEach((button) => {
+document.querySelectorAll(".walletPayBtn").forEach((button) => {
   const card = button.closest(".subscription-card");
   button.addEventListener("click", async () => {
     const term = selectedPaymentTerm(card);
     const status = card.querySelector(".cardStatus");
     button.disabled = true;
-    status.textContent = "Checking the wallet spending limit.";
-    const preflight = await checkNwcBudget(status, selectedPaymentAmount(card, term));
+    const method = button.dataset.walletMethod;
+    status.textContent = method === "nwc"
+      ? "Checking the wallet spending limit."
+      : "Sending a CLINK payment request.";
+    const preflight = method === "nwc"
+      ? await checkNwcBudget(status, selectedPaymentAmount(card, term))
+      : { canPay: true, notice: "" };
     if (!preflight.canPay) {
       status.textContent = preflight.notice;
       button.disabled = false;
       return;
     }
-    await startNwcFlow(button.dataset.subId, term, button, preflight.notice);
+    await startWalletFlow(button.dataset.subId, term, button, method, preflight.notice);
+  });
+});
+
+document.querySelectorAll(".inline-clink-form").forEach((form) => {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = form.querySelector(".inlineClinkPayBtn");
+    const input = form.querySelector(".inlineClinkPointer");
+    const autoRenew = form.querySelector(".inlineClinkAutoRenew");
+    const card = form.closest(".subscription-card");
+    const status = card.querySelector(".cardStatus");
+    button.dataset.originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "Connecting wallet...";
+    status.textContent = "Validating CLINK debit pointer.";
+    try {
+      await jsonFetch("/api/v1/me/clink", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          ndebit: input.value,
+          auto_renew_subscription_id: autoRenew.checked ? form.dataset.subId : null,
+        }),
+      });
+      input.value = "";
+      if (autoRenew.checked) {
+        card.querySelector(".autoRenewStatus").textContent = "On";
+      }
+      status.textContent = autoRenew.checked
+        ? "CLINK connected. Automatic renewal enabled. Sending the initial payment."
+        : "CLINK connected. Sending the initial payment.";
+      await startWalletFlow(
+        form.dataset.subId,
+        selectedPaymentTerm(card),
+        button,
+        "clink",
+      );
+      button.disabled = false;
+      button.type = "button";
+      button.textContent = "Reload dashboard";
+      button.addEventListener("click", () => window.location.reload(), { once: true });
+    } catch (error) {
+      input.value = "";
+      status.textContent = `CLINK connection error: ${error.message}`;
+      button.disabled = false;
+      button.textContent = "Connect and pay";
+    }
   });
 });
 
@@ -811,7 +879,7 @@ document.querySelectorAll(".inline-nwc-form").forEach((form) => {
         window.setTimeout(() => window.location.reload(), 2500);
         return;
       }
-      await startNwcFlow(form.dataset.subId, term, button, preflight.notice);
+      await startWalletFlow(form.dataset.subId, term, button, "nwc", preflight.notice);
       button.disabled = false;
       button.type = "button";
       button.textContent = "Reload dashboard";
@@ -854,19 +922,19 @@ async function resumeOpenPayment() {
     return;
   }
   const payment = payments.find((item) =>
-    ["lightning", "stablecoin_swap", "nwc"].includes(item.method) &&
+    ["lightning", "stablecoin_swap", "nwc", "clink"].includes(item.method) &&
       ["pending", "processing"].includes(item.status)
   );
   if (!payment) return;
   const card = document.querySelector(
     `.subscription-card[data-sub-id="${CSS.escape(payment.subscription_id)}"]`,
   );
-  const status = payment.method === "nwc" && card
+  const status = ["nwc", "clink"].includes(payment.method) && card
     ? card.querySelector(".cardStatus")
     : document.getElementById("payStatus");
   if (card) setCardPaymentButtonsDisabled(card, true);
   try {
-    if (payment.method === "nwc") {
+    if (["nwc", "clink"].includes(payment.method)) {
       status.textContent = "Connected wallet payment is still pending.";
     } else {
       renderManualPayment(payment, status);
@@ -926,6 +994,30 @@ if (nwcForm) {
   });
 }
 
+const clinkForm = document.getElementById("clinkForm");
+if (clinkForm) {
+  clinkForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = document.getElementById("saveClinkBtn");
+    const status = document.getElementById("clinkStatus");
+    button.disabled = true;
+    status.textContent = "Validating CLINK debit pointer.";
+    try {
+      await jsonFetch("/api/v1/me/clink", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ ndebit: document.getElementById("clinkPointer").value }),
+      });
+      document.getElementById("clinkPointer").value = "";
+      status.textContent = "CLINK connected. Reloading the dashboard.";
+      window.setTimeout(() => window.location.reload(), 500);
+    } catch (error) {
+      status.textContent = `CLINK connection error: ${error.message}`;
+      button.disabled = false;
+    }
+  });
+}
+
 const nwcBudget = document.getElementById("nwcBudget");
 if (nwcBudget) {
   checkNwcBudget(nwcBudget);
@@ -943,6 +1035,22 @@ if (revokeNwcButton) {
     } catch (error) {
       status.textContent = `Wallet revocation error: ${error.message}`;
       revokeNwcButton.disabled = false;
+    }
+  });
+}
+
+const revokeClinkButton = document.getElementById("revokeClinkBtn");
+if (revokeClinkButton) {
+  revokeClinkButton.addEventListener("click", async () => {
+    revokeClinkButton.disabled = true;
+    const status = document.getElementById("clinkStatus");
+    try {
+      await jsonFetch("/api/v1/me/clink", { method: "DELETE", headers: authHeaders() });
+      status.textContent = "CLINK connection revoked. Reloading the dashboard.";
+      window.setTimeout(() => window.location.reload(), 500);
+    } catch (error) {
+      status.textContent = `CLINK revocation error: ${error.message}`;
+      revokeClinkButton.disabled = false;
     }
   });
 }
@@ -1005,7 +1113,7 @@ document.querySelectorAll(".verifyDomainBtn").forEach((button) => {
       if (result.verified) {
         card.dataset.dnsPaymentBlocked = "false";
         card.querySelectorAll(
-          ".payBtn, .stablecoinPayBtn, .nwcPayBtn, .inlineNwcPayBtn",
+          ".payBtn, .stablecoinPayBtn, .walletPayBtn, .inlineNwcPayBtn, .inlineClinkPayBtn",
         ).forEach((control) => {
           control.disabled = false;
         });

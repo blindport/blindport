@@ -212,6 +212,7 @@ def _ctx(request: Request, **extra) -> dict:
         "approximate_usd": approximate_usd,
         "relay_server_name": settings.RELAY_CONTROL_URL.rsplit(":", 1)[0].strip("[]"),
         "nwc_enabled": settings.is_payment_method_enabled(PaymentMethod.NWC),
+        "clink_enabled": settings.is_payment_method_enabled(PaymentMethod.CLINK),
         "lightning_enabled": settings.is_payment_method_enabled(PaymentMethod.LIGHTNING),
         "stablecoin_enabled": settings.is_payment_method_enabled(PaymentMethod.STABLECOIN_SWAP),
         "notification_email_enabled": (

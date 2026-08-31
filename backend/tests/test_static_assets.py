@@ -655,7 +655,7 @@ def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monke
         '<meta name="description" content="Public reach for self-hosted services.' in response.text
     )
     assert (
-        '<meta property="og:title" ' 'content="Blindport | Public ingress for self-hosters">'
+        '<meta property="og:title" content="Blindport | Public ingress for self-hosters">'
     ) in response.text
     assert '<meta property="og:type" content="website">' in response.text
     assert '<meta property="og:url" content="https://blindport.test/">' in response.text
@@ -958,7 +958,7 @@ def test_onion_requests_use_host_appropriate_cookie_and_hsts_policy(
     assert "Max-Age=900" in onion_login.headers["Set-Cookie"]
 
 
-def test_dashboard_nwc_setup_is_inline_without_rendering_wallet_secret(
+def test_dashboard_prefers_clink_setup_without_rendering_wallet_secrets(
     app_client,
 ) -> None:
     client, _ = app_client
@@ -975,11 +975,11 @@ def test_dashboard_nwc_setup_is_inline_without_rendering_wallet_secret(
 
     assert disconnected.status_code == 200
     assert f'data-sub-id="{subscription["id"]}"' in disconnected.text
-    assert "inline-nwc-form" in disconnected.text
+    assert "inline-clink-form" in disconnected.text
     assert "Connect and pay" in disconnected.text
-    assert "inlineNwcAutoRenew" in disconnected.text
+    assert "inlineClinkAutoRenew" in disconnected.text
     assert "Renew this endpoint automatically" in disconnected.text
-    assert "complete connection URI" in disconnected.text
+    assert "static CLINK debit pointer" in disconnected.text
     assert "autoRenewToggle" not in disconnected.text
 
     secret = "nostr+walletconnect://backend-secret"
@@ -991,6 +991,6 @@ def test_dashboard_nwc_setup_is_inline_without_rendering_wallet_secret(
     assert connected.status_code == 200
     rendered = client.get("/dashboard")
     assert secret not in rendered.text
-    assert "inline-nwc-form" not in rendered.text
+    assert "inline-clink-form" not in rendered.text
     assert "Pay with connected wallet" in rendered.text
     assert "autoRenewToggle" not in rendered.text

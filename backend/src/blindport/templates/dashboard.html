@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Dashboard | {{ brand_name }}{% endblock %}
 {% block content %}
+{% set automatic_wallet_enabled = (clink_enabled and user.has_clink) or (nwc_enabled and user.has_nwc) %}
+{% set automatic_wallet_method = "clink" if clink_enabled and user.has_clink else "nwc" %}
 <div id="dashboardRoot" class="dashboard content-wide" data-account-id="{{ user.public_id }}" data-auth-method="{{ browser_auth_method }}" data-btc-usd="{{ btc_usd_price }}">
   <header class="dashboard-header">
     <div>
@@ -86,7 +88,7 @@
                   <p class="payment-term-summary">One routed dedicated /32 over WireGuard renews annual-only for 365 service days at {{ s.yearly_price_sats }} sats.</p>
                 {% elif upgrade_source %}
                   <p class="payment-term-summary">{{ 365 if s.billing_term.value == "yearly" else 30 }} wildcard service days at {{ card_sats }} sats, less {{ s.upgrade_credit_sats }} sats remaining-service credit.</p>
-                {% elif s.status.value in ("pending", "expired", "active") and not upgrade_pending and (lightning_enabled or stablecoin_enabled or (nwc_enabled and user.has_nwc)) and yearly_billing_enabled %}
+                {% elif s.status.value in ("pending", "expired", "active") and not upgrade_pending and (lightning_enabled or stablecoin_enabled or automatic_wallet_enabled) and yearly_billing_enabled %}
                   <fieldset class="payment-term-control">
                     <legend>Service term</legend>
                     <div class="segmented">
@@ -133,10 +135,21 @@
                   <p class="success-text">Endpoint active</p>
                 {% endif %}
                 {% if not legacy_ip and not upgrade_pending and stablecoin_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with stablecoin</button>{% endif %}
-                {% if not legacy_ip and not upgrade_pending and nwc_enabled and user.has_nwc and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
-                  <button type="button" class="nwcPayBtn button-secondary" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with connected wallet</button>
+                {% if not legacy_ip and not upgrade_pending and automatic_wallet_enabled and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <button type="button" class="walletPayBtn button-secondary" data-wallet-method="{{ automatic_wallet_method }}" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with connected wallet</button>
                 {% endif %}
-                {% if not legacy_ip and not upgrade_pending and nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                {% if not legacy_ip and not upgrade_pending and clink_enabled and not automatic_wallet_enabled and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <form class="inline-clink-form" data-sub-id="{{ s.public_id }}">
+                    <label for="inlineClinkPointer-{{ s.public_id }}">Pay with CLINK</label>
+                    <p class="field-help">Paste your static CLINK debit pointer. Your wallet may ask you to approve this payment.</p>
+                    <div class="inline-nwc-controls">
+                      <input id="inlineClinkPointer-{{ s.public_id }}" class="inlineClinkPointer" type="password" autocomplete="off" maxlength="4096" placeholder="ndebit1" required>
+                      <button type="submit" class="inlineClinkPayBtn" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Connect and pay</button>
+                    </div>
+                    <label class="terms-consent"><input class="inlineClinkAutoRenew" type="checkbox"> <span>Renew this endpoint automatically using this wallet connection.</span></label>
+                  </form>
+                {% endif %}
+                {% if not legacy_ip and not upgrade_pending and not clink_enabled and nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
                   <form class="inline-nwc-form" data-sub-id="{{ s.public_id }}">
                     <label for="inlineNwcUri-{{ s.public_id }}">Pay with Nostr Wallet Connect</label>
                     <p class="field-help">Paste the complete connection URI from your wallet. It is encrypted after validation. Set the wallet budget above the service price to allow for possible routing fees.</p>
@@ -159,9 +172,9 @@
                   <div><dt>Delivery</dt><dd>{{ "Framed tunnel" if s.delivery.value == "framed" else "One routed dedicated /32 over WireGuard, annual-only" }}</dd></div>
                   <div><dt>Billing</dt><dd class="cardTermLabel">{{ s.billing_term.value | capitalize }}</dd></div>
                   {% if s.relay_pool_domain %}<div><dt>DNS target</dt><dd><code>{{ s.relay_pool_domain }}</code></dd></div>{% endif %}
-                  {% if nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{% if legacy_ip %}Unavailable for historical endpoint{% else %}{{ "On" if s.auto_renew else "Off" }}{% endif %}</dd></div>{% endif %}
+                  {% if clink_enabled or nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{% if legacy_ip %}Unavailable for historical endpoint{% else %}{{ "On" if s.auto_renew else "Off" }}{% endif %}</dd></div>{% endif %}
                 </dl>
-                {% if not legacy_ip and nwc_enabled and user.has_nwc and s.status.value == "active" %}<label class="choice-row"><input type="checkbox" class="autoRenewToggle" data-sub-id="{{ s.public_id }}"{% if s.auto_renew %} checked{% endif %}> <span>Automatic renewal</span></label>{% endif %}
+                {% if not legacy_ip and automatic_wallet_enabled and s.status.value == "active" %}<label class="choice-row"><input type="checkbox" class="autoRenewToggle" data-sub-id="{{ s.public_id }}"{% if s.auto_renew %} checked{% endif %}> <span>Automatic renewal</span></label>{% endif %}
               </details>
             </article>
           {% endfor %}
@@ -343,7 +356,8 @@ mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
         </form>
       </details>
       {% endif %}
-      {% if nwc_enabled %}<details class="sidebar-section"><summary>Wallet connection</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% if nwc_encryption == "nip04" %} (legacy NIP-04){% elif nwc_encryption == "nip44_v2" %} (NIP-44){% endif %}{% else %}Not connected{% endif %}</p>{% if user.has_nwc and nwc_encryption == "nip04" %}<p class="field-help">Legacy NIP-04 encryption is deprecated and does not authenticate ciphertext. Upgrade the wallet when possible.</p>{% endif %}{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
+      {% if clink_enabled %}<details class="sidebar-section"><summary>CLINK wallet</summary><p id="clinkStatus" role="status" aria-live="polite">{{ "Connected" if user.has_clink else "Not connected" }}</p><form id="clinkForm"><label for="clinkPointer">Static debit pointer</label><input id="clinkPointer" type="password" autocomplete="off" maxlength="4096" placeholder="ndebit1" required><p class="field-help">Use the static debit pointer from your CLINK-compatible wallet.</p><div class="button-row"><button id="saveClinkBtn" type="submit">Connect</button>{% if user.has_clink %}<button id="revokeClinkBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
+      {% if nwc_enabled %}<details class="sidebar-section"><summary>NWC wallet</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% if nwc_encryption == "nip04" %} (legacy NIP-04){% elif nwc_encryption == "nip44_v2" %} (NIP-44){% endif %}{% else %}Not connected{% endif %}</p>{% if user.has_nwc and nwc_encryption == "nip04" %}<p class="field-help">Legacy NIP-04 encryption is deprecated and does not authenticate ciphertext. Upgrade the wallet when possible.</p>{% endif %}{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
       {% if notification_email_enabled %}
       <details class="sidebar-section">
         <summary>Service notifications</summary>
