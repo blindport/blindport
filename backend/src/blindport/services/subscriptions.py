@@ -158,6 +158,7 @@ def _reconcile_domain_payment(session: Session, payment: Payment) -> Payment:
     if payment.method in {
         PaymentMethod.LIGHTNING,
         PaymentMethod.NWC,
+        PaymentMethod.CLINK,
         PaymentMethod.STABLECOIN_SWAP,
     }:
         return check_and_settle_payment(session, payment)

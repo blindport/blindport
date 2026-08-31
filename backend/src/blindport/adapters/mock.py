@@ -12,6 +12,10 @@ import time
 from hashlib import sha256
 
 from .base import (
+    ClinkAdapter,
+    ClinkPaymentState,
+    ClinkPayResult,
+    ClinkValidationResult,
     LightningAdapter,
     LightningInvoice,
     LightningInvoiceState,
@@ -202,5 +206,65 @@ class MockNwcAdapter(NwcAdapter):
         with self._lock:
             if payment_hash in self._payments:
                 self._payments[payment_hash] = NwcLookupState.SETTLED
+        if self._settle_callback is not None:
+            self._settle_callback(payment_hash)
+
+
+class MockClinkAdapter(ClinkAdapter):
+    """CLINK mock with deterministic results and optional Lightning settlement."""
+
+    _APP_PUBKEY = sha256(b"blindport:mock-clink-app-pubkey:v1").hexdigest()
+
+    def __init__(self, auto_settle: bool = False, settle_callback=None) -> None:
+        self._lock = threading.Lock()
+        self._payments: dict[str, tuple[ClinkPaymentState, str | None]] = {}
+        self.auto_settle = auto_settle
+        self._settle_callback = settle_callback
+
+    @staticmethod
+    def _require_ndebit(ndebit: str) -> None:
+        if not isinstance(ndebit, str) or not ndebit:
+            raise ValueError("CLINK pointer is required")
+
+    def validate_connection(self, ndebit: str) -> ClinkValidationResult:
+        self._require_ndebit(ndebit)
+        return ClinkValidationResult(self._APP_PUBKEY)
+
+    def pay_invoice(
+        self,
+        ndebit: str,
+        invoice: str,
+        amount_sats: int,
+        description: str,
+    ) -> ClinkPayResult:
+        self._require_ndebit(ndebit)
+        if not isinstance(invoice, str) or not invoice:
+            raise ValueError("invoice is required")
+        if not isinstance(amount_sats, int) or isinstance(amount_sats, bool) or amount_sats <= 0:
+            raise ValueError("amount_sats must be a positive integer")
+        if not isinstance(description, str) or not description:
+            raise ValueError("description is required")
+        preimage = sha256(f"blindport:mock-clink-preimage:{invoice}".encode()).hexdigest()
+        state = ClinkPaymentState.SETTLED if self.auto_settle else ClinkPaymentState.PENDING
+        result_preimage = preimage if state == ClinkPaymentState.SETTLED else None
+        with self._lock:
+            self._payments[invoice] = (state, result_preimage)
+        return ClinkPayResult(state, result_preimage)
+
+    def bind_payment_hash(self, invoice: str, payment_hash: str) -> None:
+        with self._lock:
+            state, preimage = self._payments.pop(invoice, (ClinkPaymentState.PENDING, None))
+            self._payments[payment_hash] = (state, preimage)
+        if state == ClinkPaymentState.SETTLED and self._settle_callback is not None:
+            self._settle_callback(payment_hash)
+
+    def mark_settled(self, payment_hash: str) -> None:
+        with self._lock:
+            state, preimage = self._payments.get(payment_hash, (ClinkPaymentState.PENDING, None))
+            if state == ClinkPaymentState.PENDING:
+                preimage = sha256(
+                    f"blindport:mock-clink-preimage:{payment_hash}".encode()
+                ).hexdigest()
+            self._payments[payment_hash] = (ClinkPaymentState.SETTLED, preimage)
         if self._settle_callback is not None:
             self._settle_callback(payment_hash)

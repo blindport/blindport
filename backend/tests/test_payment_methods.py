@@ -100,7 +100,7 @@ def test_cashu_creation_and_removed_routes_are_rejected(app_client) -> None:
     method_schema = client.get("/openapi.json").json()["components"]["schemas"][
         "CreatePaymentRequest"
     ]["properties"]["method"]
-    assert method_schema["enum"] == ["lightning", "nwc", "stablecoin_swap"]
+    assert method_schema["enum"] == ["lightning", "nwc", "clink", "stablecoin_swap"]
     for route in (
         "/api/v1/payments/cashu-submit",
         "/api/v1/payments/cashu-quote",

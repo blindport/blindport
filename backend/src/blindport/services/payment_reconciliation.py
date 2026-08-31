@@ -51,8 +51,18 @@ class ReconciliationSummary:
 
 
 def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
-    if not settings.is_payment_method_enabled(PaymentMethod.NWC):
+    automatic_methods = tuple(
+        method
+        for method in (PaymentMethod.CLINK, PaymentMethod.NWC)
+        if settings.is_payment_method_enabled(method)
+    )
+    if not automatic_methods:
         return 0, 0
+    wallet_available = []
+    if PaymentMethod.CLINK in automatic_methods:
+        wallet_available.append(User.has_clink)
+    if PaymentMethod.NWC in automatic_methods:
+        wallet_available.append(User.has_nwc)
     due_before = datetime.now(UTC) + timedelta(seconds=settings.NWC_AUTO_RENEW_LEAD_SECONDS)
     with Session(engine) as session:
         subscription_pks = list(
@@ -64,7 +74,7 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                     Subscription.status == SubscriptionStatus.ACTIVE,
                     Subscription.current_period_end.is_not(None),  # type: ignore[union-attr]
                     Subscription.current_period_end <= due_before,  # type: ignore[operator]
-                    User.has_nwc,
+                    or_(*wallet_available),
                     User.is_admin.is_(False),  # type: ignore[union-attr]
                     User.is_suspended.is_(False),  # type: ignore[union-attr]
                 )
@@ -94,7 +104,8 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                 ):
                     continue
                 user = session.get(User, subscription.user_id)
-                if user is None or not user.has_nwc or user.is_admin or user.is_suspended:
+                method = _automatic_wallet_method(user)
+                if method is None or user.is_admin or user.is_suspended:
                     continue
                 open_payment = session.exec(
                     select(Payment.id).where(
@@ -125,9 +136,10 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                 ).one_or_none()
                 session.refresh(subscription)
                 period_end = _aware(subscription.current_period_end)
+                method = _automatic_wallet_method(user)
                 if (
                     user is None
-                    or not user.has_nwc
+                    or method is None
                     or user.is_admin
                     or user.is_suspended
                     or not subscription.auto_renew
@@ -148,7 +160,7 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                 create_payment(
                     session,
                     subscription,
-                    PaymentMethod.NWC,
+                    method,
                     (
                         BillingTerm.YEARLY
                         if subscription.product == ProductType.IP
@@ -167,6 +179,16 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                 "automatic renewal failed for subscription_id={}", public_id
             )
     return created, failed
+
+
+def _automatic_wallet_method(user: User | None) -> PaymentMethod | None:
+    if user is None:
+        return None
+    if user.has_clink and settings.is_payment_method_enabled(PaymentMethod.CLINK):
+        return PaymentMethod.CLINK
+    if user.has_nwc and settings.is_payment_method_enabled(PaymentMethod.NWC):
+        return PaymentMethod.NWC
+    return None
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -240,6 +262,7 @@ def reconcile_pending_payments_once(batch_size: int | None = None) -> Reconcilia
         for method in (
             PaymentMethod.LIGHTNING,
             PaymentMethod.NWC,
+            PaymentMethod.CLINK,
             PaymentMethod.STABLECOIN_SWAP,
         )
         if method == PaymentMethod.STABLECOIN_SWAP or settings.is_payment_method_enabled(method)

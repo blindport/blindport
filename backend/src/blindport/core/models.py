@@ -85,6 +85,7 @@ class PaymentMethod(StrEnum):
     CASHU = "cashu"  # Legacy persisted value, read-only.
     NWC = "nwc"
     STABLECOIN_SWAP = "stablecoin_swap"
+    CLINK = "clink"
 
 
 class PaymentStatus(StrEnum):
@@ -175,6 +176,11 @@ class User(SQLModel, table=True):
     nwc_generation: int = 0
     nwc_capabilities: str | None = None
     nwc_last_validated_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    has_clink: bool = False
+    clink_ciphertext: str | None = Field(default=None, sa_type=Text)
+    clink_key_version: str | None = Field(default=None, max_length=32)
+    clink_generation: int = 0
+    clink_last_validated_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     has_notification_email: bool = False
     notification_email_ciphertext: str | None = Field(default=None, sa_type=Text)
     notification_email_key_version: str | None = Field(default=None, max_length=32)
@@ -345,7 +351,7 @@ class Subscription(SQLModel, table=True):
     )
     current_period_start: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     current_period_end: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
-    auto_renew: bool = False  # tied to NWC
+    auto_renew: bool = False  # tied to an automatic wallet connection
     # A pending wildcard target can replace one active exact Relay subscription.
     upgrade_from_subscription_id: int | None = Field(
         default=None, foreign_key="subscription.id", unique=True
@@ -533,6 +539,17 @@ class Payment(SQLModel, table=True):
     nwc_preimage_hash: str | None = Field(default=None, max_length=64)
     nwc_fees_paid_msats: int | None = None
     nwc_credential_generation: int | None = None
+    clink_state: str | None = Field(default=None, max_length=32)
+    clink_attempt_count: int = 0
+    clink_attempted_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    clink_lease_until: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    clink_lease_token: str | None = Field(default=None, max_length=32)
+    clink_error_code: str | None = Field(default=None, max_length=64)
+    clink_preimage_hash: str | None = Field(default=None, max_length=64)
+    clink_credential_generation: int | None = None
+    clink_nwc_fallback: bool = Field(
+        default=False, sa_column_kwargs={"server_default": text("false")}
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     paid_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     expires_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

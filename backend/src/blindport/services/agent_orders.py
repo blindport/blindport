@@ -195,7 +195,12 @@ def put_agent_order(
         PaymentStatus.FAILED,
     ):
         return AgentOrderResult(order, subscription, payment, AgentOrderState.ATTENTION_REQUIRED)
-    if not user.has_nwc or not settings.is_payment_method_enabled(PaymentMethod.NWC):
+    method = None
+    if user.has_clink and settings.is_payment_method_enabled(PaymentMethod.CLINK):
+        method = PaymentMethod.CLINK
+    elif user.has_nwc and settings.is_payment_method_enabled(PaymentMethod.NWC):
+        method = PaymentMethod.NWC
+    if method is None:
         return AgentOrderResult(order, subscription, payment, _result_state(subscription, payment))
 
     try:
@@ -203,7 +208,7 @@ def put_agent_order(
             payment = payments_svc.create_payment(
                 session,
                 subscription,
-                PaymentMethod.NWC,
+                method,
                 spec.billing_term,
                 agent_order_id=order.id,
             )

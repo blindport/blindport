@@ -52,6 +52,7 @@ class DnsSupervisionTarget:
 
 _OFFLINE_EDGE_ID_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,31}\Z")
 _RELAY_HEARTBEAT_TOKEN_RE = re.compile(r"[0-9a-f]{64}\Z")
+_CLINK_PRIVATE_KEY_RE = re.compile(r"[0-9a-f]{64}\Z")
 _OFFLINE_ENTITLEMENT_PRIVATE_KEY_MAX_BYTES = 16 * 1024
 
 
@@ -139,6 +140,7 @@ def parse_enabled_payment_methods(value: str) -> frozenset[PaymentMethod]:
     active_methods = {
         PaymentMethod.LIGHTNING,
         PaymentMethod.NWC,
+        PaymentMethod.CLINK,
         PaymentMethod.STABLECOIN_SWAP,
     }
     if any(method not in active_methods for method in methods):
@@ -609,6 +611,7 @@ class Settings(BaseSettings):
     # mocks remain the default for local development and tests.
     PAYMENT_LIGHTNING_ADAPTER: str = "mock"
     PAYMENT_NWC_ADAPTER: str = "mock"
+    PAYMENT_CLINK_ADAPTER: str = "mock"
     PAYMENT_ENABLED_METHODS: str = PaymentMethod.LIGHTNING.value
     STABLECOIN_PAYMENTS_ENABLED: bool = False
     STABLECOIN_SWAP_MARKUP_BPS: int = Field(default=1000, ge=1, le=10000)
@@ -649,6 +652,15 @@ class Settings(BaseSettings):
     NWC_LOOKUP_INTERVAL_SECONDS: int = Field(default=30, ge=5, le=300)
     NWC_PAYMENT_LEASE_SECONDS: int = Field(default=45, ge=5, le=300)
     NWC_AUTO_RENEW_LEAD_SECONDS: int = Field(default=86400, ge=60, le=604800)
+
+    # CLINK helper and bounded outgoing payment handling.
+    CLINK_HELPER_PATH: str = "/usr/local/bin/blindport-clink-helper"
+    CLINK_NOSTR_PRIVATE_KEY: str = ""
+    CLINK_ALLOWED_RELAY_HOSTS: str = ""
+    CLINK_ALLOW_PUBLIC_RELAYS: bool = False
+    CLINK_REQUEST_TIMEOUT_SECONDS: int = Field(default=15, ge=1, le=120)
+    CLINK_HELPER_TIMEOUT_SECONDS: int = Field(default=20, ge=1, le=120)
+    CLINK_PAYMENT_LEASE_SECONDS: int = Field(default=45, ge=5, le=300)
 
     # Optional expiration reminders delivered through generic SMTP.
     REMINDER_EMAIL_ENABLED: bool = False
@@ -813,6 +825,12 @@ class Settings(BaseSettings):
         if not self.NWC_ALLOWED_RELAY_HOSTS:
             return ()
         return tuple(self.NWC_ALLOWED_RELAY_HOSTS.split(","))
+
+    @property
+    def clink_allowed_relay_hosts(self) -> tuple[str, ...]:
+        if not self.CLINK_ALLOWED_RELAY_HOSTS:
+            return ()
+        return tuple(self.CLINK_ALLOWED_RELAY_HOSTS.split(","))
 
     def is_payment_method_enabled(self, method: PaymentMethod) -> bool:
         if method == PaymentMethod.STABLECOIN_SWAP and not self.STABLECOIN_PAYMENTS_ENABLED:
@@ -1113,6 +1131,13 @@ class Settings(BaseSettings):
             ) from e
         return value
 
+    @field_validator("CLINK_NOSTR_PRIVATE_KEY")
+    @classmethod
+    def validate_clink_nostr_private_key(cls, value: str) -> str:
+        if value and not _CLINK_PRIVATE_KEY_RE.fullmatch(value):
+            raise ValueError("CLINK_NOSTR_PRIVATE_KEY must be 64 lowercase hexadecimal characters")
+        return value
+
     @field_validator("CREDENTIAL_ENCRYPTION_KEY")
     @classmethod
     def validate_credential_encryption_key(cls, value: str) -> str:
@@ -1136,6 +1161,21 @@ class Settings(BaseSettings):
             raise ValueError("NWC_ALLOWED_RELAY_HOSTS is too large")
         if len(hosts) != len(set(hosts)):
             raise ValueError("NWC_ALLOWED_RELAY_HOSTS contains duplicate hostnames")
+        return ",".join(hosts)
+
+    @field_validator("CLINK_ALLOWED_RELAY_HOSTS")
+    @classmethod
+    def validate_clink_relay_hosts(cls, value: str) -> str:
+        if not value:
+            return value
+        raw = value.split(",")
+        if any(not host or host.strip() != host for host in raw):
+            raise ValueError("CLINK_ALLOWED_RELAY_HOSTS contains whitespace or an empty hostname")
+        hosts = [canonicalize_hostname(host) for host in raw]
+        if len(hosts) > 32 or sum(len(host) for host in hosts) > 4096:
+            raise ValueError("CLINK_ALLOWED_RELAY_HOSTS is too large")
+        if len(hosts) != len(set(hosts)):
+            raise ValueError("CLINK_ALLOWED_RELAY_HOSTS contains duplicate hostnames")
         return ",".join(hosts)
 
     @field_validator("SMTP_SECURITY")
@@ -1411,6 +1451,18 @@ class Settings(BaseSettings):
             raise ValueError(
                 "NWC_ALLOW_PUBLIC_RELAYS and NWC_ALLOWED_RELAY_HOSTS are mutually exclusive"
             )
+        if self.CLINK_HELPER_TIMEOUT_SECONDS < self.CLINK_REQUEST_TIMEOUT_SECONDS + 1:
+            raise ValueError(
+                "CLINK_HELPER_TIMEOUT_SECONDS must exceed CLINK_REQUEST_TIMEOUT_SECONDS by at least 1"
+            )
+        if self.CLINK_PAYMENT_LEASE_SECONDS < self.CLINK_HELPER_TIMEOUT_SECONDS + 5:
+            raise ValueError(
+                "CLINK_PAYMENT_LEASE_SECONDS must exceed CLINK_HELPER_TIMEOUT_SECONDS by at least 5"
+            )
+        if self.CLINK_ALLOW_PUBLIC_RELAYS and self.clink_allowed_relay_hosts:
+            raise ValueError(
+                "CLINK_ALLOW_PUBLIC_RELAYS and CLINK_ALLOWED_RELAY_HOSTS are mutually exclusive"
+            )
         if self.SMTP_TIMEOUT_SECONDS + 5 > self.REMINDER_DELIVERY_LEASE_SECONDS:
             raise ValueError(
                 "REMINDER_DELIVERY_LEASE_SECONDS must exceed SMTP_TIMEOUT_SECONDS by at least 5"
@@ -1480,6 +1532,7 @@ class Settings(BaseSettings):
         if self.enabled_payment_methods - {
             PaymentMethod.LIGHTNING,
             PaymentMethod.NWC,
+            PaymentMethod.CLINK,
             PaymentMethod.STABLECOIN_SWAP,
         }:
             failures.append("PAYMENT_ENABLED_METHODS must not enable unsupported methods")
@@ -1504,6 +1557,35 @@ class Settings(BaseSettings):
                 failures.append(
                     "NWC relay policy requires NWC_ALLOW_PUBLIC_RELAYS=true or at least one "
                     "NWC_ALLOWED_RELAY_HOSTS entry"
+                )
+        if PaymentMethod.CLINK in self.enabled_payment_methods:
+            if self.PAYMENT_CLINK_ADAPTER.lower() != "clink":
+                failures.append(
+                    "PAYMENT_CLINK_ADAPTER must use the clink adapter when CLINK is enabled"
+                )
+            if not self.CREDENTIAL_ENCRYPTION_KEY:
+                failures.append(
+                    "CREDENTIAL_ENCRYPTION_KEY must contain a dedicated 32-byte hex key when CLINK is enabled"
+                )
+            if not Path(self.CLINK_HELPER_PATH).is_absolute():
+                failures.append("CLINK_HELPER_PATH must be absolute")
+            if not self.CLINK_ALLOW_PUBLIC_RELAYS and not self.clink_allowed_relay_hosts:
+                failures.append(
+                    "CLINK relay policy requires CLINK_ALLOW_PUBLIC_RELAYS=true or at least one "
+                    "CLINK_ALLOWED_RELAY_HOSTS entry"
+                )
+            if not self.CLINK_NOSTR_PRIVATE_KEY:
+                failures.append(
+                    "CLINK_NOSTR_PRIVATE_KEY must be set to a dedicated 32-byte hex key"
+                )
+            elif self.CLINK_NOSTR_PRIVATE_KEY == "0" * 64:
+                failures.append("CLINK_NOSTR_PRIVATE_KEY must not be an all-zero key")
+            elif self.CLINK_NOSTR_PRIVATE_KEY in {
+                self.LND_INVOICE_HMAC_KEY,
+                *self.CREDENTIAL_ENCRYPTION_KEY.split(","),
+            }:
+                failures.append(
+                    "CLINK_NOSTR_PRIVATE_KEY must differ from credential encryption and LND invoice keys"
                 )
         if (
             self.REMINDER_EMAIL_ENABLED or self.ANNOUNCEMENT_EMAIL_ENABLED

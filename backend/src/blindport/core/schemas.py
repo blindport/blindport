@@ -400,6 +400,7 @@ class CreatePaymentRequest(BaseModel):
     method: Literal[
         PaymentMethod.LIGHTNING,
         PaymentMethod.NWC,
+        PaymentMethod.CLINK,
         PaymentMethod.STABLECOIN_SWAP,
     ]
     billing_term: BillingTerm | None = None
@@ -437,6 +438,10 @@ class PaymentResponse(BaseModel):
     nwc_state: str | None = None
     nwc_attempt_count: int = 0
     nwc_error_code: str | None = None
+    clink_state: str | None = None
+    clink_attempt_count: int = 0
+    clink_error_code: str | None = None
+    clink_nwc_fallback: bool = False
     expires_at: datetime | None = None
 
     @field_validator("expires_at")
@@ -463,6 +468,18 @@ class NwcStatusResponse(BaseModel):
     has_nwc: bool
     capabilities: tuple[str, ...] = ()
     encryption: Literal["nip44_v2", "nip04"] | None = None
+    last_validated_at: datetime | None = None
+
+
+class SetClinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ndebit: str
+    auto_renew_subscription_id: UUID | None = None
+
+
+class ClinkStatusResponse(BaseModel):
+    has_clink: bool
     last_validated_at: datetime | None = None
 
 

@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from . import __version__
-from .adapters.factory import get_lightning_adapter, get_nwc_adapter
+from .adapters.factory import get_clink_adapter, get_lightning_adapter, get_nwc_adapter
 from .api import internal, pages, passkeys, v1, v2, v3
 from .config import settings
 from .core.models import PaymentMethod
@@ -42,6 +42,8 @@ async def lifespan(app: FastAPI):
         get_smtp_adapter()
     if settings.is_payment_method_enabled(PaymentMethod.NWC):
         get_nwc_adapter()
+    if settings.is_payment_method_enabled(PaymentMethod.CLINK):
+        get_clink_adapter()
     prepare_database()
     reconciler_health.configure(
         enabled=settings.PAYMENT_RECONCILIATION_ENABLED,

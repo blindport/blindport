@@ -336,6 +336,92 @@ def test_production_settings_allow_public_user_selected_nwc_relays() -> None:
     assert settings.nwc_allowed_relay_hosts == ()
 
 
+def test_clink_settings_enablement_and_secure_defaults() -> None:
+    settings = Settings(_env_file=None, PAYMENT_ENABLED_METHODS="lightning,clink")
+
+    assert settings.is_payment_method_enabled(PaymentMethod.CLINK)
+    assert settings.PAYMENT_CLINK_ADAPTER == "mock"
+    assert settings.CLINK_REQUEST_TIMEOUT_SECONDS == 15
+    assert settings.CLINK_HELPER_TIMEOUT_SECONDS == 20
+    assert settings.CLINK_PAYMENT_LEASE_SECONDS == 45
+
+
+def test_production_settings_allow_secured_clink_alongside_lightning() -> None:
+    settings = _production_settings(
+        PAYMENT_ENABLED_METHODS="lightning,clink",
+        PAYMENT_CLINK_ADAPTER="clink",
+        CREDENTIAL_ENCRYPTION_KEY="cd" * 32,
+        CLINK_HELPER_PATH="/usr/local/bin/blindport-clink-helper",
+        CLINK_NOSTR_PRIVATE_KEY="ef" * 32,
+        CLINK_ALLOWED_RELAY_HOSTS="Relay.Example",
+    )
+
+    assert settings.clink_allowed_relay_hosts == ("relay.example",)
+    assert settings.CLINK_ALLOW_PUBLIC_RELAYS is False
+
+
+@pytest.mark.parametrize(
+    "overrides,error",
+    [
+        ({"PAYMENT_CLINK_ADAPTER": "mock"}, "PAYMENT_CLINK_ADAPTER"),
+        ({"CREDENTIAL_ENCRYPTION_KEY": ""}, "CREDENTIAL_ENCRYPTION_KEY"),
+        ({"CLINK_HELPER_PATH": "bin/clink-helper"}, "CLINK_HELPER_PATH"),
+        ({"CLINK_ALLOWED_RELAY_HOSTS": ""}, "CLINK relay policy"),
+        ({"CLINK_NOSTR_PRIVATE_KEY": ""}, "CLINK_NOSTR_PRIVATE_KEY"),
+        ({"CLINK_NOSTR_PRIVATE_KEY": "0" * 64}, "all-zero"),
+        ({"CLINK_NOSTR_PRIVATE_KEY": "cd" * 32}, "must differ"),
+        ({"CLINK_NOSTR_PRIVATE_KEY": "ab" * 32}, "must differ"),
+    ],
+)
+def test_production_clink_requires_dedicated_components(overrides: dict, error: str) -> None:
+    values = {
+        "PAYMENT_ENABLED_METHODS": "lightning,clink",
+        "PAYMENT_CLINK_ADAPTER": "clink",
+        "CREDENTIAL_ENCRYPTION_KEY": "cd" * 32,
+        "CLINK_HELPER_PATH": "/usr/local/bin/blindport-clink-helper",
+        "CLINK_NOSTR_PRIVATE_KEY": "ef" * 32,
+        "CLINK_ALLOWED_RELAY_HOSTS": "relay.example",
+    }
+    values.update(overrides)
+    with pytest.raises(ValidationError, match=error):
+        _production_settings(**values)
+
+
+@pytest.mark.parametrize("value", ["ab", "AB" * 32, "zz" * 32])
+def test_clink_private_key_requires_canonical_hex_when_configured(value: str) -> None:
+    with pytest.raises(ValidationError, match="CLINK_NOSTR_PRIVATE_KEY"):
+        Settings(_env_file=None, CLINK_NOSTR_PRIVATE_KEY=value)
+
+
+def test_clink_relay_policy_and_timeouts_are_bounded() -> None:
+    settings = Settings(_env_file=None, CLINK_ALLOWED_RELAY_HOSTS="Relay.Example")
+
+    assert settings.clink_allowed_relay_hosts == ("relay.example",)
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        Settings(
+            _env_file=None,
+            CLINK_ALLOWED_RELAY_HOSTS="relay.example",
+            CLINK_ALLOW_PUBLIC_RELAYS=True,
+        )
+    with pytest.raises(ValidationError, match="CLINK_ALLOWED_RELAY_HOSTS is too large"):
+        Settings(
+            _env_file=None,
+            CLINK_ALLOWED_RELAY_HOSTS=",".join(f"relay-{index}.example.com" for index in range(33)),
+        )
+    with pytest.raises(ValidationError, match="CLINK_HELPER_TIMEOUT_SECONDS"):
+        Settings(
+            _env_file=None,
+            CLINK_REQUEST_TIMEOUT_SECONDS=20,
+            CLINK_HELPER_TIMEOUT_SECONDS=20,
+        )
+    with pytest.raises(ValidationError, match="CLINK_PAYMENT_LEASE_SECONDS"):
+        Settings(
+            _env_file=None,
+            CLINK_HELPER_TIMEOUT_SECONDS=20,
+            CLINK_PAYMENT_LEASE_SECONDS=24,
+        )
+
+
 @pytest.mark.parametrize("value", ["ab", "AB" * 32, "zz" * 32, f"{'ab' * 32},{'ab' * 32}"])
 def test_credential_keyring_requires_distinct_canonical_32_byte_hex(value: str) -> None:
     with pytest.raises(ValidationError, match="credential encryption"):

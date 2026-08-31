@@ -5,9 +5,10 @@ from __future__ import annotations
 from functools import lru_cache
 
 from ..config import settings
-from .base import LightningAdapter, NwcAdapter
+from .base import ClinkAdapter, LightningAdapter, NwcAdapter
+from .clink import SubprocessClinkAdapter
 from .lnd_rest import LndRestLightningAdapter
-from .mock import MockLightningAdapter, MockNwcAdapter
+from .mock import MockClinkAdapter, MockLightningAdapter, MockNwcAdapter
 from .nwc import SubprocessNwcAdapter
 
 
@@ -55,7 +56,29 @@ def get_nwc_adapter() -> NwcAdapter:
     raise ValueError(f"unknown nwc adapter: {name!r}")
 
 
+@lru_cache(maxsize=1)
+def get_clink_adapter() -> ClinkAdapter:
+    name = settings.PAYMENT_CLINK_ADAPTER.lower()
+    if name == "mock":
+        return MockClinkAdapter(
+            auto_settle=False, settle_callback=get_lightning_adapter().mark_paid
+        )
+    if name == "mock-auto":
+        return MockClinkAdapter(auto_settle=True, settle_callback=get_lightning_adapter().mark_paid)
+    if name == "clink":
+        return SubprocessClinkAdapter(
+            settings.CLINK_HELPER_PATH,
+            settings.CLINK_HELPER_TIMEOUT_SECONDS,
+            settings.CLINK_REQUEST_TIMEOUT_SECONDS,
+            settings.CLINK_NOSTR_PRIVATE_KEY,
+            settings.clink_allowed_relay_hosts,
+            allow_public_relays=settings.CLINK_ALLOW_PUBLIC_RELAYS,
+        )
+    raise ValueError(f"unknown CLINK adapter: {name!r}")
+
+
 def reset_adapters_for_tests() -> None:
     """Clear the lru_cache so a fresh adapter is built (test-only)."""
     get_lightning_adapter.cache_clear()
     get_nwc_adapter.cache_clear()
+    get_clink_adapter.cache_clear()

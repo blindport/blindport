@@ -14,12 +14,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from ..adapters.base import (
+    ClinkAdapterError,
+    ClinkPaymentState,
     LightningInvoiceState,
     NwcAdapterError,
     NwcLookupState,
     NwcPaymentState,
 )
 from ..adapters.factory import (
+    get_clink_adapter,
     get_lightning_adapter,
     get_nwc_adapter,
 )
@@ -40,6 +43,7 @@ from ..core.models import (
     User,
 )
 from . import subscriptions as subs
+from .clink_credentials import decrypt_clink_credential
 from .notifications import queue_notification
 from .nwc_credentials import decrypt_nwc_credential
 
@@ -51,6 +55,7 @@ _TERMINAL_STATUSES = (
 _LND_BACKED_METHODS = (
     PaymentMethod.LIGHTNING,
     PaymentMethod.NWC,
+    PaymentMethod.CLINK,
     PaymentMethod.STABLECOIN_SWAP,
 )
 _DEFINITIVE_PAY_REJECTION_CODES = frozenset(
@@ -71,6 +76,16 @@ _RETRY_BLOCKING_ERROR_CODES = frozenset(
         "payment_hash_mismatch",
         "preimage_mismatch",
         "settlement_unconfirmed",
+    }
+)
+_CLINK_DEFINITIVE_REJECTION_CODES = frozenset(
+    {
+        "denied",
+        "expired",
+        "invalid_amount",
+        "invalid_request",
+        "rate_limited",
+        "temporary_failure",
     }
 )
 
@@ -454,6 +469,100 @@ def _release_failed_nwc_payment(
     return _reload_payment(session, payment_id)
 
 
+def _release_failed_clink_payment(
+    session: Session,
+    payment: Payment,
+    error_code: str,
+    *,
+    require_lease: bool = False,
+) -> Payment:
+    payment_id = payment.id
+    if payment_id is None:
+        raise ValueError("payment has no id")
+    if payment.payment_hash:
+        lnd_state = _lnd_invoice_state(payment)
+        if lnd_state == LightningInvoiceState.SETTLED:
+            return _finalize_payment(session, payment, PaymentStatus.PENDING)
+        if lnd_state == LightningInvoiceState.ACCEPTED:
+            return _save_clink_observation(session, payment, ClinkPaymentState.PENDING.value)
+    statement = update(Payment).where(
+        Payment.id == payment_id, Payment.status == PaymentStatus.PENDING
+    )
+    if require_lease:
+        if payment.clink_lease_token is None:
+            return _reload_payment(session, payment_id)
+        statement = statement.where(Payment.clink_lease_token == payment.clink_lease_token)
+    result = session.execute(
+        statement.values(
+            status=PaymentStatus.FAILED,
+            clink_state="failed",
+            clink_error_code=error_code,
+            clink_lease_until=None,
+            clink_lease_token=None,
+        ).execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return _reload_payment(session, payment_id)
+    subscription = session.get(Subscription, payment.subscription_id)
+    if subscription is not None:
+        subscription.auto_renew = False
+        subs.release_reservation(session, subscription, payment_id)
+        session.add(subscription)
+    session.commit()
+    return _reload_payment(session, payment_id)
+
+
+def _verify_clink_result(
+    session: Session,
+    payment: Payment,
+    preimage: str | None,
+) -> Payment | None:
+    if preimage is None:
+        return None
+    try:
+        preimage_hash = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
+    except ValueError:
+        return _save_clink_observation(session, payment, "unknown", error_code="invalid_preimage")
+    if preimage_hash != payment.payment_hash:
+        return _save_clink_observation(session, payment, "unknown", error_code="preimage_mismatch")
+    payment.clink_preimage_hash = preimage_hash
+    return None
+
+
+def _save_clink_observation(
+    session: Session,
+    payment: Payment,
+    state: str,
+    *,
+    error_code: str | None = None,
+) -> Payment:
+    payment_id = payment.id
+    if payment_id is None:
+        raise ValueError("payment has no id")
+    statement = update(Payment).where(
+        Payment.id == payment_id, Payment.status == PaymentStatus.PENDING
+    )
+    values: dict[str, object] = {
+        "clink_state": state,
+        "clink_error_code": error_code,
+        "clink_preimage_hash": payment.clink_preimage_hash,
+    }
+    if payment.clink_lease_token is None:
+        statement = statement.where(Payment.clink_lease_token.is_(None))  # type: ignore[union-attr]
+    else:
+        statement = statement.where(Payment.clink_lease_token == payment.clink_lease_token)
+        values.update(clink_lease_until=None, clink_lease_token=None)
+    result = session.execute(
+        statement.values(**values).execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return _reload_payment(session, payment_id)
+    session.commit()
+    return _reload_payment(session, payment_id)
+
+
 def _verify_nwc_result(
     session: Session,
     payment: Payment,
@@ -585,6 +694,65 @@ def _record_nwc_send_attempt(session: Session, payment: Payment) -> Payment | No
     return _reload_payment(session, payment_id)
 
 
+def _claim_clink_lease(session: Session, payment: Payment) -> Payment | None:
+    payment_id = payment.id
+    if payment_id is None:
+        raise ValueError("payment has no id")
+    now = _nwc_database_clock(session)
+    lease_token = uuid4().hex
+    result = session.execute(
+        update(Payment)
+        .where(
+            Payment.id == payment_id,
+            Payment.status == PaymentStatus.PENDING,
+            Payment.clink_attempt_count == 0,
+            (Payment.clink_lease_until.is_(None) | (Payment.clink_lease_until <= now)),  # type: ignore[union-attr,operator]
+        )
+        .values(
+            clink_lease_until=now + timedelta(seconds=settings.CLINK_PAYMENT_LEASE_SECONDS),
+            clink_lease_token=lease_token,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return None
+    session.commit()
+    return _reload_payment(session, payment_id)
+
+
+def _record_clink_send_attempt(session: Session, payment: Payment) -> Payment | None:
+    payment_id = payment.id
+    lease_token = payment.clink_lease_token
+    if payment_id is None:
+        raise ValueError("payment has no id")
+    if lease_token is None:
+        return None
+    now = _nwc_database_clock(session)
+    result = session.execute(
+        update(Payment)
+        .where(
+            Payment.id == payment_id,
+            Payment.status == PaymentStatus.PENDING,
+            Payment.clink_attempt_count == 0,
+            Payment.clink_lease_token == lease_token,
+            Payment.clink_lease_until > now,  # type: ignore[operator]
+        )
+        .values(
+            clink_attempt_count=1,
+            clink_attempted_at=now,
+            clink_state="sending",
+            clink_error_code=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return None
+    session.commit()
+    return _reload_payment(session, payment_id)
+
+
 def _nwc_user(session: Session, payment: Payment) -> User:
     subscription = session.get(Subscription, payment.subscription_id)
     user = session.get(User, subscription.user_id) if subscription else None
@@ -603,7 +771,10 @@ def _lnd_invoice_state(payment: Payment) -> LightningInvoiceState:
 
 
 def _reconcile_nwc_payment(session: Session, payment: Payment) -> Payment:
-    if payment.method != PaymentMethod.NWC or payment.status != PaymentStatus.PENDING:
+    uses_nwc = payment.method == PaymentMethod.NWC or (
+        payment.method == PaymentMethod.CLINK and payment.clink_nwc_fallback
+    )
+    if not uses_nwc or payment.status != PaymentStatus.PENDING:
         return payment
     if not payment.invoice or not payment.payment_hash:
         return payment
@@ -717,6 +888,119 @@ def _reconcile_nwc_payment(session: Session, payment: Payment) -> Payment:
     if invalid is not None:
         return invalid
     payment = _save_nwc_observation(session, payment, pay_result.state.value)
+    if _lnd_invoice_state(payment) == LightningInvoiceState.SETTLED:
+        return _finalize_payment(session, payment, PaymentStatus.PENDING)
+    return payment
+
+
+def _clink_can_fallback_to_nwc(user: User, payment: Payment) -> bool:
+    return (
+        settings.is_payment_method_enabled(PaymentMethod.NWC)
+        and user.has_nwc
+        and payment.nwc_credential_generation is not None
+        and user.nwc_generation == payment.nwc_credential_generation
+    )
+
+
+def _start_nwc_fallback(
+    session: Session,
+    payment: Payment,
+    user: User,
+    error_code: str,
+) -> Payment:
+    if not _clink_can_fallback_to_nwc(user, payment):
+        return _release_failed_clink_payment(
+            session, payment, error_code, require_lease=payment.clink_lease_token is not None
+        )
+    payment_id = payment.id
+    if payment_id is None:
+        raise ValueError("payment has no id")
+    statement = update(Payment).where(
+        Payment.id == payment_id,
+        Payment.status == PaymentStatus.PENDING,
+        Payment.clink_nwc_fallback.is_(False),  # type: ignore[union-attr]
+    )
+    if payment.clink_lease_token is None:
+        statement = statement.where(Payment.clink_lease_token.is_(None))  # type: ignore[union-attr]
+    else:
+        statement = statement.where(Payment.clink_lease_token == payment.clink_lease_token)
+    result = session.execute(
+        statement.values(
+            clink_state="failed",
+            clink_error_code=error_code,
+            clink_nwc_fallback=True,
+            clink_lease_until=None,
+            clink_lease_token=None,
+        ).execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return _reload_payment(session, payment_id)
+    session.commit()
+    return _reconcile_nwc_payment(session, _reload_payment(session, payment_id))
+
+
+def _reconcile_clink_payment(session: Session, payment: Payment) -> Payment:
+    if payment.method != PaymentMethod.CLINK or payment.status != PaymentStatus.PENDING:
+        return payment
+    if not payment.invoice or not payment.payment_hash:
+        return payment
+
+    lnd_state = _lnd_invoice_state(payment)
+    if lnd_state == LightningInvoiceState.SETTLED:
+        return _finalize_payment(session, payment, PaymentStatus.PENDING)
+    if lnd_state == LightningInvoiceState.CANCELED:
+        return _release_failed_clink_payment(session, payment, "lnd_invoice_canceled")
+    if lnd_state == LightningInvoiceState.ACCEPTED:
+        return _save_clink_observation(session, payment, ClinkPaymentState.PENDING.value)
+    if payment.clink_nwc_fallback:
+        return _reconcile_nwc_payment(session, payment)
+    # CLINK v1 has no lookup operation or mandatory idempotency. After a send,
+    # only LND can safely resolve an ambiguous response without a duplicate debit.
+    if payment.clink_attempt_count > 0:
+        return _reload_payment(session, payment.id)  # type: ignore[arg-type]
+
+    claimed = _claim_clink_lease(session, payment)
+    if claimed is None:
+        return _reload_payment(session, payment.id)  # type: ignore[arg-type]
+    payment = claimed
+    user = _nwc_user(session, payment)
+    try:
+        ndebit = decrypt_clink_credential(user, payment.clink_credential_generation)
+    except ValueError:
+        return _release_failed_clink_payment(
+            session, payment, "credential_unavailable", require_lease=True
+        )
+
+    recorded = _record_clink_send_attempt(session, payment)
+    if recorded is None:
+        return _reload_payment(session, payment.id)  # type: ignore[arg-type]
+    payment = recorded
+    adapter = get_clink_adapter()
+    description = f"Blindport {payment.billing_term.value} subscription"
+    try:
+        pay_result = adapter.pay_invoice(
+            ndebit,
+            payment.invoice,
+            payment.amount_sats,
+            description,
+        )
+    except ClinkAdapterError as error:
+        if (
+            error.wallet_rejection
+            and not error.retryable
+            and error.code in _CLINK_DEFINITIVE_REJECTION_CODES
+        ):
+            return _start_nwc_fallback(session, payment, user, error.code)
+        _save_clink_observation(session, payment, "unknown", error_code=error.code)
+        raise PaymentProviderError("CLINK payment provider is unavailable") from error
+    bind_hash = getattr(adapter, "bind_payment_hash", None)
+    if callable(bind_hash):
+        bind_hash(payment.invoice, payment.payment_hash)
+    invalid = _verify_clink_result(session, payment, pay_result.preimage)
+    if invalid is not None:
+        return invalid
+    payment = _save_clink_observation(session, payment, pay_result.state.value)
     if _lnd_invoice_state(payment) == LightningInvoiceState.SETTLED:
         return _finalize_payment(session, payment, PaymentStatus.PENDING)
     return payment
@@ -906,6 +1190,18 @@ def create_payment(
             )
             payment = ensure_lightning_invoice(session, payment)
             return _reconcile_nwc_payment(session, payment)
+        elif method == PaymentMethod.CLINK:
+            user = session.get(User, subscription.user_id)
+            if user is None or not user.has_clink:
+                raise ValueError("user has no CLINK wallet configured")
+            payment.clink_credential_generation = user.clink_generation
+            if user.has_nwc and settings.is_payment_method_enabled(PaymentMethod.NWC):
+                payment.nwc_credential_generation = user.nwc_generation
+            _stage_lightning_invoice(
+                session, payment, subscription, eligibility_deadline, invoice_expiry
+            )
+            payment = ensure_lightning_invoice(session, payment)
+            return _reconcile_clink_payment(session, payment)
         else:  # pragma: no cover - PaymentMethod is exhaustive
             raise ValueError(f"unsupported payment method: {method}")
 
@@ -1150,6 +1446,8 @@ def check_and_settle_payment(session: Session, payment: Payment) -> Payment:
             return payment
         if payment.method == PaymentMethod.NWC:
             return _reconcile_nwc_payment(session, payment)
+        if payment.method == PaymentMethod.CLINK:
+            return _reconcile_clink_payment(session, payment)
 
     settled = False
     if payment.method in (PaymentMethod.LIGHTNING, PaymentMethod.STABLECOIN_SWAP):

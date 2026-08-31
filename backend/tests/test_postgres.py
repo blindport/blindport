@@ -727,7 +727,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         ).inserted_primary_key[0]
 
     upgrade_database(engine, "0008")
-    assert database_revisions(engine) == ("0008", "0031")
+    assert database_revisions(engine) == ("0008", "0032")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.connect() as connection:
         backfilled = connection.execute(
@@ -795,7 +795,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
             )
         ).inserted_primary_key[0]
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0031", "0031")
+    assert database_revisions(engine) == ("0032", "0032")
     upgraded_user = Table("user", MetaData(), autoload_with=engine)
     with engine.begin() as connection:
         assert (
@@ -851,7 +851,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
     ) == ("boltz", None, None)
     with pytest.raises(RuntimeError, match="stablecoin swap payments exist"):
         downgrade_database(engine, "0025")
-    assert database_revisions(engine) == ("0031", "0031")
+    assert database_revisions(engine) == ("0032", "0032")
     with engine.connect() as connection:
         payment_methods = (
             connection.execute(
@@ -866,7 +866,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         reminder_audit = connection.execute(
             text("SELECT state, error_code FROM reminderdelivery")
         ).one()
-    assert payment_methods == ["LIGHTNING", "CASHU", "NWC", "STABLECOIN_SWAP"]
+    assert payment_methods == ["LIGHTNING", "CASHU", "NWC", "STABLECOIN_SWAP", "CLINK"]
     assert reminder_audit == ("cancelled", "legacy_delivery_cancelled")
 
     post_migration_marker = f"postgres-legacy-insert-{uuid4()}"
@@ -994,7 +994,7 @@ def test_postgres_migration_and_database_lifecycle() -> None:
         column["name"] for column in inspect(engine).get_columns("subscription")
     }
     upgrade_database(engine)
-    assert database_revisions(engine) == ("0031", "0031")
+    assert database_revisions(engine) == ("0032", "0032")
     with engine.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, SQLModel.metadata) == []
@@ -1581,7 +1581,7 @@ def test_postgres_tcp_and_udp_leases_can_share_ip_and_port() -> None:
     try:
         with pytest.raises(RuntimeError, match="cannot downgrade while UDP subscriptions exist"):
             downgrade_database(engine, "0003")
-        assert database_revisions(engine) == ("0031", "0031")
+        assert database_revisions(engine) == ("0032", "0032")
 
         with Session(engine) as session:
             rows = session.exec(select(Subscription).where(Subscription.user_id == user_id)).all()

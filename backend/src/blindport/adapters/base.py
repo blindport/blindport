@@ -132,6 +132,55 @@ class NwcAdapterError(RuntimeError):
         self.retryable = retryable
 
 
+class ClinkPaymentState(StrEnum):
+    SETTLED = "settled"
+    PENDING = "pending"
+
+
+@dataclass(frozen=True)
+class ClinkValidationResult:
+    app_pubkey: str
+
+
+@dataclass(frozen=True)
+class ClinkPayResult:
+    state: ClinkPaymentState
+    preimage: str | None = None
+
+
+class ClinkAdapterError(RuntimeError):
+    """Sanitized CLINK failure with retry semantics safe for persistence."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool,
+        wallet_rejection: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.wallet_rejection = wallet_rejection
+
+
+class ClinkAdapter(ABC):
+    """Validates and executes policy-approved CLINK wallet operations."""
+
+    @abstractmethod
+    def validate_connection(self, ndebit: str) -> ClinkValidationResult: ...
+
+    @abstractmethod
+    def pay_invoice(
+        self,
+        ndebit: str,
+        invoice: str,
+        amount_sats: int,
+        description: str,
+    ) -> ClinkPayResult: ...
+
+
 class NwcAdapter(ABC):
     """Validates and executes policy-approved NWC wallet operations."""
 

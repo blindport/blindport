@@ -20,6 +20,7 @@ class CredentialPurpose(StrEnum):
     """Closed set of AAD domains for encrypted account-scoped values."""
 
     NWC = "nwc"
+    CLINK = "clink"
     NOTIFICATION_EMAIL = "notification-email"
 
 

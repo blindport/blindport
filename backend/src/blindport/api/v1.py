@@ -10,12 +10,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlmodel import Session, select
 from starlette.concurrency import run_in_threadpool
 
-from ..adapters.base import NwcAdapterError
-from ..adapters.factory import get_nwc_adapter
+from ..adapters.base import ClinkAdapterError, NwcAdapterError
+from ..adapters.factory import get_clink_adapter, get_nwc_adapter
 from ..config import settings
 from ..core import qr, tokens
 from ..core.auth import AdminPrincipal, current_admin, current_bearer_user, current_user
@@ -46,6 +46,7 @@ from ..core.schemas import (
     CatalogResponse,
     ClientCertResponse,
     ClientVersionResponse,
+    ClinkStatusResponse,
     CreateAnnouncementRequest,
     CreatePaymentRequest,
     CreateSubscriptionRequest,
@@ -59,6 +60,7 @@ from ..core.schemas import (
     PaymentResponse,
     RelayAssignmentResponse,
     RelayProvisioningResponse,
+    SetClinkRequest,
     SetNwcRequest,
     SignupResponse,
     SubscriptionResponse,
@@ -77,6 +79,10 @@ from ..services.announcements import (
 )
 from ..services.browser_sessions import issue_browser_session, set_browser_session_cookies
 from ..services.catalog import ProductUnavailableError, get_catalog
+from ..services.clink_credentials import (
+    clear_clink_credential,
+    store_clink_credential,
+)
 from ..services.domain_verification import (
     DomainVerificationResult,
     DomainVerifier,
@@ -335,7 +341,13 @@ def _locked_nwc_user(session: Session, user: User) -> User:
         .join(Subscription, Subscription.id == Payment.subscription_id)
         .where(
             Subscription.user_id == locked.id,
-            Payment.method == PaymentMethod.NWC,
+            or_(
+                Payment.method == PaymentMethod.NWC,
+                and_(
+                    Payment.method == PaymentMethod.CLINK,
+                    Payment.nwc_credential_generation.is_not(None),  # type: ignore[union-attr]
+                ),
+            ),
             Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
         )
     ).first()
@@ -553,15 +565,192 @@ def clear_nwc(
     response.headers.update(_NWC_RESPONSE_HEADERS)
     user = _locked_nwc_user(session, user)
     clear_nwc_credential(user)
-    for subscription in session.exec(
-        select(Subscription).where(Subscription.user_id == user.id, Subscription.auto_renew)
-    ).all():
-        subscription.auto_renew = False
-        session.add(subscription)
+    if not user.has_clink or not settings.is_payment_method_enabled(PaymentMethod.CLINK):
+        for subscription in session.exec(
+            select(Subscription).where(Subscription.user_id == user.id, Subscription.auto_renew)
+        ).all():
+            subscription.auto_renew = False
+            session.add(subscription)
     session.add(user)
     session.commit()
     session.refresh(user)
     return _nwc_status(user)
+
+
+def _clink_status(user: User) -> ClinkStatusResponse:
+    return ClinkStatusResponse(
+        has_clink=user.has_clink,
+        last_validated_at=user.clink_last_validated_at,
+    )
+
+
+def _locked_clink_user(session: Session, user: User) -> User:
+    if user.id is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "account is unavailable",
+            headers=_NWC_RESPONSE_HEADERS,
+        )
+    locked = session.exec(
+        select(User)
+        .where(User.id == user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one()
+    open_payment = session.exec(
+        select(Payment.id)
+        .join(Subscription, Subscription.id == Payment.subscription_id)
+        .where(
+            Subscription.user_id == locked.id,
+            Payment.method == PaymentMethod.CLINK,
+            Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+        )
+    ).first()
+    if open_payment is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "CLINK connection cannot change while an automatic payment is open",
+            headers=_NWC_RESPONSE_HEADERS,
+        )
+    return locked
+
+
+@router.get("/me/clink", response_model=ClinkStatusResponse)
+def get_clink_status(
+    response: Response,
+    user: User = Depends(current_user),
+) -> ClinkStatusResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
+    return _clink_status(user)
+
+
+@router.post("/me/clink", response_model=ClinkStatusResponse)
+async def set_clink(
+    response: Response,
+    request: Request,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ClinkStatusResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
+    try:
+        payments_svc.require_payment_method_enabled(PaymentMethod.CLINK)
+        _enforce_public_rate_limit(
+            session,
+            RateLimitScope.PAYMENT_CREATE,
+            account_identifier(user.id or 0),
+        )
+    except payments_svc.DisabledPaymentMethodError as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, str(error), headers=_NWC_RESPONSE_HEADERS
+        ) from error
+    except HTTPException as error:
+        error.headers = {**(error.headers or {}), **_NWC_RESPONSE_HEADERS}
+        raise
+    try:
+        content_type = request.headers.get("Content-Type", "").partition(";")[0].strip().lower()
+        if content_type != "application/json" and not (
+            content_type.startswith("application/") and content_type.endswith("+json")
+        ):
+            raise ValueError("invalid content type")
+        encoded = bytearray()
+        async for chunk in request.stream():
+            if len(encoded) + len(chunk) > 16_384:
+                raise ValueError("request body is too large")
+            encoded.extend(chunk)
+        body = SetClinkRequest.model_validate(json.loads(encoded))
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError, ValidationError):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "CLINK connection request is invalid",
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from None
+    ndebit = body.ndebit.strip()
+    if not ndebit or len(ndebit) > 4096:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "CLINK payment pointer is invalid",
+            headers=_NWC_RESPONSE_HEADERS,
+        )
+    try:
+        await run_in_threadpool(get_clink_adapter().validate_connection, ndebit)
+    except ClinkAdapterError as error:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY if error.retryable else status.HTTP_400_BAD_REQUEST,
+            str(error),
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "CLINK payment pointer is invalid",
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
+    user = _locked_clink_user(session, user)
+    subscription = None
+    if body.auto_renew_subscription_id is not None:
+        subscription = session.exec(
+            select(Subscription)
+            .where(
+                Subscription.public_id == body.auto_renew_subscription_id,
+                Subscription.user_id == user.id,
+                Subscription.status != SubscriptionStatus.CANCELLED,
+            )
+            .with_for_update()
+        ).first()
+        if subscription is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                "subscription not found",
+                headers=_NWC_RESPONSE_HEADERS,
+            )
+        try:
+            subs_svc.require_product_billing_term(
+                subscription.product,
+                subscription.delivery,
+                subscription.billing_term,
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                str(error),
+                headers=_NWC_RESPONSE_HEADERS,
+            ) from error
+    try:
+        store_clink_credential(user, ndebit)
+    except ValueError as error:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "wallet credential encryption is unavailable",
+            headers=_NWC_RESPONSE_HEADERS,
+        ) from error
+    session.add(user)
+    if subscription is not None:
+        subscription.auto_renew = True
+        session.add(subscription)
+    session.commit()
+    session.refresh(user)
+    return _clink_status(user)
+
+
+@router.delete("/me/clink", response_model=ClinkStatusResponse)
+def clear_clink(
+    response: Response,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ClinkStatusResponse:
+    response.headers.update(_NWC_RESPONSE_HEADERS)
+    user = _locked_clink_user(session, user)
+    clear_clink_credential(user)
+    if not user.has_nwc or not settings.is_payment_method_enabled(PaymentMethod.NWC):
+        for subscription in session.exec(
+            select(Subscription).where(Subscription.user_id == user.id, Subscription.auto_renew)
+        ).all():
+            subscription.auto_renew = False
+            session.add(subscription)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return _clink_status(user)
 
 
 def _locked_notification_email_user(session: Session, user: User) -> User:
@@ -910,11 +1099,30 @@ def toggle_auto_renew(
     if sub is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "subscription not found")
     if enable:
-        try:
-            payments_svc.require_payment_method_enabled(PaymentMethod.NWC)
-        except payments_svc.DisabledPaymentMethodError as e:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    if enable and not user.has_nwc:
+        if (
+            user.has_clink
+            and not settings.is_payment_method_enabled(PaymentMethod.CLINK)
+            and not (user.has_nwc and settings.is_payment_method_enabled(PaymentMethod.NWC))
+        ):
+            try:
+                payments_svc.require_payment_method_enabled(PaymentMethod.CLINK)
+            except payments_svc.DisabledPaymentMethodError as error:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+        if (
+            user.has_nwc
+            and not settings.is_payment_method_enabled(PaymentMethod.NWC)
+            and not (user.has_clink and settings.is_payment_method_enabled(PaymentMethod.CLINK))
+        ):
+            try:
+                payments_svc.require_payment_method_enabled(PaymentMethod.NWC)
+            except payments_svc.DisabledPaymentMethodError as error:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(error)) from error
+        wallet_available = (
+            user.has_clink and settings.is_payment_method_enabled(PaymentMethod.CLINK)
+        ) or (user.has_nwc and settings.is_payment_method_enabled(PaymentMethod.NWC))
+    else:
+        wallet_available = True
+    if enable and not wallet_available:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "cannot enable auto-renew without a wallet connection"
         )
@@ -977,6 +1185,10 @@ def _payment_to_response(p: Payment, subscription: Subscription) -> PaymentRespo
         nwc_state=p.nwc_state,
         nwc_attempt_count=p.nwc_attempt_count,
         nwc_error_code=p.nwc_error_code,
+        clink_state=p.clink_state,
+        clink_attempt_count=p.clink_attempt_count,
+        clink_error_code=p.clink_error_code,
+        clink_nwc_fallback=p.clink_nwc_fallback,
         expires_at=p.expires_at,
     )
 
