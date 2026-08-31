@@ -1,0 +1,62 @@
+name: blindport-dns
+
+x-service-defaults: &service-defaults
+  image: powerdns/pdns-auth-50:5.0.7@sha256:4d6cc4fc42a28f2df7fb55f6f36d8323f96e0da66135ccdad057ca7349b223b4
+  user: "953:953"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  read_only: true
+  logging:
+    driver: journald
+    options:
+      tag: "blindport-dns-{{.Name}}"
+  volumes:
+    - ${DNS_STATE_DIR:-./state}:/var/lib/powerdns
+    - ./pdns-common.conf:/etc/powerdns/pdns.d/10-blindport-common.conf:ro
+    - ${DNS_ROLE_CONFIG}:/etc/powerdns/pdns.d/20-blindport-role.conf:ro
+    - ./blindport.com.zone:/etc/powerdns/blindport.com.zone:ro
+  tmpfs:
+    - /tmp:size=8m,mode=1777
+    - /run/pdns:size=4m,mode=0750,uid=953,gid=953
+  pids_limit: 100
+  mem_limit: 128m
+  cpus: 0.5
+
+services:
+  init:
+    <<: *service-defaults
+    profiles: [tools]
+    restart: "no"
+    environment:
+      DNS_ROLE: ${DNS_ROLE}
+    secrets:
+      - dns_transfer_tsig
+      - dns_dnssec_private_key
+    volumes:
+      - ${DNS_STATE_DIR:-./state}:/var/lib/powerdns
+      - ./pdns-common.conf:/etc/powerdns/pdns.d/10-blindport-common.conf:ro
+      - ${DNS_ROLE_CONFIG}:/etc/powerdns/pdns.d/20-blindport-role.conf:ro
+      - ./blindport.com.zone:/etc/powerdns/blindport.com.zone:ro
+      - ./init.sh:/opt/blindport/init.sh:ro
+    entrypoint: ["sh", "/opt/blindport/init.sh"]
+
+  authoritative:
+    <<: *service-defaults
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 10s
+    network_mode: host
+    cap_add: [NET_BIND_SERVICE]
+    healthcheck:
+      test: ["CMD", "pdns_control", "rping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+secrets:
+  dns_transfer_tsig:
+    file: ${DNS_TSIG_SECRET_FILE}
+  dns_dnssec_private_key:
+    file: ${DNS_DNSSEC_PRIVATE_KEY_FILE}

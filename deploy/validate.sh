@@ -451,11 +451,121 @@ assert all(server.get("logs") is None for server in servers)
 
 haproxy_check() {
     directory="$1"
+    config="${2:-haproxy.cfg}"
     docker run --rm \
         --env-file "$root/$directory/.env.example" \
-        -v "$root/$directory/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+        -v "$root/$directory/$config:/usr/local/etc/haproxy/haproxy.cfg:ro" \
         haproxy:3.2.1-alpine@sha256:ac79fe145f2bb6626ff26b584a2d0a34e791906c01015f2ae037aa3137b683d9 \
         haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
+}
+
+dual_stack_relay_policy_check() {
+    docker compose \
+        --env-file "$root/deploy/production/.env.example" \
+        -f "$root/deploy/production/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+relay = services["relay"]["environment"]
+proxy = services["sni-mux"]["environment"]
+assert relay["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.10,2001:db8:1::10"
+assert proxy["PUBLIC_IPV6"] == "2001:db8:1::10"
+'
+
+    docker compose \
+        --env-file "$root/deploy/split/relay/.env.example" \
+        -f "$root/deploy/split/relay/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+services = json.load(sys.stdin)["services"]
+relay = services["relay"]
+environment = relay["environment"]
+assert environment["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.30,2001:db8:2::30"
+assert environment["BLINDPORT_RELAY_SNI"] == "203.0.113.30:443,[2001:db8:2::30]:443"
+assert environment["BLINDPORT_RELAY_HTTP_CHALLENGE"] == "203.0.113.30:80,[2001:db8:2::30]:80"
+assert "[2001:db8:2::30]:5443" in relay["command"]
+health_proxy = services["health-proxy"]
+assert health_proxy["network_mode"] == "host"
+assert health_proxy["read_only"] is True
+assert health_proxy["environment"]["RELAY_PUBLIC_IPV6"] == "2001:db8:2::30"
+'
+
+    python3 - \
+        "$root/deploy/production/haproxy.cfg" \
+        "$root/deploy/split/relay/health-proxy.cfg" <<'PY'
+from pathlib import Path
+import sys
+
+production, split = (Path(path).read_text(encoding="utf-8") for path in sys.argv[1:])
+assert 'bind "[${PUBLIC_IPV6}]:443"' in production
+assert 'bind "[${PUBLIC_IPV6}]:80"' in production
+assert 'bind "[${PUBLIC_IPV6}]:9080"' in production
+assert 'bind "[${RELAY_PUBLIC_IPV6}]:9080"' in split
+for config in (production, split):
+    assert "http-request deny unless { method GET } { path /readyz }" in config
+    assert "server relay 127.0.0.1:9090 check" in config
+PY
+}
+
+dns_policy_check() {
+    docker compose \
+        --profile tools \
+        --env-file "$root/deploy/dns/.env.example" \
+        -f "$root/deploy/dns/compose.yaml" \
+        config --format json \
+        | python3 -c '
+import json
+import sys
+
+config = json.load(sys.stdin)
+services = config["services"]
+authoritative = services["authoritative"]
+initializer = services["init"]
+assert authoritative["network_mode"] == "host"
+assert authoritative["read_only"] is True
+assert authoritative["cap_add"] == ["NET_BIND_SERVICE"]
+assert authoritative["cap_drop"] == ["ALL"]
+assert authoritative["healthcheck"]["test"][-1] == "rping"
+assert initializer["profiles"] == ["tools"]
+assert set(config["secrets"]) == {"dns_dnssec_private_key", "dns_transfer_tsig"}
+assert {item["source"] for item in initializer["secrets"]} == {
+    "dns_dnssec_private_key",
+    "dns_transfer_tsig",
+}
+'
+
+    python3 - \
+        "$root/deploy/dns/pdns-common.conf" \
+        "$root/deploy/dns/pdns-primary.conf" \
+        "$root/deploy/dns/pdns-secondary.conf" \
+        "$root/deploy/dns/init.sh" \
+        "$root/deploy/dns/blindport.com.zone" <<'PY'
+from pathlib import Path
+import sys
+
+common, primary, secondary, initializer, zone = (
+    Path(path).read_text(encoding="utf-8") for path in sys.argv[1:]
+)
+assert "api=no" in common and "webserver=no" in common
+assert "query-logging=no" in common and "log-dns-queries=no" in common
+assert "enable-lua-records=yes" in common
+assert "cache-ttl=0" in common and "query-cache-ttl=0" in common
+assert "allow-axfr-ips=\n" in primary
+assert "secondary=yes" in secondary
+assert "pdnsutil tsigkey activate" in initializer
+assert "pdnsutil zone import-key" in initializer
+assert "pdnsutil zone rectify" in initializer
+assert zone.count(" IN LUA A ") == 2
+assert "http://78.17.212.128:9080/readyz" in zone
+assert "http://89.125.35.70:9080/readyz" in zone
+assert " IN AAAA " not in zone
+PY
 }
 
 production_http_routing_check() {
@@ -857,6 +967,7 @@ assert relay["cpus"] == 1.0
 compose_check deploy/production
 compose_check deploy/split/control
 compose_check deploy/split/relay
+compose_check deploy/dns
 compose_check deploy/ha-lab
 compose_check examples/docker
 production_compose_guard_check
@@ -873,6 +984,7 @@ migration_credential_scope_check deploy/split/control
 logging_policy_check deploy/production
 logging_policy_check deploy/split/control
 logging_policy_check deploy/split/relay
+logging_policy_check deploy/dns
 provider_edge_policy_check deploy/production
 provider_edge_policy_check deploy/split/control
 wireguard_production_policy_check deploy/production deploy/production
@@ -888,6 +1000,9 @@ caddy_log_policy_check deploy/production Caddyfile.internal
 caddy_log_policy_check deploy/split/control
 haproxy_check deploy/production
 haproxy_check deploy/ha-lab
+haproxy_check deploy/split/relay health-proxy.cfg
+dual_stack_relay_policy_check
+dns_policy_check
 production_http_routing_check
 production_relay_internal_policy_check
 caddy_runtime_policy_check

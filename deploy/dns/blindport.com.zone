@@ -1,0 +1,22 @@
+$ORIGIN blindport.com.
+$TTL 3600
+
+@ IN SOA ns1.blindport.com. hostmaster.blindport.com. 2026083101 300 60 604800 60
+@ IN NS ns1.blindport.com.
+@ IN NS ns2.blindport.com.
+
+ns1 IN A 78.17.212.128
+ns2 IN A 89.125.35.70
+
+@ IN A 78.17.212.128
+@ IN MX 10 mx1.privateemail.com.
+@ IN MX 10 mx2.privateemail.com.
+@ IN TXT "v=spf1 include:spf.privateemail.com ~all"
+
+relay IN A 78.17.212.128
+relay-sg IN A 78.17.212.128
+relay-mynymbox IN A 89.125.35.70
+
+ingress 60 IN LUA A "ifurlextup({{['78.17.212.128']='http://78.17.212.128:9080/readyz',['89.125.35.70']='http://89.125.35.70:9080/readyz'}},{selector='all',backupSelector='empty',timeout=2,interval=10,minimumFailures=3,failOnIncompleteCheck=true})"
+*.ingress 60 IN CNAME ingress.blindport.com.
+*.relay 60 IN LUA A "ifurlextup({{['78.17.212.128']='http://78.17.212.128:9080/readyz',['89.125.35.70']='http://89.125.35.70:9080/readyz'}},{selector='all',backupSelector='empty',timeout=2,interval=10,minimumFailures=3,failOnIncompleteCheck=true})"
