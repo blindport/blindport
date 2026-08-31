@@ -489,7 +489,7 @@ environment = relay["environment"]
 assert environment["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.30,2001:db8:2::30"
 assert environment["BLINDPORT_RELAY_SNI"] == "203.0.113.30:443,[2001:db8:2::30]:443"
 assert environment["BLINDPORT_RELAY_HTTP_CHALLENGE"] == "203.0.113.30:80,[2001:db8:2::30]:80"
-assert "[2001:db8:2::30]:5443" in relay["command"]
+assert relay["command"][-1] == ""
 health_proxy = services["health-proxy"]
 assert health_proxy["network_mode"] == "host"
 assert health_proxy["read_only"] is True

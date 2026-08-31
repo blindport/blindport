@@ -297,7 +297,7 @@ func main() {
 
 	var certificateCredentials *certificateManager
 	if !*disableMTLS {
-		certIPs := append(append([]string{}, r.listenIPs...), r.sharedIPs...)
+		certIPs := controlCertificateIPs(controlAddrs)
 		certificateCredentials, err = newCertificateManager(ctx, resolver, splitNonEmpty(*mtlsHosts, ","), certIPs, *certificateCacheDir, health, logger)
 		if err != nil {
 			logger.Error("mTLS setup failed", "err", err)
@@ -1094,6 +1094,28 @@ func parseControlListeners(primary, extras string) ([]string, error) {
 		listeners = append(listeners, addr)
 	}
 	return listeners, nil
+}
+
+func controlCertificateIPs(controlAddrs []string) []string {
+	ips := make([]string, 0, len(controlAddrs))
+	seen := make(map[string]struct{})
+	for _, listener := range controlAddrs {
+		host, _, err := net.SplitHostPort(listener)
+		if err != nil {
+			continue
+		}
+		addr, err := netip.ParseAddr(host)
+		if err != nil || addr.IsUnspecified() || addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsMulticast() {
+			continue
+		}
+		ip := addr.String()
+		if _, exists := seen[ip]; exists {
+			continue
+		}
+		seen[ip] = struct{}{}
+		ips = append(ips, ip)
+	}
+	return ips
 }
 
 func parseOptionalListeners(value, name string) ([]string, error) {

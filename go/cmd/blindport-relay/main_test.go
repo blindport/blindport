@@ -715,6 +715,22 @@ func TestParseControlListeners(t *testing.T) {
 	}
 }
 
+func TestControlCertificateIPsUseOnlyRoutableListenerAddresses(t *testing.T) {
+	got := controlCertificateIPs([]string{
+		"203.0.113.10:5443",
+		"[2001:db8::10]:5443",
+		"203.0.113.10:55443",
+		"127.0.0.1:5443",
+		"[::1]:5443",
+		"relay.example:5443",
+		":5443",
+	})
+	want := []string{"203.0.113.10", "2001:db8::10"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("control certificate IPs = %v, want %v", got, want)
+	}
+}
+
 func TestParseOptionalListeners(t *testing.T) {
 	tests := []struct {
 		name    string
