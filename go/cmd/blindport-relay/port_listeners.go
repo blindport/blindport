@@ -26,10 +26,10 @@ type portListenerRegistry struct {
 }
 
 type portListener struct {
-	references int
-	cancel     context.CancelFunc
-	listener   net.Listener
-	packetConn net.PacketConn
+	references  int
+	cancel      context.CancelFunc
+	listeners   []net.Listener
+	packetConns []net.PacketConn
 }
 
 func newPortListenerRegistry(relay *relay, maxListeners int) *portListenerRegistry {
@@ -70,7 +70,6 @@ func (registry *portListenerRegistry) acquire(ctx context.Context, claim *protoc
 		return nil, err
 	}
 	key := claimKey(claim)
-	address := net.JoinHostPort(claim.IP, strconv.Itoa(int(claim.Port)))
 
 	registry.mu.Lock()
 	if registry.closed {
@@ -89,29 +88,39 @@ func (registry *portListenerRegistry) acquire(ctx context.Context, claim *protoc
 
 	listenerCtx, cancel := context.WithCancel(ctx)
 	entry := &portListener{references: 1, cancel: cancel}
-	var err error
-	switch claim.Transport {
-	case protocol.TransportTCP:
-		entry.listener, err = registry.listen("tcp", address)
-	case protocol.TransportUDP:
-		entry.packetConn, err = registry.listenPacket("udp", address)
-	default:
-		cancel()
-		registry.mu.Unlock()
-		return nil, errors.New("unsupported shared port transport")
-	}
-	if err != nil {
-		cancel()
-		registry.mu.Unlock()
-		return nil, err
+	for _, ip := range registry.relay.sharedIPs {
+		address := net.JoinHostPort(ip, strconv.Itoa(int(claim.Port)))
+		switch claim.Transport {
+		case protocol.TransportTCP:
+			listener, err := registry.listen("tcp", address)
+			if err != nil {
+				entry.close()
+				registry.mu.Unlock()
+				return nil, err
+			}
+			entry.listeners = append(entry.listeners, listener)
+		case protocol.TransportUDP:
+			packetConn, err := registry.listenPacket("udp", address)
+			if err != nil {
+				entry.close()
+				registry.mu.Unlock()
+				return nil, err
+			}
+			entry.packetConns = append(entry.packetConns, packetConn)
+		default:
+			entry.close()
+			registry.mu.Unlock()
+			return nil, errors.New("unsupported shared port transport")
+		}
 	}
 	registry.listeners[key] = entry
 	registry.mu.Unlock()
 
-	if entry.listener != nil {
-		go registry.relay.servePort(listenerCtx, entry.listener, claim.IP, claim.Port)
-	} else {
-		go registry.relay.serveUDPPort(listenerCtx, entry.packetConn, claim.IP, claim.Port)
+	for _, listener := range entry.listeners {
+		go registry.relay.servePort(listenerCtx, listener, claim.IP, claim.Port)
+	}
+	for _, packetConn := range entry.packetConns {
+		go registry.relay.serveUDPPort(listenerCtx, packetConn, claim.IP, claim.Port)
 	}
 	return registry.releaseFunc(key, entry), nil
 }
@@ -162,10 +171,10 @@ func (registry *portListenerRegistry) closeAll() {
 
 func (entry *portListener) close() {
 	entry.cancel()
-	if entry.listener != nil {
-		_ = entry.listener.Close()
+	for _, listener := range entry.listeners {
+		_ = listener.Close()
 	}
-	if entry.packetConn != nil {
-		_ = entry.packetConn.Close()
+	for _, packetConn := range entry.packetConns {
+		_ = packetConn.Close()
 	}
 }

@@ -86,9 +86,9 @@ func main() {
 	sharedIPs := flag.String("shared-ips", os.Getenv("BLINDPORT_RELAY_SHARED_IPS"), "comma-separated shared ingress IPs for Blindport Port")
 	sharedTCPPorts := flag.String("shared-ports", os.Getenv("BLINDPORT_RELAY_SHARED_TCP_PORTS"), "inclusive Blindport Port TCP range, for example 10000-10007")
 	sharedUDPPorts := flag.String("shared-udp-ports", os.Getenv("BLINDPORT_RELAY_SHARED_UDP_PORTS"), "inclusive Blindport Port UDP range, for example 10000-10007")
-	sniListen := flag.String("sni", envDefault("BLINDPORT_RELAY_SNI", ":4443"), "shared-pool SNI listen address (set empty to disable)")
+	sniListen := flag.String("sni", envDefault("BLINDPORT_RELAY_SNI", ":4443"), "comma-separated shared-pool SNI listen addresses (set empty to disable)")
 	sniProxyProtocol := flag.String("sni-proxy-protocol", os.Getenv("BLINDPORT_RELAY_SNI_PROXY_PROTOCOL"), "trusted PROXY protocol for SNI ingress (empty or v2; v2 requires an explicit loopback bind)")
-	challengeListen := flag.String("http-challenge", os.Getenv("BLINDPORT_RELAY_HTTP_CHALLENGE"), "HTTP listen address for HTTPS redirects and HTTP-01 forwarding, for example :80 (empty disables it; safe behind an L7 frontend)")
+	challengeListen := flag.String("http-challenge", os.Getenv("BLINDPORT_RELAY_HTTP_CHALLENGE"), "comma-separated HTTP listen addresses for HTTPS redirects and HTTP-01 forwarding, for example :80 (empty disables it; safe behind an L7 frontend)")
 	mtlsHosts := flag.String("mtls-hosts", os.Getenv("BLINDPORT_RELAY_MTLS_HOSTS"), "comma-separated SAN hostnames for the relay server cert")
 	certificateCacheDir := flag.String("certificate-cache-dir", os.Getenv("BLINDPORT_RELAY_CERTIFICATE_CACHE_DIR"), "owner-only directory for persistent relay certificate cache (empty disables persistence)")
 	disableMTLS := flag.Bool("disable-mtls", os.Getenv("BLINDPORT_RELAY_DISABLE_MTLS") == "1", "disable mTLS on the control plane (insecure, dev only)")
@@ -164,7 +164,17 @@ func main() {
 		logger.Error("invalid control listener configuration", "err", err)
 		os.Exit(2)
 	}
-	sniProxyProtocolEnabled, err := validateSNIProxyProtocol(*sniProxyProtocol, *sniListen)
+	sniAddrs, err := parseOptionalListeners(*sniListen, "SNI")
+	if err != nil {
+		logger.Error("invalid SNI listener configuration", "err", err)
+		os.Exit(2)
+	}
+	challengeAddrs, err := parseOptionalListeners(*challengeListen, "HTTP challenge")
+	if err != nil {
+		logger.Error("invalid HTTP challenge listener configuration", "err", err)
+		os.Exit(2)
+	}
+	sniProxyProtocolEnabled, err := validateSNIProxyProtocol(*sniProxyProtocol, sniAddrs)
 	if err != nil {
 		logger.Error("invalid SNI PROXY protocol configuration", "err", err)
 		os.Exit(2)
@@ -207,8 +217,8 @@ func main() {
 		sharedUDPPorts:      parsedConfig.sharedUDPPorts,
 		reauthInterval:      *reauthInterval,
 		reauthMaxStale:      *reauthMaxStale,
-		sniEnabled:          *sniListen != "",
-		challengeEnabled:    *challengeListen != "",
+		sniEnabled:          len(sniAddrs) != 0,
+		challengeEnabled:    len(challengeAddrs) != 0,
 		limits:              limiters,
 		metrics:             metrics,
 		shutdownTimeout:     *shutdownTimeout,
@@ -301,7 +311,7 @@ func main() {
 		logger.Warn("mTLS DISABLED on control plane (BLINDPORT_RELAY_DISABLE_MTLS=1)")
 	}
 
-	listeners, err := bindRelayListeners(controlAddrs, *sniListen, *challengeListen, parsedConfig)
+	listeners, err := bindRelayListeners(controlAddrs, sniAddrs, challengeAddrs, parsedConfig)
 	if err != nil {
 		logger.Error("relay listener setup failed", "err", err)
 		os.Exit(1)
@@ -1086,20 +1096,48 @@ func parseControlListeners(primary, extras string) ([]string, error) {
 	return listeners, nil
 }
 
-func validateSNIProxyProtocol(value, sniAddr string) (bool, error) {
+func parseOptionalListeners(value, name string) ([]string, error) {
+	if value == "" {
+		return nil, nil
+	}
+	listeners := make([]string, 0, strings.Count(value, ",")+1)
+	seen := make(map[string]struct{})
+	for _, raw := range strings.Split(value, ",") {
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			return nil, fmt.Errorf("%s listeners contain an empty entry", name)
+		}
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			return nil, fmt.Errorf("%s listener %q must use host:port syntax (bracket IPv6 addresses)", name, addr)
+		}
+		if _, exists := seen[addr]; exists {
+			return nil, fmt.Errorf("duplicate %s listener %q", name, addr)
+		}
+		seen[addr] = struct{}{}
+		listeners = append(listeners, addr)
+	}
+	return listeners, nil
+}
+
+func validateSNIProxyProtocol(value string, sniAddrs []string) (bool, error) {
 	if value == "" {
 		return false, nil
 	}
 	if value != "v2" {
 		return false, errors.New("SNI PROXY protocol must be v2")
 	}
-	host, _, err := net.SplitHostPort(sniAddr)
-	if err != nil {
-		return false, errors.New("SNI PROXY protocol requires a valid SNI listen address")
+	if len(sniAddrs) == 0 {
+		return false, errors.New("SNI PROXY protocol requires an SNI listener")
 	}
-	addr, err := netip.ParseAddr(host)
-	if err != nil || !addr.IsLoopback() {
-		return false, errors.New("SNI PROXY protocol requires an explicit loopback IP bind")
+	for _, sniAddr := range sniAddrs {
+		host, _, err := net.SplitHostPort(sniAddr)
+		if err != nil {
+			return false, errors.New("SNI PROXY protocol requires valid SNI listen addresses")
+		}
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.IsLoopback() {
+			return false, errors.New("SNI PROXY protocol requires explicit loopback IP binds")
+		}
 	}
 	return true, nil
 }
@@ -1236,7 +1274,7 @@ type boundRelayListener struct {
 	port       uint16
 }
 
-func bindRelayListeners(controlAddrs []string, sniAddr, challengeAddr string, cfg relayListenerConfig) ([]boundRelayListener, error) {
+func bindRelayListeners(controlAddrs, sniAddrs, challengeAddrs []string, cfg relayListenerConfig) ([]boundRelayListener, error) {
 	type spec struct {
 		kind    listenerKind
 		network string
@@ -1254,11 +1292,11 @@ func bindRelayListeners(controlAddrs []string, sniAddr, challengeAddr string, cf
 			specs = append(specs, spec{kind: listenerDedicated, addr: net.JoinHostPort(ip, rawPort), ip: ip, port: uint16(port)})
 		}
 	}
-	if sniAddr != "" {
-		specs = append(specs, spec{kind: listenerSNI, addr: sniAddr})
+	for _, addr := range sniAddrs {
+		specs = append(specs, spec{kind: listenerSNI, addr: addr})
 	}
-	if challengeAddr != "" {
-		specs = append(specs, spec{kind: listenerChallenge, addr: challengeAddr})
+	for _, addr := range challengeAddrs {
+		specs = append(specs, spec{kind: listenerChallenge, addr: addr})
 	}
 
 	bound := make([]boundRelayListener, 0, len(specs))

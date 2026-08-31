@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -714,21 +715,50 @@ func TestParseControlListeners(t *testing.T) {
 	}
 }
 
+func TestParseOptionalListeners(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    []string
+		wantErr bool
+	}{
+		{name: "disabled"},
+		{name: "dual stack", value: "192.0.2.10:443,[2001:db8::10]:443", want: []string{"192.0.2.10:443", "[2001:db8::10]:443"}},
+		{name: "trimmed", value: "127.0.0.1:4443, [::1]:4443", want: []string{"127.0.0.1:4443", "[::1]:4443"}},
+		{name: "empty entry", value: "127.0.0.1:4443,", wantErr: true},
+		{name: "unbracketed IPv6", value: "2001:db8::10:443", wantErr: true},
+		{name: "duplicate", value: "127.0.0.1:4443,127.0.0.1:4443", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseOptionalListeners(tt.value, "test")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseOptionalListeners() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("parseOptionalListeners() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateSNIProxyProtocol(t *testing.T) {
 	tests := []struct {
 		name    string
 		value   string
-		listen  string
+		listen  []string
 		enabled bool
 		wantErr bool
 	}{
-		{name: "disabled", listen: ":4443"},
-		{name: "IPv4 loopback", value: "v2", listen: "127.0.0.1:4443", enabled: true},
-		{name: "IPv6 loopback", value: "v2", listen: "[::1]:4443", enabled: true},
-		{name: "unsupported version", value: "v1", listen: "127.0.0.1:4443", wantErr: true},
-		{name: "wildcard IPv4", value: "v2", listen: ":4443", wantErr: true},
-		{name: "public IPv4", value: "v2", listen: "192.0.2.10:4443", wantErr: true},
-		{name: "hostname", value: "v2", listen: "localhost:4443", wantErr: true},
+		{name: "disabled", listen: []string{":4443"}},
+		{name: "IPv4 loopback", value: "v2", listen: []string{"127.0.0.1:4443"}, enabled: true},
+		{name: "IPv6 loopback", value: "v2", listen: []string{"[::1]:4443"}, enabled: true},
+		{name: "dual loopback", value: "v2", listen: []string{"127.0.0.1:4443", "[::1]:4443"}, enabled: true},
+		{name: "unsupported version", value: "v1", listen: []string{"127.0.0.1:4443"}, wantErr: true},
+		{name: "wildcard IPv4", value: "v2", listen: []string{":4443"}, wantErr: true},
+		{name: "public IPv4", value: "v2", listen: []string{"192.0.2.10:4443"}, wantErr: true},
+		{name: "one public bind", value: "v2", listen: []string{"127.0.0.1:4443", "[2001:db8::10]:4443"}, wantErr: true},
+		{name: "hostname", value: "v2", listen: []string{"localhost:4443"}, wantErr: true},
 		{name: "disabled listener", value: "v2", wantErr: true},
 	}
 	for _, tt := range tests {
@@ -752,7 +782,7 @@ func TestBindRelayListenersDoesNotBindSharedPortInventory(t *testing.T) {
 		sharedIPs: []string{"127.0.0.1"}, sharedTCPPorts: []uint16{port},
 		sharedUDPPorts: []uint16{port},
 	}
-	listeners, err := bindRelayListeners([]string{"127.0.0.1:0"}, "", "127.0.0.1:0", cfg)
+	listeners, err := bindRelayListeners([]string{"127.0.0.1:0"}, nil, []string{"127.0.0.1:0"}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +810,7 @@ func TestBindRelayListenersDoesNotBindSharedPortInventory(t *testing.T) {
 }
 
 func TestBindRelayListenersBindsEveryControlAddress(t *testing.T) {
-	listeners, err := bindRelayListeners([]string{"127.0.0.1:0", "127.0.0.1:0"}, "", "", relayListenerConfig{})
+	listeners, err := bindRelayListeners([]string{"127.0.0.1:0", "127.0.0.1:0"}, nil, nil, relayListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,7 +838,7 @@ func TestBindRelayListenersCleansUpAfterFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer blocked.Close()
-	if _, err := bindRelayListeners([]string{firstAddr, blocked.Addr().String()}, "", "", relayListenerConfig{}); err == nil {
+	if _, err := bindRelayListeners([]string{firstAddr, blocked.Addr().String()}, nil, nil, relayListenerConfig{}); err == nil {
 		t.Fatal("bindRelayListeners() returned nil error for occupied additional control listener")
 	}
 	rebound, err := net.Listen("tcp", firstAddr)
@@ -819,7 +849,7 @@ func TestBindRelayListenersCleansUpAfterFailure(t *testing.T) {
 }
 
 func TestMultipleControlListenersServeControlProtocol(t *testing.T) {
-	listeners, err := bindRelayListeners([]string{"127.0.0.1:0", "127.0.0.1:0"}, "", "", relayListenerConfig{})
+	listeners, err := bindRelayListeners([]string{"127.0.0.1:0", "127.0.0.1:0"}, nil, nil, relayListenerConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

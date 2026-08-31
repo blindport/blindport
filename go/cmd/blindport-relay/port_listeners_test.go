@@ -114,6 +114,45 @@ func TestPortListenerRegistryRefcountsTCPAndUDPSeparately(t *testing.T) {
 	assertPortAvailable(t, protocol.TransportUDP, udpClaim.IP, udpClaim.Port)
 }
 
+func TestPortListenerRegistryBindsEverySharedAddress(t *testing.T) {
+	port := availableTCPPort(t)
+	r := newPortTestRelay(port, protocol.TransportTCP)
+	r.sharedIPs = []string{"127.0.0.1", "::1"}
+	claim := &protocol.Claim{Kind: protocol.ClaimPort, IP: "127.0.0.1", Port: port, Transport: protocol.TransportTCP}
+
+	release, err := r.acquirePortListener(context.Background(), claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPortBound(t, protocol.TransportTCP, "127.0.0.1", port)
+	assertPortBound(t, protocol.TransportTCP, "::1", port)
+
+	release()
+	assertPortAvailable(t, protocol.TransportTCP, "127.0.0.1", port)
+	assertPortAvailable(t, protocol.TransportTCP, "::1", port)
+}
+
+func TestPortListenerRegistryRollsBackPartialMultiAddressBind(t *testing.T) {
+	port := availableTCPPort(t)
+	r := newPortTestRelay(port, protocol.TransportTCP)
+	r.sharedIPs = []string{"127.0.0.1", "::1"}
+	r.portListeners.listen = func(network, address string) (net.Listener, error) {
+		if address == net.JoinHostPort("::1", strconv.Itoa(int(port))) {
+			return nil, errors.New("synthetic IPv6 bind failure")
+		}
+		return net.Listen(network, address)
+	}
+	claim := &protocol.Claim{Kind: protocol.ClaimPort, IP: "127.0.0.1", Port: port, Transport: protocol.TransportTCP}
+
+	if _, err := r.acquirePortListener(context.Background(), claim); err == nil {
+		t.Fatal("multi-address bind succeeded after one address failed")
+	}
+	if got := activePortListenerCount(r.portListeners); got != 0 {
+		t.Fatalf("active shared listeners after partial bind failure = %d, want 0", got)
+	}
+	assertPortAvailable(t, protocol.TransportTCP, "127.0.0.1", port)
+}
+
 func TestPortListenerRegistryCapacityAllowsExistingClaims(t *testing.T) {
 	port := availableTCPPort(t)
 	r := newPortTestRelay(port, protocol.TransportTCP)
