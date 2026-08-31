@@ -271,7 +271,7 @@ def test_landing_ip_order_is_wireguard_and_annual_only(
         page.locator("#toConfigBtn").click()
         assert page.locator("#ipConfig").is_visible()
         page.locator("#toReviewBtn").click()
-        assert page.locator("#reviewPrice").text_content() == "75000"
+        assert page.locator("#reviewPrice").text_content() == "50000"
         assert page.locator("#reviewTerm").text_content() == "Yearly, 365 days"
         with page.expect_response(
             lambda response: (
@@ -325,7 +325,7 @@ def test_dashboard_ip_order_is_wireguard_and_annual_only(
             in page.locator('#product option[value="ip"]').inner_text()
         )
         assert page.locator("#deliveryField, #delivery").count() == 0
-        assert page.locator("#selectedPrice").text_content() == "75000 sats / 365 days"
+        assert page.locator("#selectedPrice").text_content() == "50000 sats / 365 days"
 
         page.locator("#product").select_option("port")
         monthly = page.locator('input[name="newBillingTerm"][value="monthly"]')
@@ -1188,15 +1188,15 @@ def test_dashboard_stablecoin_checkout_opens_and_resumes_lightning_swap_flow(
         )
         assert parse_qs(checkout.query) == {"invoice": [payment["invoice"]]}
         assert payment["invoice"] not in checkout.path
-        assert payment["base_amount_sats"] == 75000
-        assert payment["markup_sats"] == 7500
-        assert payment["stablecoin_surcharge_sats"] == 7500
+        assert payment["base_amount_sats"] == 50000
+        assert payment["markup_sats"] == 5000
+        assert payment["stablecoin_surcharge_sats"] == 5000
         assert payment["stablecoin_minimum_topup_sats"] == 0
         assert (payment["standard_period_days"], payment["bonus_days"]) == (365, 0)
-        assert payment["amount_sats"] == 82500
-        assert page.locator("#payAmount").text_content() == "82500"
+        assert payment["amount_sats"] == 55000
+        assert page.locator("#payAmount").text_content() == "55000"
         assert (
-            "75000 sats service price + 7500 sats stablecoin surcharge"
+            "50000 sats service price + 5000 sats stablecoin surcharge"
             in page.locator("#payBreakdown").text_content()
         )
         assert page.locator("#payUri").text_content() == "Continue with Lightning Swap"

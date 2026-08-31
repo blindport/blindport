@@ -68,17 +68,17 @@ def test_catalog_exposes_relay_scope_prices_and_contract(app_client) -> None:
         if item["product"] == "relay"
     )
 
-    assert relay["monthly_price_sats"] == 3000
+    assert relay["monthly_price_sats"] == 2000
     assert relay["relay_scopes"] == {
         "exact": {
-            "monthly_price_sats": 3000,
-            "yearly_price_sats": 30000,
+            "monthly_price_sats": 2000,
+            "yearly_price_sats": 20000,
             "available": True,
             "tls_passthrough_only": False,
         },
         "wildcard": {
-            "monthly_price_sats": 7500,
-            "yearly_price_sats": 75000,
+            "monthly_price_sats": 5000,
+            "yearly_price_sats": 50000,
             "available": True,
             "tls_passthrough_only": True,
         },
@@ -115,8 +115,8 @@ def test_anonymous_wildcard_order_snapshots_wildcard_price(app_client, monkeypat
     assert created.status_code == 201, created.text
     body = created.json()
     subscription = body["subscription"]
-    assert (body["monthly_price_sats"], body["yearly_price_sats"]) == (7500, 75000)
-    assert (subscription["monthly_price_sats"], subscription["yearly_price_sats"]) == (7500, 75000)
+    assert (body["monthly_price_sats"], body["yearly_price_sats"]) == (5000, 50000)
+    assert (subscription["monthly_price_sats"], subscription["yearly_price_sats"]) == (5000, 50000)
     assert subscription["relay_hostname_scope"] == "wildcard"
     assert subscription["tls_passthrough_only"] is True
     assert subscription["domain_is_managed"] is False
@@ -136,7 +136,7 @@ def test_anonymous_wildcard_order_snapshots_wildcard_price(app_client, monkeypat
         headers=_auth(body["token"]),
     )
     assert payment.status_code == 200, payment.text
-    assert payment.json()["amount_sats"] == 7500
+    assert payment.json()["amount_sats"] == 5000
 
 
 def test_wildcard_requires_relay_customer_base_and_no_star(app_client) -> None:

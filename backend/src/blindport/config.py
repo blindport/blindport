@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -44,7 +45,7 @@ class StableRelayEdge:
 
 @dataclass(frozen=True)
 class DnsSupervisionTarget:
-    """One public A-record set monitored by the DNS supervisor."""
+    """One public address-record set monitored by the DNS supervisor."""
 
     hostname: str
     expected_ips: tuple[str, ...]
@@ -65,7 +66,7 @@ def validate_v3_onion_hostname(value: str) -> str:
     label = value[:-6]
     try:
         decoded = base64.b32decode(label.upper(), casefold=False)
-    except (ValueError, base64.binascii.Error) as error:
+    except (ValueError, binascii.Error) as error:
         raise ValueError(
             "ONION_HOST must be an empty value or a canonical v3 onion hostname"
         ) from error
@@ -251,8 +252,23 @@ def _canonical_public_ipv4(value: str, field_name: str) -> str:
     return str(address)
 
 
+def _canonical_public_ip(value: str, field_name: str) -> str:
+    try:
+        address = ip_address(value)
+    except ValueError as error:
+        raise ValueError(f"{field_name} contains an invalid IP address") from error
+    if not _is_global_unicast_address(str(address)):
+        raise ValueError(f"{field_name} must contain public unicast IP addresses")
+    return str(address)
+
+
+def _ip_sort_key(value: str) -> tuple[int, int]:
+    address = ip_address(value)
+    return address.version, int(address)
+
+
 def parse_dns_supervision_targets(value: str) -> list[DnsSupervisionTarget]:
-    """Parse the strict JSON DNS target list into canonical public A-record sets."""
+    """Parse the strict JSON DNS target list into canonical public address sets."""
     if not value:
         return []
     try:
@@ -279,11 +295,13 @@ def parse_dns_supervision_targets(value: str) -> list[DnsSupervisionTarget]:
         if any(not isinstance(address, str) for address in expected_ips):
             raise ValueError("DNS_SUPERVISION_TARGETS expected_ips values must be strings")
         canonical_ips = tuple(
-            _canonical_public_ipv4(address, "DNS_SUPERVISION_TARGETS") for address in expected_ips
+            _canonical_public_ip(address, "DNS_SUPERVISION_TARGETS") for address in expected_ips
         )
-        if list(canonical_ips) != expected_ips or list(canonical_ips) != sorted(set(canonical_ips)):
+        if list(canonical_ips) != expected_ips or list(canonical_ips) != sorted(
+            set(canonical_ips), key=_ip_sort_key
+        ):
             raise ValueError(
-                "DNS_SUPERVISION_TARGETS expected_ips must be sorted unique canonical public IPv4 addresses"
+                "DNS_SUPERVISION_TARGETS expected_ips must be sorted unique canonical public IP addresses"
             )
         targets.append(DnsSupervisionTarget(canonical_hostname, canonical_ips))
     if len({target.hostname for target in targets}) != len(targets):
@@ -566,18 +584,18 @@ class Settings(BaseSettings):
     # Product catalog and sales controls
     IP_ENABLED: bool = True
     IP_SALES_PAUSED: bool = False
-    IP_YEARLY_SATS: int = 75000
+    IP_YEARLY_SATS: int = 50000
     BILLING_YEARLY_ENABLED: bool = False
     PORT_ENABLED: bool = True
     PORT_SALES_PAUSED: bool = False
-    PORT_MONTHLY_SATS: int = 1500
-    PORT_YEARLY_SATS: int = 15000
+    PORT_MONTHLY_SATS: int = 1000
+    PORT_YEARLY_SATS: int = 10000
     RELAY_ENABLED: bool = True
     RELAY_SALES_PAUSED: bool = False
-    RELAY_MONTHLY_SATS: int = 3000
-    RELAY_YEARLY_SATS: int = 30000
-    RELAY_WILDCARD_MONTHLY_SATS: int = 7500
-    RELAY_WILDCARD_YEARLY_SATS: int = 75000
+    RELAY_MONTHLY_SATS: int = 2000
+    RELAY_YEARLY_SATS: int = 20000
+    RELAY_WILDCARD_MONTHLY_SATS: int = 5000
+    RELAY_WILDCARD_YEARLY_SATS: int = 50000
     RELAY_MANAGED_DOMAIN_CAP: int = Field(default=1000, ge=0)
     RELAY_CUSTOMER_DOMAINS_ENABLED: bool = True
 
@@ -712,7 +730,7 @@ class Settings(BaseSettings):
     WIREGUARD_PERSISTENT_KEEPALIVE_SECONDS: int = Field(default=25, ge=0, le=120)
     WIREGUARD_RECONCILE_INTERVAL_SECONDS: float = Field(default=10.0, ge=1, le=300)
     WIREGUARD_RECONCILE_MAX_STALENESS_SECONDS: float = Field(default=90.0, ge=1, le=3600)
-    WIREGUARD_SMTP_EGRESS_FEE_SATS: int = Field(default=50000, gt=0, le=100000000)
+    WIREGUARD_SMTP_EGRESS_FEE_SATS: int = Field(default=33333, gt=0, le=100000000)
     RELAY_MANAGED_SUFFIXES: str = ""
     RELAY_MANAGED_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=1800, ge=60, le=86400)
     RELAY_DOMAIN_CLAIM_TTL_SECONDS: int = Field(default=3600, ge=60, le=86400)

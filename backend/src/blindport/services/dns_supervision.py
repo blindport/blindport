@@ -28,7 +28,7 @@ def _utc_datetime(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
-def _public_ipv4_addresses(values: Iterable[str]) -> set[str]:
+def _public_ip_addresses(values: Iterable[str]) -> set[str]:
     from ipaddress import ip_address
 
     addresses: set[str] = set()
@@ -37,17 +37,25 @@ def _public_ipv4_addresses(values: Iterable[str]) -> set[str]:
             address = ip_address(value)
         except ValueError:
             continue
-        if address.version == 4 and address.is_global and not address.is_multicast:
+        if address.is_global and not address.is_multicast:
             addresses.add(str(address))
     return addresses
 
 
-def query_a_records(hostname: str, resolver_address: str, lifetime: float) -> Iterable[str]:
-    """Resolve one A record via one configured recursive resolver."""
+def query_address_records(hostname: str, resolver_address: str, lifetime: float) -> Iterable[str]:
+    """Resolve A and AAAA records via one configured recursive resolver."""
     resolver = dns.resolver.Resolver(configure=False)
     resolver.nameservers = [resolver_address]
-    answers = resolver.resolve(hostname, "A", search=False, lifetime=lifetime)
-    return [answer.address for answer in answers]
+    addresses: list[str] = []
+    for record_type in ("A", "AAAA"):
+        try:
+            answers = resolver.resolve(hostname, record_type, search=False, lifetime=lifetime)
+        except dns.resolver.NoAnswer:
+            continue
+        addresses.extend(answer.address for answer in answers)
+    if not addresses:
+        raise dns.resolver.NoAnswer
+    return addresses
 
 
 def _error_code(error: BaseException) -> str:
@@ -107,14 +115,14 @@ def _query_result(
     timeout_seconds: float,
 ) -> tuple[set[str], str | None]:
     try:
-        return _public_ipv4_addresses(query(hostname, resolver, timeout_seconds)), None
+        return _public_ip_addresses(query(hostname, resolver, timeout_seconds)), None
     except Exception as error:  # Durable observations contain only fixed error codes.
         return set(), _error_code(error)
 
 
 def run_dns_supervision_cycle(
     *,
-    query: DnsQuery = query_a_records,
+    query: DnsQuery = query_address_records,
     targets: Iterable[DnsSupervisionTarget] | None = None,
     resolvers: Iterable[str] | None = None,
     timeout_seconds: float | None = None,

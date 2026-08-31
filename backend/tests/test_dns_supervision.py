@@ -19,12 +19,16 @@ def test_dns_supervision_settings_require_canonical_targets_and_resolvers() -> N
         _env_file=None,
         DNS_SUPERVISION_ENABLED=True,
         DNS_SUPERVISION_TARGETS=(
-            '[{"hostname":"edge.example.com","expected_ips":["1.1.1.1","8.8.8.8"]}]'
+            '[{"hostname":"edge.example.com","expected_ips":["1.1.1.1","8.8.8.8","2606:4700:4700::1111"]}]'
         ),
         DNS_SUPERVISION_RESOLVERS="1.1.1.1,8.8.8.8",
     )
 
-    assert settings.dns_supervision_targets_list[0].expected_ips == ("1.1.1.1", "8.8.8.8")
+    assert settings.dns_supervision_targets_list[0].expected_ips == (
+        "1.1.1.1",
+        "8.8.8.8",
+        "2606:4700:4700::1111",
+    )
     with pytest.raises(ValidationError, match="canonical"):
         Settings(
             _env_file=None,
@@ -92,6 +96,44 @@ def test_dns_supervision_cycle_persists_sanitized_latest_result(app_client) -> N
     assert observation.healthy is True
     assert observation.observed_ips == "1.1.1.1,8.8.8.8"
     assert observation.error_code is None
+
+
+def test_dns_supervision_default_query_combines_a_and_aaaa(monkeypatch) -> None:
+    from blindport.services import dns_supervision
+
+    calls: list[tuple[str, str, bool, float]] = []
+
+    class Answer:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+    class Resolver:
+        nameservers: list[str]
+
+        def resolve(
+            self, hostname: str, record_type: str, *, search: bool, lifetime: float
+        ) -> list[Answer]:
+            calls.append((hostname, record_type, search, lifetime))
+            if record_type == "A":
+                return [Answer("1.1.1.1")]
+            return [Answer("2606:4700:4700::1111")]
+
+    resolver = Resolver()
+    monkeypatch.setattr(
+        dns_supervision.dns.resolver,
+        "Resolver",
+        lambda *, configure: resolver,
+    )
+
+    assert list(dns_supervision.query_address_records("edge.example.com", "8.8.8.8", 2)) == [
+        "1.1.1.1",
+        "2606:4700:4700::1111",
+    ]
+    assert resolver.nameservers == ["8.8.8.8"]
+    assert calls == [
+        ("edge.example.com", "A", False, 2),
+        ("edge.example.com", "AAAA", False, 2),
+    ]
 
 
 def test_dns_supervision_cycle_uses_fixed_error_codes_without_exception_text(app_client) -> None:

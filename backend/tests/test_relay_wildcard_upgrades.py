@@ -54,8 +54,8 @@ def _set_active_exact(
     period_start: datetime,
     period_end: datetime,
     billing_term: str = "monthly",
-    monthly_price_sats: int = 3000,
-    yearly_price_sats: int = 30000,
+    monthly_price_sats: int = 2000,
+    yearly_price_sats: int = 20000,
     managed: bool = False,
 ) -> None:
     from blindport.core.models import BillingTerm, Subscription, SubscriptionStatus
@@ -132,7 +132,7 @@ def test_monthly_upgrade_snapshots_floor_proration_and_wildcard_prices(
 
     assert created.status_code == 200, created.text
     target = created.json()
-    expected_credit = ((15 * 86_400 + 1) * 3000) // (30 * 86_400)
+    expected_credit = ((15 * 86_400 + 1) * 2000) // (30 * 86_400)
     assert target["domain"] == "example.com"
     assert target["status"] == "pending"
     assert target["relay_hostname_scope"] == "wildcard"
@@ -374,7 +374,7 @@ def test_lightning_upgrade_verifies_dns_and_transitions_once(app_client) -> None
         payment.json()["discount_sats"],
         payment.json()["amount_sats"],
         payment.json()["standard_period_days"],
-    ) == (7500, target["upgrade_credit_sats"], 7500 - target["upgrade_credit_sats"], 30)
+    ) == (5000, target["upgrade_credit_sats"], 5000 - target["upgrade_credit_sats"], 30)
 
     factory.get_lightning_adapter().mark_paid(payment.json()["payment_hash"])
     settled = client.get(f"/api/v1/payments/{payment.json()['id']}", headers=_auth(token))
@@ -488,7 +488,7 @@ def test_zero_due_upgrade_activates_without_an_invoice(app_client, monkeypatch) 
         source["id"],
         period_start=now - timedelta(days=30),
         period_end=now + timedelta(days=30),
-        monthly_price_sats=7500,
+        monthly_price_sats=5000,
     )
     target = _upgrade(client, token, source["id"]).json()
     _set_resolver_verifier(client, target)
@@ -529,7 +529,7 @@ def test_discounted_stablecoin_upgrade_floor_uses_full_wildcard_price(
         source["id"],
         period_start=now - timedelta(days=10),
         period_end=now + timedelta(days=20),
-        monthly_price_sats=7500,
+        monthly_price_sats=4500,
     )
     target = _upgrade(client, token, source["id"]).json()
     _set_resolver_verifier(client, target)
@@ -541,15 +541,15 @@ def test_discounted_stablecoin_upgrade_floor_uses_full_wildcard_price(
     )
     assert created.status_code == 200, created.text
     payment = created.json()
-    expected_days = payments.stablecoin_credited_days(5000, 2500, 250, 30, 7500)
+    expected_days = payments.stablecoin_credited_days(5000, 2000, 200, 30, 5000)
     assert (
         payment["service_price_sats"],
         payment["discount_sats"],
         payment["base_amount_sats"],
     ) == (
-        7500,
         5000,
-        2500,
+        3000,
+        2000,
     )
     assert (
         payment["amount_sats"],
@@ -557,11 +557,11 @@ def test_discounted_stablecoin_upgrade_floor_uses_full_wildcard_price(
         payment["period_days"],
     ) == (
         5000,
-        250,
+        200,
         expected_days,
     )
     assert payment["period_days"] >= 30
-    assert payment["period_days"] != payments.stablecoin_credited_days(5000, 2500, 250, 30, 2500)
+    assert payment["period_days"] != payments.stablecoin_credited_days(5000, 2000, 200, 30, 2000)
     factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
     assert (
         client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()["status"]

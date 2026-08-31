@@ -38,7 +38,7 @@ def test_catalog_and_ip_api_defaults_are_wireguard_yearly(app_client, monkeypatc
         item["product"]: (item["monthly_price_sats"], item["yearly_price_sats"])
         for item in catalog["products"]
     }
-    assert prices == {"ip": (None, 75000), "port": (1500, 15000), "relay": (3000, 30000)}
+    assert prices == {"ip": (None, 50000), "port": (1000, 10000), "relay": (2000, 20000)}
 
     token = client.post("/api/v1/signup").json()["token"]
     subscription = client.post(
@@ -50,7 +50,7 @@ def test_catalog_and_ip_api_defaults_are_wireguard_yearly(app_client, monkeypatc
     assert subscription["billing_term"] == "yearly"
     assert subscription["period_days"] == 365
     assert subscription["monthly_price_sats"] == 0
-    assert subscription["yearly_price_sats"] == 75000
+    assert subscription["yearly_price_sats"] == 50000
 
     payment = client.post(
         "/api/v1/payments",
@@ -60,7 +60,7 @@ def test_catalog_and_ip_api_defaults_are_wireguard_yearly(app_client, monkeypatc
     assert (payment["billing_term"], payment["period_days"], payment["amount_sats"]) == (
         "yearly",
         365,
-        75000,
+        50000,
     )
 
 
@@ -98,7 +98,7 @@ def test_yearly_anonymous_order_and_omitted_payment_term_use_preference(app_clie
     assert order.status_code == 201, order.text
     body = order.json()
     assert (body["billing_term"], body["period_days"]) == ("yearly", 365)
-    assert (body["monthly_price_sats"], body["yearly_price_sats"]) == (1500, 15000)
+    assert (body["monthly_price_sats"], body["yearly_price_sats"]) == (1000, 10000)
     assert body["subscription"]["billing_term"] == "yearly"
 
     payment = client.post(
@@ -108,7 +108,7 @@ def test_yearly_anonymous_order_and_omitted_payment_term_use_preference(app_clie
     )
     assert payment.status_code == 200, payment.text
     assert (payment.json()["billing_term"], payment.json()["period_days"]) == ("yearly", 365)
-    assert payment.json()["amount_sats"] == 15000
+    assert payment.json()["amount_sats"] == 10000
 
 
 def test_yearly_activation_and_renewal_use_exact_payment_days(app_client, monkeypatch) -> None:
@@ -126,7 +126,7 @@ def test_yearly_activation_and_renewal_use_exact_payment_days(app_client, monkey
         json={"subscription_id": subscription["id"], "method": "lightning"},
         headers=_auth(token),
     ).json()
-    assert (initial["amount_sats"], initial["period_days"]) == (75000, 365)
+    assert (initial["amount_sats"], initial["period_days"]) == (50000, 365)
     _settle(client, factory, token, initial)
     active = client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]
     start = datetime.fromisoformat(active["current_period_start"])
@@ -203,7 +203,7 @@ def test_delayed_settlement_uses_payment_snapshots_not_current_preference_or_con
     assert (settled["billing_term"], settled["period_days"], settled["amount_sats"]) == (
         "yearly",
         365,
-        75000,
+        50000,
     )
     active = client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]
     start = datetime.fromisoformat(active["current_period_start"]).astimezone(UTC)

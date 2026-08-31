@@ -434,13 +434,13 @@ def test_routed_smtp_admin_is_default_deny_and_v2_only(app_client, monkeypatch) 
     path = f"/api/v2/admin/subscriptions/{subscription['id']}/smtp-egress/approve"
     request = {
         "intended_use": "Transactional account notifications",
-        "fee_paid_sats": 50000,
+        "fee_paid_sats": 33333,
         "review_reference": "ticket-123",
     }
     assert client.post(path, json=request).status_code == 401
     low_fee = client.post(
         path,
-        json={**request, "fee_paid_sats": 49999},
+        json={**request, "fee_paid_sats": 33332},
         headers=_auth("TESTADMIN0000"),
     )
     assert low_fee.status_code == 400
@@ -485,7 +485,7 @@ def test_routed_smtp_admin_is_default_deny_and_v2_only(app_client, monkeypatch) 
         f"/admin/ip-leases/{approved.json()['lease_id']}/smtp/approve",
         data={
             "intended_use": "Transactional account notifications",
-            "fee_paid_sats": "50000",
+            "fee_paid_sats": "33333",
             "review_reference": "browser-ticket-124",
         },
         follow_redirects=False,
@@ -529,7 +529,7 @@ def test_account_suspension_permanently_revokes_routed_smtp(app_client, monkeypa
     path = f"/api/v2/admin/subscriptions/{subscription['id']}/smtp-egress/approve"
     request = {
         "intended_use": "Transactional account notifications",
-        "fee_paid_sats": 50000,
+        "fee_paid_sats": 33333,
         "review_reference": "suspension-review-1",
     }
     admin = _auth("TESTADMIN0000")

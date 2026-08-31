@@ -893,9 +893,9 @@ def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monke
 
     assert "Prices are denominated in Bitcoin (BTC)." in landing.text
     assert "One bitcoin is 100 million satoshis (sats)." in landing.text
-    assert "about $1.92 USD" in landing.text
+    assert "about $1.28 USD" in landing.text
     assert 'data-btc-usd="64000"' in dashboard.text
-    assert "about $0.96 USD" in dashboard.text
+    assert "about $0.64 USD" in dashboard.text
 
 
 def test_catalog_exposes_only_configured_managed_suffix_metadata(app_client) -> None:

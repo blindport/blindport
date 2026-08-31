@@ -45,13 +45,13 @@ def _production_settings(**overrides) -> Settings:
         "DEBUG": False,
         "CA_DIR": "/var/lib/blindport/ca",
         "LEGACY_CLIENT_CERT_ISSUANCE_ENABLED": False,
-        "IP_YEARLY_SATS": 75000,
-        "PORT_MONTHLY_SATS": 1500,
-        "PORT_YEARLY_SATS": 15000,
-        "RELAY_MONTHLY_SATS": 3000,
-        "RELAY_YEARLY_SATS": 30000,
-        "RELAY_WILDCARD_MONTHLY_SATS": 7500,
-        "RELAY_WILDCARD_YEARLY_SATS": 75000,
+        "IP_YEARLY_SATS": 50000,
+        "PORT_MONTHLY_SATS": 1000,
+        "PORT_YEARLY_SATS": 10000,
+        "RELAY_MONTHLY_SATS": 2000,
+        "RELAY_YEARLY_SATS": 20000,
+        "RELAY_WILDCARD_MONTHLY_SATS": 5000,
+        "RELAY_WILDCARD_YEARLY_SATS": 50000,
         "RELAY_CONTROL_URL": "relay.blindport.com:5443",
         "RELAY_CONTROL_URLS": "relay.blindport.com:5443",
         "RELAY_PUBLIC_IPS": "8.8.8.8",
@@ -70,15 +70,15 @@ def test_startup_database_migration_defaults_on() -> None:
 
 
 def test_obsolete_ip_monthly_price_is_ignored() -> None:
-    assert Settings(_env_file=None, IP_MONTHLY_SATS=1).IP_YEARLY_SATS == 75000
+    assert Settings(_env_file=None, IP_MONTHLY_SATS=1).IP_YEARLY_SATS == 50000
 
 
 def test_relay_wildcard_price_defaults_are_yearly_discounted() -> None:
     settings = Settings(_env_file=None)
 
     assert (settings.RELAY_WILDCARD_MONTHLY_SATS, settings.RELAY_WILDCARD_YEARLY_SATS) == (
-        7500,
-        75000,
+        5000,
+        50000,
     )
 
 

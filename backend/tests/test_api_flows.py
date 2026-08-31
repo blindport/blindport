@@ -217,15 +217,15 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     assert response.status_code == 200, response.text
     payment = response.json()
     assert payment["method"] == "stablecoin_swap"
-    assert payment["base_amount_sats"] == 75000
-    assert payment["markup_sats"] == 7500
-    assert payment["amount_sats"] == 82500
+    assert payment["base_amount_sats"] == 50000
+    assert payment["markup_sats"] == 5000
+    assert payment["amount_sats"] == 55000
     assert (
         payment["standard_period_days"],
         payment["bonus_days"],
         payment["stablecoin_surcharge_sats"],
         payment["stablecoin_minimum_topup_sats"],
-    ) == (365, 0, 7500, 0)
+    ) == (365, 0, 5000, 0)
     assert (payment["billing_term"], payment["period_days"]) == ("yearly", 365)
     assert payment["stablecoin_asset"] == "USDC-BASE"
     assert payment["stablecoin_provider"] == "boltz"
@@ -257,8 +257,8 @@ def test_stablecoin_swap_charges_markup_and_settles_only_through_lnd(
     factory.get_lightning_adapter().mark_paid(payment["payment_hash"])
     paid = client.get(f"/api/v1/payments/{payment['id']}", headers=_auth(token)).json()
     assert paid["status"] == "paid"
-    assert paid["base_amount_sats"] == 75000
-    assert paid["markup_sats"] == 7500
+    assert paid["base_amount_sats"] == 50000
+    assert paid["markup_sats"] == 5000
     assert (
         client.get("/api/v1/me", headers=_auth(token)).json()["subscriptions"][0]["status"]
         == "active"
@@ -365,15 +365,15 @@ def test_lightning_swap_manual_checkout_uses_conservative_local_floor(
         headers=_auth(token),
     ).json()
 
-    assert created["base_amount_sats"] == 1500
-    assert created["markup_sats"] == 3500
+    assert created["base_amount_sats"] == 1000
+    assert created["markup_sats"] == 4000
     assert created["amount_sats"] == 5000
-    assert created["stablecoin_surcharge_sats"] == 150
-    assert created["stablecoin_minimum_topup_sats"] == 3350
+    assert created["stablecoin_surcharge_sats"] == 100
+    assert created["stablecoin_minimum_topup_sats"] == 3900
     assert (created["standard_period_days"], created["bonus_days"], created["period_days"]) == (
         30,
-        61,
-        91,
+        107,
+        137,
     )
     assert created["stablecoin_asset"] == "USDCSOL"
 
@@ -406,11 +406,15 @@ def test_lightning_swap_floor_topup_grants_bonus_days_and_settles_idempotently(
         headers=_auth(token),
     ).json()
     assert repeated["id"] == created["id"]
-    assert created["period_days"] == 91
+    assert created["period_days"] == 137
 
     factory.get_lightning_adapter().mark_paid(created["payment_hash"])
     settled = client.get(f"/api/v1/payments/{created['id']}", headers=_auth(token)).json()
-    assert (settled["status"], settled["period_days"], settled["bonus_days"]) == ("paid", 91, 61)
+    assert (settled["status"], settled["period_days"], settled["bonus_days"]) == (
+        "paid",
+        137,
+        107,
+    )
 
     with Session(engine) as session:
         payment = session.get(Payment, created["id"])
@@ -422,7 +426,7 @@ def test_lightning_swap_floor_topup_grants_bonus_days_and_settles_idempotently(
         assert stored_subscription.current_period_end is not None
         assert (
             stored_subscription.current_period_end - stored_subscription.current_period_start
-            == timedelta(days=91)
+            == timedelta(days=137)
         )
 
 
