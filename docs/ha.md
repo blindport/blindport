@@ -137,11 +137,12 @@ and operational expertise.
 
 Blindport Port can map one logical allocation to provider-local claims when
 `PORT_HA_EDGES` is configured. The agent opens the same allocated port through each
-provider endpoint, and the customer receives one wildcard-backed hostname plus every
-explicit provider IP. This is new-connection redundancy, not socket mobility: DNS may
-continue returning a failed edge and established streams are not resumed. The current
-model intentionally supports one canonical shared address pool; multiple pools need
-the future site-aware inventory model to prevent mirrored socket collisions.
+provider endpoint. Each Relay mirrors that claim over its local shared IPv4 and IPv6
+addresses, and the customer receives one wildcard-backed hostname plus every explicit
+provider IP. This is new-connection redundancy, not socket mobility: cached DNS may
+continue returning a failed edge and established streams are not resumed. The backend
+model intentionally supports one canonical shared address pool; multiple allocation
+pools need a future site-aware inventory model to prevent mirrored socket collisions.
 
 Current routed Blindport IP and historical framed IP remain address products
 rather than portable DNS identities. Honest HA choices are two separately assigned provider-specific addresses,

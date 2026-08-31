@@ -32,11 +32,14 @@ RELAY_SECRET=<distinct-random-value-of-at-least-32-characters>
 ADMIN_TOKEN=<random-Crockford-token-of-at-least-32-characters>
 CA_DIR=/var/lib/blindport/ca
 LEGACY_CLIENT_CERT_ISSUANCE_ENABLED=false
-IP_YEARLY_SATS=75000
-PORT_MONTHLY_SATS=1500
-PORT_YEARLY_SATS=15000
-RELAY_MONTHLY_SATS=3000
-RELAY_YEARLY_SATS=30000
+IP_YEARLY_SATS=50000
+PORT_MONTHLY_SATS=1000
+PORT_YEARLY_SATS=10000
+RELAY_MONTHLY_SATS=2000
+RELAY_YEARLY_SATS=20000
+RELAY_WILDCARD_MONTHLY_SATS=5000
+RELAY_WILDCARD_YEARLY_SATS=50000
+WIREGUARD_SMTP_EGRESS_FEE_SATS=33333
 BILLING_YEARLY_ENABLED=true
 IP_ENABLED=true
 IP_SALES_PAUSED=false
@@ -390,14 +393,20 @@ PORT_HOSTNAME_SUFFIX=port.example.net
 PORT_HA_EDGES=[{"endpoint":"relay-a.example.net:5443","ip":"198.51.100.30"},{"endpoint":"relay-b.example.net:5443","ip":"203.0.113.30"}]
 ```
 
-The current bounded model requires exactly one `RELAY_SHARED_IPS` address and at
-least two unique edge addresses. The primary mapping must pair
+The backend model requires exactly one canonical `RELAY_SHARED_IPS` address and
+at least two unique edge addresses. The primary mapping must pair
 `RELAY_CONTROL_URL` with that canonical address. The backend authorizes one claim
 per edge, while old agents continue opening only the primary claim. Upgrade agents
 before treating a Port subscription as redundant. Bind and verify each edge's local
 inventory before enabling these backend mappings. Treat `PORT_HOSTNAME_SUFFIX` as
 immutable after customer hostnames have been published because it is not stored per
 subscription.
+
+Each Relay can set `BLINDPORT_RELAY_SHARED_IPS` to its provider-local IPv4 and
+IPv6 addresses. One authorized Port claim atomically opens the allocated TCP or
+UDP port on every local shared address and forwards them through the same agent
+tunnel. A failure to bind either family rejects the claim and closes all partial
+listeners.
 
 Publish wildcard A and AAAA records below `PORT_HOSTNAME_SUFFIX` with one healthy
 address per provider. A Port subscription exposes
@@ -451,7 +460,7 @@ operating models:
    verification does not extend it. Any pending token-bearing claim uses its
    claimed hostname as the TXT owner name. New exact claims have no TXT token;
    wildcard claims retain their TXT token for renewal verification.
-3. **Operator DNS supervision:** an opt-in worker checks exact configured public A-record
+3. **Operator DNS supervision:** an opt-in worker checks exact configured public A/AAAA
    sets through multiple explicit recursive resolvers and retains one latest sanitized
    observation per name. It does not mutate authoritative DNS. A future fenced registrar or
    authoritative-DNS adapter may publish or withdraw records and use the same control-plane
@@ -540,11 +549,58 @@ claimant starts the managed or customer-owned verification flow from the beginni
 For DNS active-active Blindport Relay ingress, publish multiple healthy relay targets
 with low TTLs and include every advertised edge in
 `RELAY_CONTROL_URLS`. The agent opens an independent claim tunnel to each
-provisioned edge. DNS is not a health-aware load balancer and does not preserve
-existing TCP sessions when an answer or edge changes. Advertising an edge that
-is absent from provisioning can direct traffic to a node without the tunnel.
-Dedicated Blindport IP and shared Blindport Port failover still need routing or address
-movement outside Blindport.
+provisioned edge. Static DNS round robin is not health-aware. The bundled
+PowerDNS deployment uses Relay readiness to withdraw failed A/AAAA candidates,
+but it cannot preserve existing TCP sessions. Advertising an edge that is absent
+from provisioning can still direct traffic to a node without the tunnel. Dedicated
+Blindport IP failover still needs routing or address movement outside Blindport.
+
+### Blindport authoritative DNS
+
+`deploy/dns` runs PowerDNS Authoritative with a SQLite primary on Servers.Guru
+and a SQLite secondary on mynymbox. The API and web server are disabled, query
+logging and caches are disabled, AXFR requires the shared HMAC-SHA256 TSIG key,
+and both nodes import the same ECDSAP256SHA256 DNSSEC private key. Lua A records
+return every Relay whose public `GET /readyz` assertion succeeds. The assertion
+listener exposes only that path on TCP 9080; metrics and the Relay admin listener
+remain private.
+
+Before bootstrap, audit `deploy/dns/blindport.com.zone` against a complete export
+of the current zone and increment its SOA serial for every change. In particular,
+preserve mail, verification, CAA, and service records that are not discoverable
+from application configuration. Do not delegate the zone or publish a DS record
+until that audit and direct-server tests are complete.
+
+Generate one transfer secret and one DNSSEC key in the operator secret store:
+
+```sh
+openssl rand -base64 -out secrets/dns-transfer-tsig 32
+docker run --rm powerdns/pdns-auth-50:5.0.7@sha256:4d6cc4fc42a28f2df7fb55f6f36d8323f96e0da66135ccdad057ca7349b223b4 pdnsutil zone generate-key ksk ecdsa256 > secrets/blindport.com.private
+chmod 0400 secrets/dns-transfer-tsig secrets/blindport.com.private
+```
+
+Place identical secret files on both hosts. Set `DNS_ROLE=secondary` with
+`pdns-secondary.conf` on mynymbox, initialize it, and start `authoritative`.
+Then set `DNS_ROLE=primary` with `pdns-primary.conf` on Servers.Guru and repeat:
+
+```sh
+docker compose --profile tools run --rm init
+docker compose up -d authoritative
+```
+
+Allow inbound UDP/TCP 53 publicly. Allow TCP 9080 and primary-to-secondary
+NOTIFY/AXFR only between the two provider addresses. Verify SOA, NS, A, Lua A,
+DNSKEY, and RRSIG answers directly over UDP and TCP from an external network.
+Verify unsigned AXFR fails, signed AXFR succeeds, the secondary receives a serial
+increase, and each Lua pool removes one edge when its Relay assertion fails.
+
+Keep ingress AAAA records absent until application traffic succeeds externally
+through both provider IPv6 paths. The Servers.Guru IPv6 route must be repaired
+before its address is published. After both authorities pass independent tests,
+create registrar glue for `ns1.blindport.com` and `ns2.blindport.com`, update the
+NS delegation, wait through the old TTL, and only then publish the tested DS.
+Rollback removes the DS first, restores the previous NS delegation, and waits for
+parent and resolver caches before stopping either PowerDNS node.
 
 When introducing base routing for existing wildcard subscriptions, deploy every
 Relay first and verify base, exact-precedence, and descendant lookup behavior.
@@ -564,6 +620,8 @@ Rollback reverses that order: restore the backend wording before reverting Relay
 | Blindport Relay SNI listener | TCP/TLS passthrough | public clients |
 | routed WireGuard endpoint (default 51820) | UDP | blindportd clients |
 | routed Blindport IP inventory | IPv4, any transport | public clients |
+| authoritative DNS | UDP and TCP 53 | public resolvers |
+| Relay DNS assertion (9080) | HTTP | provider DNS peers only |
 | relay admin (default 127.0.0.1:9090) | HTTP | private probes and Prometheus only |
 
 Keep the relay admin listener on loopback or a private management network. It
