@@ -14,6 +14,21 @@ RUN case "$TARGETARCH" in \
     && bun build --compile --minify --target="$bun_target" \
         --outfile /out/blindport-nwc-helper src/main.ts
 
+FROM --platform=$BUILDPLATFORM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS clink-helper-build
+
+ARG TARGETARCH
+WORKDIR /build
+COPY tools/clink-helper/package.json tools/clink-helper/bun.lock ./
+RUN bun install --frozen-lockfile --production
+COPY tools/clink-helper/src ./src
+RUN case "$TARGETARCH" in \
+        amd64) bun_target=bun-linux-x64 ;; \
+        arm64) bun_target=bun-linux-arm64 ;; \
+        *) echo "unsupported CLINK helper architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && bun build --compile --minify --target="$bun_target" \
+        --outfile /out/blindport-clink-helper src/main.ts
+
 FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS build
 
 ENV PYTHONUNBUFFERED=1 \
@@ -46,6 +61,7 @@ RUN groupadd --gid 10001 blindport \
 WORKDIR /app
 COPY --from=build /opt/venv /opt/venv
 COPY --from=nwc-helper-build --chmod=0555 /out/blindport-nwc-helper /usr/local/bin/blindport-nwc-helper
+COPY --from=clink-helper-build --chmod=0555 /out/blindport-clink-helper /usr/local/bin/blindport-clink-helper
 COPY --chmod=0555 docker/backend-entrypoint.sh /usr/local/bin/backend-entrypoint
 
 USER 10001:10001

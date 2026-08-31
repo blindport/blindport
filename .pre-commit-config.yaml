@@ -45,3 +45,9 @@ repos:
         language: system
         files: ^tools/nwc-helper/
         pass_filenames: false
+      - id: clink-helper-check
+        name: CLINK helper test, typecheck, lint, and build
+        entry: bash -c 'cd tools/clink-helper && bun install --frozen-lockfile && bun test && bun run typecheck && bun run lint && bun run build'
+        language: system
+        files: ^tools/clink-helper/
+        pass_filenames: false
