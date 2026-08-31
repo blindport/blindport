@@ -16,6 +16,7 @@ x-service-defaults: &service-defaults
     - ./pdns-common.conf:/etc/powerdns/pdns.d/10-blindport-common.conf:ro
     - ${DNS_ROLE_CONFIG}:/etc/powerdns/pdns.d/20-blindport-role.conf:ro
     - ./blindport.com.zone:/etc/powerdns/blindport.com.zone:ro
+    - ./axfr-filter.lua:/etc/powerdns/axfr-filter.lua:ro
   tmpfs:
     - /tmp:size=8m,mode=1777
     - /run/pdns:size=4m,mode=0750,uid=953,gid=953
@@ -38,12 +39,12 @@ services:
       - ./pdns-common.conf:/etc/powerdns/pdns.d/10-blindport-common.conf:ro
       - ${DNS_ROLE_CONFIG}:/etc/powerdns/pdns.d/20-blindport-role.conf:ro
       - ./blindport.com.zone:/etc/powerdns/blindport.com.zone:ro
+      - ./axfr-filter.lua:/etc/powerdns/axfr-filter.lua:ro
       - ./init.sh:/opt/blindport/init.sh:ro
     entrypoint: ["sh", "/opt/blindport/init.sh"]
 
   authoritative:
     <<: *service-defaults
-    init: true
     restart: unless-stopped
     stop_grace_period: 10s
     network_mode: host

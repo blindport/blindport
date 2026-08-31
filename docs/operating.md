@@ -560,10 +560,12 @@ Blindport IP failover still needs routing or address movement outside Blindport.
 `deploy/dns` runs PowerDNS Authoritative with a SQLite primary on Servers.Guru
 and a SQLite secondary on mynymbox. The API and web server are disabled, query
 logging and caches are disabled, AXFR requires the shared HMAC-SHA256 TSIG key,
-and both nodes import the same ECDSAP256SHA256 DNSSEC private key. Lua A records
-return every Relay whose public `GET /readyz` assertion succeeds. The assertion
-listener exposes only that path on TCP 9080; metrics and the Relay admin listener
-remain private.
+and both nodes import the same ECDSAP256SHA256 DNSSEC private key. The secondary
+filters primary-generated DNSSEC records from incoming AXFR so it can online-sign
+dynamic Lua answers with that key instead of treating the zone as presigned. Lua
+A records return every Relay whose public `GET /readyz` assertion succeeds. The
+assertion listener exposes only that path on TCP 9080; metrics and the Relay admin
+listener remain private.
 
 Before bootstrap, audit `deploy/dns/blindport.com.zone` against a complete export
 of the current zone and increment its SOA serial for every change. In particular,
@@ -575,11 +577,14 @@ Generate one transfer secret and one DNSSEC key in the operator secret store:
 
 ```sh
 openssl rand -base64 -out secrets/dns-transfer-tsig 32
-docker run --rm powerdns/pdns-auth-50:5.0.7@sha256:4d6cc4fc42a28f2df7fb55f6f36d8323f96e0da66135ccdad057ca7349b223b4 pdnsutil zone generate-key ksk ecdsa256 > secrets/blindport.com.private
+docker run --rm --entrypoint pdnsutil powerdns/pdns-auth-50:5.0.7@sha256:4d6cc4fc42a28f2df7fb55f6f36d8323f96e0da66135ccdad057ca7349b223b4 zone generate-key ksk ecdsa256 > secrets/blindport.com.private
 chmod 0400 secrets/dns-transfer-tsig secrets/blindport.com.private
 ```
 
-Place identical secret files on both hosts. Set `DNS_ROLE=secondary` with
+Place identical secret files on both hosts and make them readable by PowerDNS
+UID/GID 953. Because the container runs as that non-root user with host
+networking, set `net.ipv4.ip_unprivileged_port_start=53` or lower on each host
+and persist the setting before startup. Set `DNS_ROLE=secondary` with
 `pdns-secondary.conf` on mynymbox, initialize it, and start `authoritative`.
 Then set `DNS_ROLE=primary` with `pdns-primary.conf` on Servers.Guru and repeat:
 

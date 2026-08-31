@@ -34,6 +34,7 @@ elif [ "$initialized" = true ]; then
     pdnsutil zone load "$zone" "$zone_file"
     pdnsutil zone set-kind "$zone" secondary
     pdnsutil zone change-primary "$zone" 78.17.212.128
+    pdnsutil metadata set "$zone" LUA-AXFR-SCRIPT /etc/powerdns/axfr-filter.lua
 fi
 
 if [ "$initialized" = true ]; then

@@ -545,11 +545,12 @@ assert {item["source"] for item in initializer["secrets"]} == {
         "$root/deploy/dns/pdns-primary.conf" \
         "$root/deploy/dns/pdns-secondary.conf" \
         "$root/deploy/dns/init.sh" \
+        "$root/deploy/dns/axfr-filter.lua" \
         "$root/deploy/dns/blindport.com.zone" <<'PY'
 from pathlib import Path
 import sys
 
-common, primary, secondary, initializer, zone = (
+common, primary, secondary, initializer, axfr_filter, zone = (
     Path(path).read_text(encoding="utf-8") for path in sys.argv[1:]
 )
 assert "api=no" in common and "webserver=no" in common
@@ -561,9 +562,26 @@ assert "secondary=yes" in secondary
 assert "pdnsutil tsigkey activate" in initializer
 assert "pdnsutil zone import-key" in initializer
 assert "pdnsutil zone rectify" in initializer
+assert "pdnsutil metadata set" in initializer
+assert "LUA-AXFR-SCRIPT" in initializer
+for record_type in ("RRSIG", "NSEC", "NSEC3", "NSEC3PARAM", "DNSKEY"):
+    assert f"pdns.{record_type}" in axfr_filter
 assert zone.count(" IN LUA A ") == 2
 assert "http://78.17.212.128:9080/readyz" in zone
 assert "http://89.125.35.70:9080/readyz" in zone
+for option in (
+    "selector='all'",
+    "backupSelector='empty'",
+    "timeout='2'",
+    "interval='10'",
+    "minimumFailures='3'",
+    "failOnIncompleteCheck='true'",
+):
+    assert zone.count(option) == 2
+assert "timeout=2" not in zone
+assert "interval=10" not in zone
+assert "minimumFailures=3" not in zone
+assert "failOnIncompleteCheck=true" not in zone
 assert " IN AAAA " not in zone
 PY
 }
