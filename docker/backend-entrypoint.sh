@@ -20,5 +20,6 @@ load_secret RELAY_HEARTBEAT_KEYS
 load_secret ADMIN_TOKEN
 load_secret LND_INVOICE_HMAC_KEY
 load_secret CREDENTIAL_ENCRYPTION_KEY
+load_secret CLINK_NOSTR_PRIVATE_KEY
 load_secret SMTP_PASSWORD
 exec "$@"

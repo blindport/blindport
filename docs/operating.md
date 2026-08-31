@@ -921,6 +921,33 @@ manually changing payment state.
 Automatic renewal of a customer-owned Relay hostname repeats its exact CNAME or
 wildcard TXT ownership check before creating the NWC invoice.
 
+CLINK Debits uses the compiled `/usr/local/bin/blindport-clink-helper` to send an
+existing LND BOLT11 invoice to an account's static `ndebit1...` pointer. Enable it
+only after migration `0032`: retain `lightning` in `PAYMENT_ENABLED_METHODS`, add
+`clink`, set `PAYMENT_CLINK_ADAPTER=clink`, install the same file-backed
+`CREDENTIAL_ENCRYPTION_KEY` required by NWC, and install a separate stable
+32-byte lowercase hexadecimal `CLINK_NOSTR_PRIVATE_KEY`. Every API and reconciler
+replica must use the same two keyrings. Never reuse the invoice HMAC key,
+credential encryption key, or another application secret as the Nostr key.
+
+Choose exactly one CLINK relay egress policy. `CLINK_ALLOW_PUBLIC_RELAYS=true`
+accepts pointer relays only on `wss` port 443 when every resolved address is
+globally routable. For a narrower deployment, leave public mode false and set
+`CLINK_ALLOWED_RELAY_HOSTS` to exact trusted hostnames. The same DNS-rebinding
+caveat and requirement for network-level egress controls described for NWC apply.
+Static pointers are AES-256-GCM encrypted with CLINK-specific authenticated data
+and responses expose no pointer material.
+
+CLINK is preferred when an account has both wallet methods. A signed CLINK `GFY`
+rejection may start one NWC attempt against the same invoice. A timeout, transport
+failure, malformed response, invalid preimage, or any other ambiguous result
+remains pending for LND settlement and never retries CLINK or falls back to NWC.
+CLINK v1 provides no lookup operation or mandatory idempotency key, so an operator
+must resolve a long-lived `unknown` state with the wallet owner and LND before
+changing it manually. Revoking either wallet preserves automatic renewal while
+the other remains connected. Credential replacement is blocked while that
+credential generation may still be needed by an open payment.
+
 Cashu runtime support has been removed. The legacy database enum value and token
 column remain read-only so historical rows can be inspected. Before upgrading,
 count all legacy Cashu rows and manually resolve every `PENDING` or `PROCESSING`
@@ -944,8 +971,8 @@ equivalent restore test). Back up the configured payment backend or mint
 according to its own recovery model. Losing the database loses lease and
 payment state; losing the CA key requires tunnel certificate rotation.
 Retain `SECRET_KEY`, `TOKEN_HASH_KEY`, `RELAY_SECRET`,
-`LND_INVOICE_HMAC_KEY`, and every active `CREDENTIAL_ENCRYPTION_KEY` keyring
-entry with the matching backup. Store encrypted copies offsite
+`LND_INVOICE_HMAC_KEY`, `CLINK_NOSTR_PRIVATE_KEY`, and every active
+`CREDENTIAL_ENCRYPTION_KEY` keyring entry with the matching backup. Store encrypted copies offsite
 and test restoration into an isolated environment.
 
 Application rollback requires the database revision expected by the old image.

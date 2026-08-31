@@ -211,6 +211,21 @@ Node or Bun service runs in production. Each user should create a dedicated wall
 connection with a wallet-enforced budget and expiry that cover the selected renewal
 term plus fees.
 
+Optional CLINK Debits enablement requires migration `0032`, the credential
+encryption key described above, and a separate owner-only file containing one
+stable 32-byte Nostr private key as 64 lowercase hexadecimal characters. Generate
+it with `openssl rand -hex 32`, mount it read-only into backend and migration
+services, and set `CLINK_NOSTR_PRIVATE_KEY_FILE` to the mounted path. Then set
+`CLINK_NOSTR_PRIVATE_KEY_SOURCE` to the host path, set
+`PAYMENT_CLINK_ADAPTER=clink`, and add `clink` to `PAYMENT_ENABLED_METHODS` while
+retaining `lightning`. Choose exactly one relay policy with
+`CLINK_ALLOW_PUBLIC_RELAYS=true` or exact `CLINK_ALLOWED_RELAY_HOSTS`; the NWC
+egress and DNS-rebinding guidance above applies equally to CLINK. The backend
+image includes the architecture-native CLINK helper, so no Bun service runs in
+production. Keep the signing key stable across replicas and backups. CLINK is
+preferred when both wallet methods are connected; NWC fallback occurs only after
+a definitive signed rejection because CLINK v1 cannot look up an ambiguous send.
+
 Optional stablecoin checkout uses the external provider UI. Apply migrations through `0030`,
 then roll out the new application code to every API and reconciler replica while
 keeping `STABLECOIN_PAYMENTS_ENABLED=false` and the existing method allowlist.

@@ -117,8 +117,10 @@ reconciler releases elapsed claims, limiting no-cost name reservation abuse.
 Accounts use a one-time Crockford base32 bearer token for recovery and agent access.
 The public browser UI can optionally enroll discoverable passkeys backed by revocable
 opaque sessions; passkey authentication never reveals the bearer token. The primary
-payment path is direct Lightning through LND. Nostr Wallet Connect is optional
-wallet control over BOLT11 invoices. Operators may separately enable a stablecoin
+payment path is direct Lightning through LND. CLINK Debits and Nostr Wallet
+Connect are optional automatic wallet controls over BOLT11 invoices. CLINK is
+preferred when both are connected, with NWC fallback only after an explicit
+CLINK rejection. Operators may separately enable a stablecoin
 checkout. New installs use Lightning Swap, as recommended by Megalithic's guide:
 Blindport opens a new provider tab using the snapshotted origin and
 `/?invoice=<percent-encoded BOLT11>`, which prefills the LND invoice in the provider
@@ -154,6 +156,7 @@ campaign snapshots in bounded pages, and retries only before an ambiguous SMTP b
 | `tests/e2e/` | Full-stack tests for payment, authorization, and forwarding. |
 | `docs/` | Architecture, protocol, and operating notes. |
 | `tools/nwc-helper/` | Single-shot Bun NWC protocol executable built into the backend image. |
+| `tools/clink-helper/` | Single-shot Bun CLINK Debits executable built into the backend image. |
 
 ## Container images
 
@@ -162,7 +165,7 @@ release tags:
 
 | Image | Purpose | Platforms |
 | --- | --- | --- |
-| `ghcr.io/blindport/blindport-backend` | Control plane, Web UI, migrations, and NWC helper. | `linux/amd64`, `linux/arm64` |
+| `ghcr.io/blindport/blindport-backend` | Control plane, Web UI, migrations, and wallet helpers. | `linux/amd64`, `linux/arm64` |
 | `ghcr.io/blindport/blindport-relay` | Provider edge relay. | `linux/amd64`, `linux/arm64` |
 | `ghcr.io/blindport/blindportd` | Customer tunnel and Docker discovery agent. | `linux/amd64`, `linux/arm64`, `linux/arm/v7` |
 
@@ -252,6 +255,12 @@ Direct LND invoices use a durable, deterministic outbox. Provider timeouts or a
 process failure after invoice creation can be recovered by payment hash without
 issuing a second invoice. Production requires a dedicated invoice HMAC key shared
 by all API replicas; see [`docs/operating.md`](docs/operating.md).
+
+CLINK Debits sends that existing invoice to a connected static `ndebit1...`
+pointer. Blindport signs requests with an operator-owned Nostr key, validates the
+returned preimage against the invoice hash, and still activates service only from
+LND settlement. Because CLINK v1 has no payment lookup or mandatory idempotency,
+an ambiguous post-send result is never retried or passed to NWC automatically.
 
 Stablecoin checkout uses the same durable invoice and settlement path. Blindport
 snapshots the selected provider and checkout origin on each payment. Boltz receives

@@ -23,6 +23,7 @@ x-backend-environment: &backend-environment
   ADMIN_TOKEN_FILE: /run/secrets/admin-token
   LND_INVOICE_HMAC_KEY_FILE: /run/secrets/lnd-invoice-hmac-key
   CREDENTIAL_ENCRYPTION_KEY_FILE: ${CREDENTIAL_ENCRYPTION_KEY_FILE:-}
+  CLINK_NOSTR_PRIVATE_KEY_FILE: ${CLINK_NOSTR_PRIVATE_KEY_FILE:-}
   SMTP_PASSWORD_FILE: ${SMTP_PASSWORD_FILE:-}
   OFFLINE_ENTITLEMENTS_ENABLED: ${OFFLINE_ENTITLEMENTS_ENABLED:-false}
   OFFLINE_ENTITLEMENT_GRACE_SECONDS: ${OFFLINE_ENTITLEMENT_GRACE_SECONDS:-604800}
@@ -50,7 +51,10 @@ x-backend-environment: &backend-environment
   NWC_ALLOWED_RELAY_HOSTS: ${NWC_ALLOWED_RELAY_HOSTS:-}
   NWC_ALLOW_PUBLIC_RELAYS: ${NWC_ALLOW_PUBLIC_RELAYS:-false}
   NWC_ALLOW_LEGACY_NIP04: ${NWC_ALLOW_LEGACY_NIP04:-false}
-  # NWC stays disabled until migration 0010 and a credential key secret are installed.
+  PAYMENT_CLINK_ADAPTER: ${PAYMENT_CLINK_ADAPTER:-mock}
+  CLINK_ALLOWED_RELAY_HOSTS: ${CLINK_ALLOWED_RELAY_HOSTS:-}
+  CLINK_ALLOW_PUBLIC_RELAYS: ${CLINK_ALLOW_PUBLIC_RELAYS:-false}
+  # Automatic wallets stay disabled until their migrations and secrets are installed.
   REMINDER_EMAIL_ENABLED: ${REMINDER_EMAIL_ENABLED:-false}
   ANNOUNCEMENT_EMAIL_ENABLED: ${ANNOUNCEMENT_EMAIL_ENABLED:-false}
   NOTIFICATION_RECONCILIATION_ENABLED: ${NOTIFICATION_RECONCILIATION_ENABLED:-true}
@@ -197,6 +201,11 @@ x-backend-secrets: &backend-secrets
     uid: "10001"
     gid: "10001"
     mode: 0400
+  - source: clink-nostr-private-key
+    target: clink-nostr-private-key
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
 
 services:
   postgres:
@@ -315,6 +324,11 @@ services:
         mode: 0400
       - source: credential-encryption-key
         target: credential-encryption-key
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: clink-nostr-private-key
+        target: clink-nostr-private-key
         uid: "10001"
         gid: "10001"
         mode: 0400
@@ -524,5 +538,7 @@ secrets:
     file: ${SECRETS_DIR:-./secrets}/smtp-password
   credential-encryption-key:
     file: ${SECRETS_DIR:-./secrets}/credential-encryption-key
+  clink-nostr-private-key:
+    file: ${CLINK_NOSTR_PRIVATE_KEY_SOURCE:-/dev/null}
   offline-entitlement-private-key:
     file: ${SECRETS_DIR:-./secrets}/offline-entitlement-private-key
