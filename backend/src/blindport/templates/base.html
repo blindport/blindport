@@ -1,17 +1,21 @@
 <!doctype html>
-<html lang="en">
+<html lang="en"{% if site_identity_metadata %} itemscope itemtype="https://schema.org/WebSite"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#17201d">
   <meta name="description" content="{{ page_description }}">
+  {% if site_identity_metadata %}
+  <meta itemprop="name" content="{{ brand_name }}">
+  {% endif %}
   <title>{% block title %}{{ brand_name }}{% endblock %}</title>
   <link rel="icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48">
   <link rel="icon" href="/static/brand-mark.svg" type="image/svg+xml" sizes="any">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" sizes="180x180">
   {% if official_branding %}<link rel="manifest" href="/static/site.webmanifest">{% endif %}
   {% if share_metadata %}
+  <link rel="canonical"{% if site_identity_metadata %} itemprop="url"{% endif %} href="{{ page_url }}">
   <meta property="og:title" content="{{ share_title }}">
   <meta property="og:type" content="website">
   <meta property="og:url" content="{{ page_url }}">

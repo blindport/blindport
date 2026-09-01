@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -652,8 +653,13 @@ def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monke
 
     assert response.status_code == 200
     assert (
-        '<meta name="description" content="Public reach for self-hosted services.' in response.text
+        '<meta name="description" content="Give self-hosted web services a durable public '
+        "HTTPS address without port forwarding, exposing your residential IP, or handing TLS "
+        'keys to a cloud gateway.">' in response.text
     )
+    assert '<link rel="canonical" itemprop="url" href="https://blindport.test/">' in response.text
+    assert '<html lang="en" itemscope itemtype="https://schema.org/WebSite">' in response.text
+    assert '<meta itemprop="name" content="Blindport">' in response.text
     assert (
         '<meta property="og:title" content="Blindport | Public ingress for self-hosters">'
     ) in response.text
@@ -670,6 +676,8 @@ def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monke
 
     guide = client.get("/guide")
     assert '<meta property="og:title" content="Guide | Blindport">' in guide.text
+    assert '<link rel="canonical" href="https://blindport.test/guide">' in guide.text
+    assert 'itemtype="https://schema.org/WebSite"' not in guide.text
     assert (
         '<meta name="description" '
         'content="Install and operate Blindport for public access to self-hosted services.">'
@@ -692,9 +700,40 @@ def test_share_metadata_uses_configured_origin_and_raster_card(app_client, monke
     assert '<meta name="twitter:card" content="summary">' in customized.text
     assert '<meta property="og:image:alt" content="Geometric B mark.">' in customized.text
     assert '<link rel="manifest" href="/static/site.webmanifest">' not in customized.text
+    assert (
+        '<meta name="description" content="Public ingress for private origins.">' in customized.text
+    )
     assert "Public ingress for private origins." in customized.text
     assert "Public reach for self-hosted services.</span>" not in customized.text
     assert "Blindport. Public reach" not in customized.text
+
+
+def test_search_discovery_files_use_configured_canonical_origin(app_client, monkeypatch) -> None:
+    from blindport.api import pages
+
+    client, _ = app_client
+    monkeypatch.setattr(pages.settings, "PUBLIC_SITE_URL", "https://blindport.test")
+
+    robots = client.get("/robots.txt", headers={"Host": "attacker.test"})
+    assert robots.status_code == 200
+    assert robots.headers["content-type"].startswith("text/plain")
+    assert robots.headers["Cache-Control"] == "public, max-age=3600"
+    assert robots.text == ("User-agent: *\nAllow: /\nSitemap: https://blindport.test/sitemap.xml\n")
+
+    sitemap = client.get("/sitemap.xml?source=private", headers={"Host": "attacker.test"})
+    assert sitemap.status_code == 200
+    assert sitemap.headers["content-type"].startswith("application/xml")
+    assert sitemap.headers["Cache-Control"] == "public, max-age=3600"
+    namespace = {"sitemap": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(sitemap.content)
+    assert root.tag == "{http://www.sitemaps.org/schemas/sitemap/0.9}urlset"
+    assert [element.text for element in root.findall("sitemap:url/sitemap:loc", namespace)] == [
+        "https://blindport.test/",
+        "https://blindport.test/guide",
+        "https://blindport.test/terms",
+    ]
+    assert "attacker.test" not in sitemap.text
+    assert "source=private" not in sitemap.text
 
 
 def test_rendered_pages_are_semantic_responsive_and_not_cacheable(app_client) -> None:

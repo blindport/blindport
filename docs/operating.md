@@ -61,6 +61,10 @@ TOKEN_BYTES=16
 DEBUG=false
 ```
 
+Set `PUBLIC_SITE_URL` to the exact preferred public origin. The backend uses it for
+canonical page links, social metadata, and the sitemap advertised by `robots.txt`;
+request host headers do not override those URLs.
+
 Keep database credentials, the LND macaroon, `LND_INVOICE_HMAC_KEY`,
 `SECRET_KEY`, `TOKEN_HASH_KEY`, `RELAY_SECRET`, `ADMIN_TOKEN`, and CA private
 key in the deployment secret store. These five security credentials must be

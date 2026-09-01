@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import shlex
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, Response, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlmodel import Session, select
@@ -146,10 +147,14 @@ def _is_onion_request(request: Request) -> bool:
     return bool(settings.ONION_HOST) and request.url.hostname == settings.ONION_HOST
 
 
-def _ctx(request: Request, **extra) -> dict:
-    public_origin = (
+def _public_origin(request: Request) -> str:
+    return (
         f"http://{settings.ONION_HOST}" if _is_onion_request(request) else settings.PUBLIC_SITE_URL
     )
+
+
+def _ctx(request: Request, **extra) -> dict:
+    public_origin = _public_origin(request)
     request_origin = (
         public_origin
         if settings.ENVIRONMENT == EnvironmentMode.PRODUCTION
@@ -165,16 +170,22 @@ def _ctx(request: Request, **extra) -> dict:
         "/guide": f"Guide | {settings.BRAND_NAME}",
         "/terms": f"Service terms | {settings.BRAND_NAME}",
     }
+    official_branding = (
+        settings.BRAND_NAME == DEFAULT_BRAND_NAME
+        and settings.BRAND_TAGLINE == DEFAULT_BRAND_TAGLINE
+    )
     share_descriptions = {
+        "/": (
+            "Give self-hosted web services a durable public HTTPS address without port "
+            "forwarding, exposing your residential IP, or handing TLS keys to a cloud gateway."
+            if official_branding
+            else settings.BRAND_TAGLINE
+        ),
         "/guide": (
             f"Install and operate {settings.BRAND_NAME} for public access to self-hosted services."
         ),
         "/terms": f"Service terms for using {settings.BRAND_NAME} public ingress.",
     }
-    official_branding = (
-        settings.BRAND_NAME == DEFAULT_BRAND_NAME
-        and settings.BRAND_TAGLINE == DEFAULT_BRAND_TAGLINE
-    )
     btc_usd_snapshot = price_cache.current()
     social_image_name = "brand-social.png" if official_branding else "brand-avatar.png"
     base = {
@@ -186,6 +197,7 @@ def _ctx(request: Request, **extra) -> dict:
         "share_title": share_titles.get(request.url.path, settings.BRAND_NAME),
         "share_description": share_descriptions.get(request.url.path, settings.BRAND_TAGLINE),
         "page_url": f"{public_origin}{request.url.path}",
+        "site_identity_metadata": request.url.path == "/",
         "social_image_url": f"{public_origin}/static/{social_image_name}",
         "social_image_width": 1200 if official_branding else 512,
         "social_image_height": 630 if official_branding else 512,
@@ -311,6 +323,31 @@ def landing(request: Request, session: Session = Depends(get_session)) -> HTMLRe
         ),
     )
     response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/robots.txt", response_class=PlainTextResponse)
+def robots(request: Request) -> PlainTextResponse:
+    response = PlainTextResponse(
+        f"User-agent: *\nAllow: /\nSitemap: {_public_origin(request)}/sitemap.xml\n"
+    )
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
+@router.get("/sitemap.xml")
+def sitemap(request: Request) -> Response:
+    namespace = "http://www.sitemaps.org/schemas/sitemap/0.9"
+    urlset = ET.Element("urlset", xmlns=namespace)
+    public_origin = _public_origin(request)
+    for path in ("/", "/guide", "/terms"):
+        url = ET.SubElement(urlset, "url")
+        ET.SubElement(url, "loc").text = f"{public_origin}{path}"
+    response = Response(
+        ET.tostring(urlset, encoding="utf-8", xml_declaration=True),
+        media_type="application/xml",
+    )
+    response.headers["Cache-Control"] = "public, max-age=3600"
     return response
 
 
