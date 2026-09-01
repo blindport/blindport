@@ -403,7 +403,9 @@ PY
 relay_host_sysctl_check() {
     python3 - \
         "$root/deploy/sysctl-blindport-relay.conf" \
-        "$root/deploy/sysctl-blindport-routed-relay.conf" <<'PY'
+        "$root/deploy/sysctl-blindport-routed-relay.conf" \
+        "$root/deploy/sysctl-blindport-ipv4-only.conf" \
+        "$root/deploy/sysctl-blindport-dns.conf" <<'PY'
 from pathlib import Path
 import sys
 
@@ -415,7 +417,15 @@ def settings(path: str) -> list[str]:
     ]
 
 assert settings(sys.argv[1]) == ["net.ipv4.ip_unprivileged_port_start=80"]
-assert settings(sys.argv[2]) == ["net.ipv4.ip_forward=1"]
+assert settings(sys.argv[2]) == [
+    "net.ipv4.ip_forward=1",
+    "net.ipv4.conf.eth0.proxy_arp=1",
+]
+assert settings(sys.argv[3]) == [
+    "net.ipv6.conf.all.disable_ipv6=1",
+    "net.ipv6.conf.default.disable_ipv6=1",
+]
+assert settings(sys.argv[4]) == ["net.ipv4.ip_unprivileged_port_start=53"]
 PY
 }
 
@@ -459,7 +469,7 @@ haproxy_check() {
         haproxy -c -f /usr/local/etc/haproxy/haproxy.cfg
 }
 
-dual_stack_relay_policy_check() {
+ipv4_only_relay_policy_check() {
     docker compose \
         --env-file "$root/deploy/production/.env.example" \
         -f "$root/deploy/production/compose.yaml" \
@@ -471,8 +481,8 @@ import sys
 services = json.load(sys.stdin)["services"]
 relay = services["relay"]["environment"]
 proxy = services["sni-mux"]["environment"]
-assert relay["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.10,2001:db8:1::10"
-assert proxy["PUBLIC_IPV6"] == "2001:db8:1::10"
+assert relay["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.10"
+assert "PUBLIC_IPV6" not in proxy
 '
 
     docker compose \
@@ -486,14 +496,14 @@ import sys
 services = json.load(sys.stdin)["services"]
 relay = services["relay"]
 environment = relay["environment"]
-assert environment["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.30,2001:db8:2::30"
-assert environment["BLINDPORT_RELAY_SNI"] == "203.0.113.30:443,[2001:db8:2::30]:443"
-assert environment["BLINDPORT_RELAY_HTTP_CHALLENGE"] == "203.0.113.30:80,[2001:db8:2::30]:80"
+assert environment["BLINDPORT_RELAY_SHARED_IPS"] == "203.0.113.30"
+assert environment["BLINDPORT_RELAY_SNI"] == "203.0.113.30:443"
+assert environment["BLINDPORT_RELAY_HTTP_CHALLENGE"] == "203.0.113.30:80"
 assert relay["command"][-1] == ""
 health_proxy = services["health-proxy"]
 assert health_proxy["network_mode"] == "host"
 assert health_proxy["read_only"] is True
-assert health_proxy["environment"]["RELAY_PUBLIC_IPV6"] == "2001:db8:2::30"
+assert "RELAY_PUBLIC_IPV6" not in health_proxy["environment"]
 '
 
     python3 - \
@@ -503,10 +513,8 @@ from pathlib import Path
 import sys
 
 production, split = (Path(path).read_text(encoding="utf-8") for path in sys.argv[1:])
-assert 'bind "[${PUBLIC_IPV6}]:443"' in production
-assert 'bind "[${PUBLIC_IPV6}]:80"' in production
-assert 'bind "[${PUBLIC_IPV6}]:9080"' in production
-assert 'bind "[${RELAY_PUBLIC_IPV6}]:9080"' in split
+assert "PUBLIC_IPV6" not in production
+assert "RELAY_PUBLIC_IPV6" not in split
 for config in (production, split):
     assert "http-request deny unless { method GET } { path /readyz }" in config
     assert "server relay 127.0.0.1:9090 check" in config
@@ -559,6 +567,9 @@ assert "enable-lua-records=yes" in common
 assert "cache-ttl=0" in common and "query-cache-ttl=0" in common
 assert "allow-axfr-ips=\n" in primary
 assert "secondary=yes" in secondary
+for config in (primary, secondary):
+    assert "2a0b:64c0:18" not in config
+    assert "2a14:1ec7:f903" not in config
 assert "pdnsutil tsigkey activate" in initializer
 assert "pdnsutil zone import-key" in initializer
 assert "pdnsutil zone rectify" in initializer
@@ -569,6 +580,13 @@ for record_type in ("RRSIG", "NSEC", "NSEC3", "NSEC3PARAM", "DNSKEY"):
 assert zone.count(" IN LUA A ") == 2
 assert "http://78.17.212.128:9080/readyz" in zone
 assert "http://89.125.35.70:9080/readyz" in zone
+for mail_record in (
+    "@ IN MX 10 mx1.privateemail.com.",
+    "@ IN MX 10 mx2.privateemail.com.",
+    '@ IN TXT "v=spf1 include:spf.privateemail.com ~all"',
+    'privateemail._domainkey IN TXT "v=DKIM1;',
+):
+    assert mail_record in zone
 for option in (
     "selector='all'",
     "backupSelector='empty'",
@@ -1019,7 +1037,7 @@ caddy_log_policy_check deploy/split/control
 haproxy_check deploy/production
 haproxy_check deploy/ha-lab
 haproxy_check deploy/split/relay health-proxy.cfg
-dual_stack_relay_policy_check
+ipv4_only_relay_policy_check
 dns_policy_check
 production_http_routing_check
 production_relay_internal_policy_check

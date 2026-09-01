@@ -475,7 +475,6 @@ services:
     environment:
       API_DOMAIN: ${API_DOMAIN}
       PUBLIC_IP: ${PUBLIC_IP}
-      PUBLIC_IPV6: ${PUBLIC_IPV6}
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     cap_drop: [ALL]

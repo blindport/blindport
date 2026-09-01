@@ -84,7 +84,6 @@ services:
     network_mode: host
     environment:
       RELAY_PUBLIC_IP: ${RELAY_PUBLIC_IP}
-      RELAY_PUBLIC_IPV6: ${RELAY_PUBLIC_IPV6}
     volumes:
       - ./health-proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     cap_drop: [ALL]

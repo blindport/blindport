@@ -1,7 +1,7 @@
 $ORIGIN blindport.com.
 $TTL 3600
 
-@ IN SOA ns1.blindport.com. hostmaster.blindport.com. 2026083104 300 60 604800 60
+@ IN SOA ns1.blindport.com. hostmaster.blindport.com. 2026083105 300 60 604800 60
 @ IN NS ns1.blindport.com.
 @ IN NS ns2.blindport.com.
 
@@ -12,6 +12,7 @@ ns2 IN A 89.125.35.70
 @ IN MX 10 mx1.privateemail.com.
 @ IN MX 10 mx2.privateemail.com.
 @ IN TXT "v=spf1 include:spf.privateemail.com ~all"
+privateemail._domainkey IN TXT "v=DKIM1;k=rsa;p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6JwLS1Yym7/jmEVWVrP0cjt82e86P8Kx5w1zh1NEOSzIXw4XTPzTOf51DiDXix46kckqqafJicuJgtXmxrgTW9JouDZ2iuCP/uP/raWRWw1pndxSmPZ8Anp3+WMUCBHmt3CrlmLKvnLQrOq2snjkjJlR418GpiP69JYPfTJbPKmOTPdNdi9kpjjfNDAPpyXHRyzCaWCDxhfJGj2vJSxoXlDzsFrvrxDK9CxQ3U3mIioirDS9mncvSec1vATOwob1SL51gwywC0t0Qy2e9xkSY4YhIUElAInz9S+K5SVe7ibCqVZNiezaG+jhQcMtiIGBYQtmPok3SEu3lfn+hw1y3QIDAQAB"
 
 relay IN A 78.17.212.128
 relay-sg IN A 78.17.212.128

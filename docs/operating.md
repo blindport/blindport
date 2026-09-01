@@ -297,11 +297,12 @@ Generate and persist the relay key with standard WireGuard tooling, expose only
 the public key to the backend, and keep the private key file regular,
 owner-only, and stable across restarts. The
 `BLINDPORT_RELAY_WIREGUARD_KEY` environment value exists for development only.
-Enable IPv4 forwarding on the relay host and route every configured address to
-that host, but do not bind those addresses to relay listener interfaces. The
-relay installs active `/32` link routes and blackholes all other managed
-inventory. Do not add SNAT or DNAT; preserving both endpoint addresses is part
-of the routed product contract.
+Enable IPv4 forwarding and provider-interface proxy ARP on the relay host, and
+route every configured address to that host, but do not bind those addresses to
+relay listener interfaces. Proxy ARP answers only while the relay has a route
+for the requested address. The relay installs active `/32` link routes and
+blackholes all other managed inventory. Do not add SNAT or DNAT; preserving both
+endpoint addresses is part of the routed product contract.
 
 Blindport IP is WireGuard-only and annual-only. Keep
 `BILLING_YEARLY_ENABLED=true` whenever IP sales are offered. Existing issued
@@ -326,9 +327,9 @@ the base manifests do none of these. The overlay runs the relay as UID 0 because
 Docker does not retain `NET_ADMIN` effectively for the image's non-root user;
 all other capabilities remain dropped and `no-new-privileges` stays enabled. Set
 `WIREGUARD_RELAY_PUBLIC_KEY` to that key's public half. Persist
-`net.ipv4.ip_forward=1` on the host, permit UDP 51820, and verify provider return
-routing before enabling sales. A netlink or nftables failure prevents routed
-readiness and route activation.
+`net.ipv4.ip_forward=1` and `net.ipv4.conf.eth0.proxy_arp=1` on the host, permit
+UDP 51820, and verify provider return routing before enabling sales. A netlink
+or nftables failure prevents routed readiness and route activation.
 
 During rollout, deploy the nftables-aware relay before the annual routed-IP
 backend. It can consume the old v1 snapshot and defaults TCP/25 to denied. Drain
@@ -583,8 +584,8 @@ chmod 0400 secrets/dns-transfer-tsig secrets/blindport.com.private
 
 Place identical secret files on both hosts and make them readable by PowerDNS
 UID/GID 953. Because the container runs as that non-root user with host
-networking, set `net.ipv4.ip_unprivileged_port_start=53` or lower on each host
-and persist the setting before startup. Set `DNS_ROLE=secondary` with
+networking, install `deploy/sysctl-blindport-dns.conf` on each host and apply it
+before startup. Set `DNS_ROLE=secondary` with
 `pdns-secondary.conf` on mynymbox, initialize it, and start `authoritative`.
 Then set `DNS_ROLE=primary` with `pdns-primary.conf` on Servers.Guru and repeat:
 
@@ -599,11 +600,13 @@ DNSKEY, and RRSIG answers directly over UDP and TCP from an external network.
 Verify unsigned AXFR fails, signed AXFR succeeds, the secondary receives a serial
 increase, and each Lua pool removes one edge when its Relay assertion fails.
 
-Keep ingress AAAA records absent until application traffic succeeds externally
-through both provider IPv6 paths. The Servers.Guru IPv6 route must be repaired
-before its address is published. After both authorities pass independent tests,
-create registrar glue for `ns1.blindport.com` and `ns2.blindport.com`, update the
-NS delegation, wait through the old TTL, and only then publish the tested DS.
+Production is IPv4-only while both providers do not supply independently tested
+IPv6 paths. Keep ingress and nameserver AAAA records absent and apply
+`deploy/sysctl-blindport-ipv4-only.conf` after removing IPv6 service binds. Before
+re-enabling IPv6, verify external ingress and egress on both providers. After both
+authorities pass independent IPv4 tests, create registrar glue for
+`ns1.blindport.com` and `ns2.blindport.com`, update the NS delegation, wait through
+the old TTL, and only then publish the tested DS.
 Rollback removes the DS first, restores the previous NS delegation, and waits for
 parent and resolver caches before stopping either PowerDNS node.
 
