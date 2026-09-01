@@ -378,7 +378,7 @@ def test_landing_wildcard_relay_order_uses_wildcard_price_and_scope(
         assert page.locator("#customerMode").is_checked()
         page.locator('input[name="relayHostnameScope"][value="wildcard"]').check()
         assert (
-            "7500"
+            "5000"
             in page.locator(
                 '.plan-option:has(input[value="relay"]) .plan-price'
             ).inner_text()
@@ -394,7 +394,7 @@ def test_landing_wildcard_relay_order_uses_wildcard_price_and_scope(
             ).inner_text()
         )
         page.locator("#toReviewBtn").click()
-        assert page.locator("#reviewPrice").text_content() == "7500"
+        assert page.locator("#reviewPrice").text_content() == "5000"
         assert (
             page.locator("#reviewConfig").text_content()
             == "base.example + *.base.example (TLS passthrough)"
@@ -454,7 +454,7 @@ def test_dashboard_wildcard_relay_order_uses_wildcard_price_and_scope(
         page.locator(
             'input[name="dashboardRelayHostnameScope"][value="wildcard"]'
         ).check()
-        assert page.locator("#selectedPrice").text_content() == "7500 sats / 30 days"
+        assert page.locator("#selectedPrice").text_content() == "5000 sats / 30 days"
         page.locator("#domain").fill("dashboard-base.example")
         assert page.locator("#dashboardWildcardDomainPreview").inner_text() == (
             "Wildcard price includes dashboard-base.example + *.dashboard-base.example"

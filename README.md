@@ -88,8 +88,8 @@ Blindport IP delivery mode. Blindport Port and Blindport Relay remain applicatio
 forwarding products; framed Blindport IP is retained only for historical service.
 
 Blindport Relay supports provider-managed names strictly below configured wildcard
-suffixes, exact customer-owned names for 3,000 sats per 30 days, and customer-owned
-wildcard bases for 7,500 sats per 30 days. Exact customer names use one direct CNAME
+suffixes, exact customer-owned names for 2,000 sats per 30 days, and customer-owned
+wildcard bases for 5,000 sats per 30 days. Exact customer names use one direct CNAME
 to a subscription-specific random target. Wildcard bases use a TXT ownership challenge
 and a `*.<base>` CNAME to a Relay pool target. Their existing price routes both the base
 hostname and all descendants, and requires TLS passthrough to the customer origin.
