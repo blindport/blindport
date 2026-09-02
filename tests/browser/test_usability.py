@@ -548,7 +548,8 @@ def test_dashboard_creates_prorated_wildcard_upgrade(
         upgrade = upgrade_response.json()
         assert upgrade["domain"] == "browser-upgrade.example"
         assert upgrade["relay_hostname_scope"] == "wildcard"
-        assert 1499 <= upgrade["upgrade_credit_sats"] <= 1500
+        expected_credit = subscription["monthly_price_sats"] // 2
+        assert expected_credit - 1 <= upgrade["upgrade_credit_sats"] <= expected_credit
 
         page.reload(wait_until="networkidle")
         source_card = page.locator(
@@ -561,7 +562,8 @@ def test_dashboard_creates_prorated_wildcard_upgrade(
         assert target_card.get_by_text("Replacing", exact=False).is_visible()
         assert target_card.get_by_text("Wildcard credit", exact=True).is_visible()
         assert target_card.get_by_role("button", name="Check DNS").is_visible()
-        assert target_card.locator(".upgradeDue").text_content() in {"6000", "6001"}
+        expected_due = upgrade["monthly_price_sats"] - upgrade["upgrade_credit_sats"]
+        assert target_card.locator(".upgradeDue").text_content() == str(expected_due)
         _assert_layout(page)
     finally:
         context.close()

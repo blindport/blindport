@@ -41,6 +41,14 @@ def test_signup_uses_transient_trusted_client_limit(app_client, monkeypatch) -> 
 
     client, _ = app_client
     monkeypatch.setattr(rate_limits.settings, "RATE_LIMIT_SIGNUP_REQUESTS", 1)
+    limiter = client.app.state.direct_rate_limiter
+    consume = limiter.consume
+    fixed_now = datetime(2030, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        limiter,
+        "consume",
+        lambda spec, identifier, *, now=None: consume(spec, identifier, now=fixed_now),
+    )
     first = client.post("/api/v1/signup", headers={"X-Forwarded-For": "198.51.100.1"})
     limited = client.post("/api/v1/signup", headers={"X-Forwarded-For": "203.0.113.2"})
 
