@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Blindport app icon</title>
+  <desc id="description">A centered geometric white letter B on a charcoal background.</desc>
+  <rect width="512" height="512" fill="#17201d"/>
+  <g transform="translate(71.68 71.68) scale(.72)">
+    <path transform="translate(-6 -32)" fill="#fff" fill-rule="evenodd" d="M128 96h140c71 0 116 39 116 101 0 35-16 62-47 79 39 17 59 49 59 91 0 69-49 113-126 113H128V96Zm76 64v88h58c39 0 58-14 58-44s-19-44-58-44h-58Zm0 148v108h63c43 0 65-18 65-54s-22-54-65-54h-63Z"/>
+  </g>
+</svg>

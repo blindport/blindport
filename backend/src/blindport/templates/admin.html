@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+{% macro pagination(pager, parameter, anchor, label) %}
+{% if pager.total_items %}
+<nav class="pagination" aria-label="{{ label }} pagination">
+  <p>Showing {{ pager.start }} to {{ pager.end }} of {{ pager.total_items }}</p>
+  <div>
+    {% if pager.has_previous %}<a class="button-link button-secondary" href="/admin?page_size={{ page_size }}&{{ parameter }}={{ pager.page - 1 }}#{{ anchor }}">Previous</a>{% endif %}
+    <span>Page {{ pager.page }} of {{ pager.total_pages }}</span>
+    {% if pager.has_next %}<a class="button-link button-secondary" href="/admin?page_size={{ page_size }}&{{ parameter }}={{ pager.page + 1 }}#{{ anchor }}">Next</a>{% endif %}
+  </div>
+</nav>
+{% endif %}
+{% endmacro %}
+{% macro traffic_cells(totals) %}
+<td data-label="Today (UTC)"><span class="traffic-direction">Inbound <strong>{{ format_bytes(totals.today_ingress_bytes) }}</strong></span><span class="traffic-direction">Outbound <strong>{{ format_bytes(totals.today_egress_bytes) }}</strong></span></td>
+<td data-label="7 days"><span class="traffic-direction">Inbound <strong>{{ format_bytes(totals.seven_day_ingress_bytes) }}</strong></span><span class="traffic-direction">Outbound <strong>{{ format_bytes(totals.seven_day_egress_bytes) }}</strong></span></td>
+<td data-label="30 days"><span class="traffic-direction">Inbound <strong>{{ format_bytes(totals.thirty_day_ingress_bytes) }}</strong></span><span class="traffic-direction">Outbound <strong>{{ format_bytes(totals.thirty_day_egress_bytes) }}</strong></span></td>
+{% endmacro %}
+{% block title %}Admin | {{ brand_name }}{% endblock %}
+{% block content %}
+<div class="admin-page content-wide">
+  <header class="dashboard-header admin-header">
+    <div>
+      <p class="eyebrow">Operations</p>
+      <h1>Admin</h1>
+      <p>Subscription health, account access, and service operations.</p>
+    </div>
+    <form method="post" action="/admin/logout"><button type="submit" class="button-secondary">Sign out</button></form>
+  </header>
+
+  <section class="admin-summary" aria-labelledby="summary-title">
+    <h2 id="summary-title" class="visually-hidden">Subscription summary</h2>
+    <div class="metric-strip admin-metrics">
+      <div><span>Active subscriptions</span><strong>{{ operations.active_subscriptions }}</strong><small>{{ operations.active_customers }} customers</small></div>
+      <div class="metric-attention"><span>Pending subscriptions</span><strong>{{ operations.pending_subscriptions }}</strong><small>{{ operations.open_payments }} open payments</small></div>
+      <div class="metric-danger"><span>Expired subscriptions</span><strong>{{ operations.expired_subscriptions }}</strong><small>Need renewal</small></div>
+      <div><span>Active-subscription accounts seen, 7d</span><strong>{{ operations.active_subscription_accounts_7d }}</strong><small>of {{ operations.active_customers }} active customers</small></div>
+      <div><span>Gross payments settled, 30d</span><strong>{{ operations.settled_gross_sats_30d }}</strong><small>sats</small></div>
+      <div><span>Without subscriptions</span><strong>{{ operations.accounts_without_subscriptions }}</strong><small>accounts</small></div>
+    </div>
+  </section>
+
+  <section class="admin-charts" aria-labelledby="charts-title">
+    <div class="section-heading">
+      <div><p class="eyebrow">At a glance</p><h2 id="charts-title">Subscription summary</h2></div>
+      <p class="muted">Eight weekly buckets, Monday through Sunday in UTC.</p>
+    </div>
+    <div class="chart-grid">
+      <figure class="admin-chart status-chart">
+        <figcaption><strong>Subscription status</strong><span>{{ operations.total_subscriptions }} total</span></figcaption>
+        <div class="status-track" role="img" aria-label="Subscription status distribution">
+          {% for item in operations.status_breakdown %}
+          {% if item.value %}<span class="chart-tone-{{ item.key }}" data-segment-size="{{ item.percent }}" title="{{ item.label }}: {{ item.value }}"></span>{% endif %}
+          {% endfor %}
+        </div>
+        <dl class="chart-legend">
+          {% for item in operations.status_breakdown %}<div><dt><i class="chart-swatch chart-tone-{{ item.key }}"></i>{{ item.label }}</dt><dd>{{ item.value }} <span>{{ item.percent }}%</span></dd></div>{% endfor %}
+        </dl>
+      </figure>
+
+      <figure class="admin-chart product-chart">
+        <figcaption><strong>Active product mix</strong><span>{{ operations.active_subscriptions }} active</span></figcaption>
+        <dl class="horizontal-bars">
+          {% for item in operations.active_product_breakdown %}
+          <div>
+            <dt>{{ item.label }}</dt><dd><span class="product-bar chart-tone-{{ item.key }}" data-bar-size="{{ item.percent }}"></span></dd><strong>{{ item.value }}</strong>
+          </div>
+          {% endfor %}
+        </dl>
+      </figure>
+
+      <figure class="admin-chart trend-chart">
+        <figcaption>
+          <strong>Weekly subscriptions and settled payments (UTC)</strong>
+          <span class="trend-legend"><i class="chart-swatch chart-tone-new"></i>Subscriptions <i class="chart-swatch chart-tone-revenue"></i>Settled payments</span>
+        </figcaption>
+        <div class="trend-plot" role="img" aria-label="Subscriptions and settled payments by UTC week">
+          {% for point in operations.weekly_activity %}
+          <div class="trend-week">
+            <div class="trend-bars">
+              <span class="trend-bar chart-tone-new" data-bar-height="{{ point.subscription_percent }}" title="{{ point.label }}: {{ point.new_subscriptions }} new subscriptions"><i>{{ point.new_subscriptions }}</i></span>
+              <span class="trend-bar chart-tone-revenue" data-bar-height="{{ point.revenue_percent }}" title="{{ point.label }}: {{ point.paid_sats }} settled sats"><i>{{ point.paid_sats }}</i></span>
+            </div>
+            <small>{{ point.label }}</small>
+          </div>
+          {% endfor %}
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  {% if operations.traffic_total %}
+  <section class="admin-section traffic-workspace" aria-labelledby="traffic-title">
+    <div class="section-heading">
+      <div><p class="eyebrow">Network</p><h2 id="traffic-title">Public traffic</h2></div>
+      <p class="muted">UTC daily counters</p>
+    </div>
+    <div class="metric-strip traffic-metrics">
+      <div><span>Today inbound</span><strong>{{ format_bytes(operations.traffic_total.today_ingress_bytes) }}</strong><small>UTC</small></div>
+      <div><span>Today outbound</span><strong>{{ format_bytes(operations.traffic_total.today_egress_bytes) }}</strong><small>UTC</small></div>
+      <div><span>7d inbound</span><strong>{{ format_bytes(operations.traffic_total.seven_day_ingress_bytes) }}</strong><small>Including today</small></div>
+      <div><span>7d outbound</span><strong>{{ format_bytes(operations.traffic_total.seven_day_egress_bytes) }}</strong><small>Including today</small></div>
+      <div><span>30d inbound</span><strong>{{ format_bytes(operations.traffic_total.thirty_day_ingress_bytes) }}</strong><small>Including today</small></div>
+      <div><span>30d outbound</span><strong>{{ format_bytes(operations.traffic_total.thirty_day_egress_bytes) }}</strong><small>Including today</small></div>
+    </div>
+    <div class="traffic-aggregate-grid">
+      <div>
+        <h3>VPS edges</h3>
+        <div class="table-wrap"><table class="responsive-table traffic-table"><caption>Traffic by relay VPS edge</caption><thead><tr><th scope="col">VPS edge</th><th scope="col">Today (UTC)</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead><tbody>
+        {% for row in operations.traffic_edges %}<tr><td data-label="VPS edge"><strong>{{ row.label }}</strong><code>{{ row.detail }}</code></td>{{ traffic_cells(row.totals) }}</tr>{% else %}<tr><td data-label="Traffic" colspan="4" class="muted">No relay edges configured.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+      <div>
+        <h3>Subscription types</h3>
+        <div class="table-wrap"><table class="responsive-table traffic-table"><caption>Traffic by subscription type</caption><thead><tr><th scope="col">Type</th><th scope="col">Today (UTC)</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead><tbody>
+        {% for row in operations.traffic_products %}<tr><td data-label="Type"><strong>{{ row.label }}</strong><span class="cell-detail">{{ row.detail }}</span></td>{{ traffic_cells(row.totals) }}</tr>{% else %}<tr><td data-label="Traffic" colspan="4" class="muted">No reported traffic.</td></tr>{% endfor %}
+        </tbody></table></div>
+      </div>
+    </div>
+    <div class="traffic-subscriptions">
+      <h3>Subscriptions</h3>
+      <div class="table-wrap"><table class="responsive-table traffic-table"><caption>Traffic by subscription, highest 30-day volume first</caption><thead><tr><th scope="col">Subscription</th><th scope="col">Today (UTC)</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead><tbody>
+      {% for row in operations.traffic_subscriptions %}<tr><td data-label="Subscription"><strong>{{ row.label }}</strong><code>{{ row.key }}</code><code>{{ row.detail }}</code></td>{{ traffic_cells(row.totals) }}</tr>{% else %}<tr><td data-label="Traffic" colspan="4" class="muted">No reported traffic.</td></tr>{% endfor %}
+      </tbody></table></div>
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="admin-section subscription-workspace" id="accounts-title" aria-labelledby="subscriptions-title">
+    <div class="section-heading workspace-heading">
+      <div><p class="eyebrow">Customers</p><h2 id="subscriptions-title">Accounts and subscriptions</h2></div>
+      <form method="get" action="/admin#accounts-title" class="page-size-form">
+        <label for="pageSize">Rows per page</label>
+        <select id="pageSize" name="page_size">
+          {% for option in page_size_options %}<option value="{{ option }}"{% if option == page_size %} selected{% endif %}>{{ option }}</option>{% endfor %}
+        </select>
+        <button type="submit" class="button-secondary">Apply</button>
+      </form>
+    </div>
+    <div class="admin-filters" aria-label="Filter visible subscriptions">
+      <label class="filter-search" for="adminSearch">Search this page<input id="adminSearch" type="search" placeholder="Account, subscription, or resource"></label>
+      <label for="adminStatusFilter">Status<select id="adminStatusFilter"><option value="">All statuses</option><option value="active">Active</option><option value="pending">Pending subscription</option><option value="expired">Expired</option><option value="cancelled">Cancelled</option><option value="suspended">Suspended account</option><option value="account_only">No subscription</option></select></label>
+      <label for="adminProductFilter">Product<select id="adminProductFilter"><option value="">All products</option><option value="ip">Dedicated IP</option><option value="port">Port mapping</option><option value="relay">Relay</option><option value="none">No subscription</option></select></label>
+      <label for="adminActivityFilter">Activity<select id="adminActivityFilter"><option value="">All activity</option><option value="recent">Recent account activity</option><option value="idle">Idle 7d+</option><option value="never">Never seen</option></select></label>
+      <label for="adminConnectionFilter">Agent connection<select id="adminConnectionFilter"><option value="">All connections</option><option value="connected">Connected</option><option value="stale">Stale</option><option value="disconnected">Disconnected</option><option value="never">Never connected</option></select></label>
+      <button id="clearAdminFilters" type="button" class="button-secondary">Clear filters</button>
+    </div>
+    <p class="workspace-note"><strong id="adminVisibleCount">{{ subscription_rows | length }}</strong> rows on this page. Account seen time is based on authenticated API access.</p>
+    <div class="table-wrap admin-subscription-table-wrap">
+      <table class="responsive-table admin-subscription-table">
+        <caption>Account and subscription status in one operational view</caption>
+        <thead><tr><th scope="col">Account and subscription</th><th scope="col">Status</th><th scope="col">Authenticated account activity</th><th scope="col">Agent connection</th><th scope="col">Product and resource</th><th scope="col">Latest payment</th><th scope="col">Term</th><th scope="col">Action</th></tr></thead>
+        <tbody id="adminSubscriptionRows">
+        {% for row in subscription_rows %}
+          <tr data-admin-row data-status="{{ row.status_key }}" data-product="{{ row.product or 'none' }}" data-activity="{{ row.activity_key }}" data-connection="{{ row.connection_state }}" data-suspended="{{ 'true' if row.account_suspended else 'false' }}">
+            <td data-label="Account and subscription">
+              <span class="id-label">Account</span><code>{{ row.account_public_id }}</code>
+              <span class="id-label">Subscription</span>{% if row.subscription_public_id %}<code>{{ row.subscription_public_id }}</code>{% else %}<span class="muted">None</span>{% endif %}
+              <span class="account-flags">{{ "NWC connected" if row.nwc_state == "configured" else "No NWC" }}</span>
+            </td>
+            <td data-label="Status"><span class="status-badge status-{{ 'suspended' if row.account_suspended else row.status_key }}">{{ "Suspended" if row.account_suspended else row.status_label }}</span><span class="cell-detail">{{ row.status_detail }}</span></td>
+            <td data-label="Authenticated account activity"><span class="activity-signal activity-{{ row.activity_key }}"><i></i>{{ row.activity_label }}</span>{% if row.account_last_seen_at %}<time datetime="{{ row.account_last_seen_at.isoformat() }}">{{ row.account_last_seen_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</time>{% else %}<span class="muted">Never</span>{% endif %}</td>
+            <td data-label="Agent connection">{% if row.connection_state == "not_applicable" %}<span class="muted">Not applicable</span>{% else %}<span class="status-badge status-{{ row.connection_state }}">{{ row.connection_state | capitalize }}</span>{% if row.last_agent_connected_at %}<time datetime="{{ row.last_agent_connected_at.isoformat() }}">{{ row.last_agent_connected_at.strftime("%Y-%m-%d %H:%M:%S UTC") }}</time>{% else %}<span class="muted">Never</span>{% endif %}{% endif %}</td>
+            <td data-label="Product and resource">{% if row.product %}<strong>{{ {"ip": "Dedicated IP", "port": "Port mapping", "relay": "Relay"}.get(row.product, row.product) }}</strong><code class="resource-value">{{ row.assigned_resource }}</code>{% else %}<span class="muted">No product</span>{% endif %}</td>
+            <td data-label="Latest payment">{% if row.latest_payment_status %}<span class="payment-state payment-{{ row.latest_payment_status }}">{{ row.latest_payment_status | replace('_', ' ') | capitalize }}</span><span class="cell-detail">{{ row.latest_payment_amount_sats }} sats via {{ row.latest_payment_method | replace('_', ' ') }}</span><time datetime="{{ row.latest_payment_at.isoformat() }}">{{ row.latest_payment_at.strftime("%Y-%m-%d") }}</time>{% else %}<span class="muted">No payment attempts</span>{% endif %}</td>
+            <td data-label="Term">{% if row.billing_term %}<strong>{{ row.billing_term | capitalize }}</strong><span class="cell-detail">{% if row.period_end %}Ends {{ row.period_end.strftime("%Y-%m-%d") }}{% else %}No active term{% endif %}</span>{% else %}<span class="muted">Not applicable</span>{% endif %}</td>
+            <td data-label="Action">
+              {% if row.account_suspended %}<form method="post" action="/admin/accounts/{{ row.account_public_id }}/restore"><button type="submit" class="button-secondary">Restore</button></form>
+              {% else %}<form method="post" action="/admin/accounts/{{ row.account_public_id }}/suspend"><button type="submit" class="button-secondary">Suspend</button></form>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p id="adminNoResults" class="empty-filter-state" hidden>No rows on this page match these filters.</p>
+    </div>
+    {{ pagination(account_pagination, "account_page", "accounts-title", "Accounts") }}
+  </section>
+
+  <section class="operations-detail admin-section" aria-label="Production observations">
+    <div>
+      <h2>Relay edges</h2>
+      <dl class="operations-list">
+        {% for edge in operations.relay_edges %}<div><dt>{{ edge.edge_id }} <span>{{ edge.state | capitalize }}</span></dt><dd><code>{{ edge.endpoint }}</code><br><span class="muted">Age {{ edge.age or "Never" }}, tunnels {{ edge.active_tunnels if edge.active_tunnels is not none else "" }}, streams {{ edge.active_streams if edge.active_streams is not none else "" }}</span></dd></div>{% endfor %}
+        <div><dt>Totals from current heartbeats</dt><dd>{{ operations.active_relay_tunnels }} tunnels, {{ operations.active_relay_streams }} streams</dd></div>
+      </dl>
+    </div>
+    <div>
+      <h2>DNS targets</h2>
+      <dl class="operations-list">{% for target in operations.dns_targets %}<div><dt>{{ target.hostname }} <span>{{ target.state | capitalize }}</span></dt><dd>Expected <code>{{ target.expected_ips }}</code><br>Observed <code>{{ target.observed_ips or "" }}</code><br><span class="muted">Age {{ target.age or "Never" }}</span></dd></div>{% endfor %}</dl>
+    </div>
+    <div>
+      <h2>Capacity</h2>
+      <dl class="operations-list">{% for capacity in operations.capacities %}<div><dt>{{ capacity.product | capitalize }} <span>{{ capacity.sales_state }}</span></dt><dd>{{ capacity.availability }}<br><span class="muted">{{ capacity.detail }}</span></dd></div>{% endfor %}</dl>
+    </div>
+    <div>
+      <h2>Customer health</h2>
+      <dl class="operations-list">
+        <div><dt>Ever paying customers</dt><dd>{{ operations.ever_paying_customers }}</dd></div>
+        <div><dt>Paying customers</dt><dd>{{ operations.active_paying_customers }} active, {{ operations.lapsed_paying_customers }} lapsed</dd></div>
+        <div><dt>Accounts with first settled payment, 30d</dt><dd>{{ operations.new_paying_customers_30d }}</dd></div>
+        <div><dt>Oldest open payment</dt><dd>{{ operations.oldest_open_payment_age or "None" }}</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  {% if announcement_email_enabled %}
+  <section class="admin-section" aria-labelledby="announcements-title">
+    <h2 id="announcements-title">Service announcements</h2>
+    <form method="post" action="/admin/announcements" class="announcement-form">
+      <label for="announcementSubject">Subject</label><input id="announcementSubject" name="subject" maxlength="160" required>
+      <label for="announcementBody">Plain-text message</label><textarea id="announcementBody" name="body" maxlength="10000" rows="8" required></textarea>
+      <div class="form-actions form-actions-end"><button type="submit">Save draft</button></div>
+    </form>
+    <p class="field-help">{{ announcement_eligible_count }} eligible accounts at this time. Queueing snapshots the recipient count and requires a separate action.</p>
+    {% if announcements %}<div class="table-wrap"><table class="responsive-table"><caption>Service announcement campaigns</caption><thead><tr><th scope="col">Reference</th><th scope="col">Subject</th><th scope="col">State</th><th scope="col">Recipients</th><th scope="col">Delivery totals</th><th scope="col">Created</th><th scope="col">Action</th></tr></thead><tbody>
+    {% for announcement in announcements %}{% set counts = announcement_delivery_counts.get(announcement.id, {}) %}<tr><td data-label="Reference"><code>{{ announcement.id }}</code></td><td data-label="Subject">{{ announcement.subject }}</td><td data-label="State">{{ announcement.state.value }}</td><td data-label="Recipients">{{ announcement.recipient_count if announcement.state.value != "draft" else announcement_eligible_count }}</td><td data-label="Delivery totals">Queued {{ counts.get("queued", 0) }}, sending {{ counts.get("sending", 0) }}, sent {{ counts.get("sent", 0) }}, ambiguous {{ counts.get("delivery_ambiguous", 0) }}, failed {{ counts.get("failed", 0) }}, cancelled {{ counts.get("cancelled", 0) }}</td><td data-label="Created">{{ announcement.created_at }}</td><td data-label="Action">{% if announcement.state.value == "draft" %}<form method="post" action="/admin/announcements/{{ announcement.id }}/queue"><button type="submit" class="button-secondary">Queue campaign</button></form>{% endif %}{% if announcement.state.value in ("draft", "queued") %}<form method="post" action="/admin/announcements/{{ announcement.id }}/cancel"><button type="submit" class="button-secondary button-danger">Cancel</button></form>{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>{% endif %}
+  </section>
+  {% endif %}
+
+  <details class="admin-disclosure admin-section" id="ip-leases-title"{% if request.query_params.get("lease_page") %} open{% endif %}>
+    <summary><span><strong>Dedicated IP lease history</strong><small>{{ lease_pagination.total_items }} records</small></span></summary>
+    <div class="table-wrap"><table class="responsive-table"><caption>Dedicated IP assignments and outbound SMTP review</caption><thead><tr><th scope="col">Lease</th><th scope="col">Subscription</th><th scope="col">Address</th><th scope="col">Delivery</th><th scope="col">State</th><th scope="col">Reserved</th><th scope="col">Released</th><th scope="col">SMTP status</th><th scope="col">SMTP review</th></tr></thead><tbody>
+    {% for lease, subscription_id in lease_rows %}<tr><td data-label="Lease"><code>{{ lease.public_id }}</code>{% if lease.imported %}<br><span class="muted">Imported</span>{% endif %}</td><td data-label="Subscription"><code>{{ subscription_id }}</code></td><td data-label="Address"><code>{{ lease.address }}</code></td><td data-label="Delivery">{{ lease.delivery.value }}</td><td data-label="State">{{ lease.state.value }}{% if lease.release_reason %}<br><span class="muted">{{ lease.release_reason }}</span>{% endif %}</td><td data-label="Reserved">{{ lease.reserved_at }}</td><td data-label="Released">{{ lease.released_at or "" }}</td><td data-label="SMTP status">{% if lease.smtp_enabled %}Approved{% elif lease.smtp_revoked_at %}Revoked{% else %}Default deny{% endif %}{% if lease.smtp_review_reference %}<br><span class="muted">{{ lease.smtp_review_reference }}</span>{% endif %}</td><td data-label="SMTP review">{% if lease.state.value == "active" and lease.delivery.value == "wireguard" and not lease.released_at %}{% if lease.smtp_enabled %}<form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/revoke"><label>Reason <input name="reason" required maxlength="255"></label><button type="submit" class="button-secondary">Revoke TCP/25</button></form>{% else %}<form method="post" action="/admin/ip-leases/{{ lease.public_id }}/smtp/approve"><label>Intended use <input name="intended_use" required maxlength="500"></label><label>Fee paid <input name="fee_paid_sats" type="number" min="{{ smtp_fee_sats }}" value="{{ smtp_fee_sats }}" required></label><label>Review reference <input name="review_reference" required maxlength="200"></label><button type="submit" class="button-secondary">Approve TCP/25</button></form>{% endif %}{% else %}Not eligible{% endif %}</td></tr>{% endfor %}
+    </tbody></table></div>{{ pagination(lease_pagination, "lease_page", "ip-leases-title", "Lease history") }}
+  </details>
+
+  <details class="admin-disclosure admin-section" id="payments-title"{% if request.query_params.get("payment_page") %} open{% endif %}>
+    <summary><span><strong>Payment history</strong><small>{{ payment_pagination.total_items }} attempts</small></span></summary>
+    <div class="table-wrap"><table class="responsive-table"><caption>Payment attempts, newest first</caption><thead><tr><th scope="col">Reference</th><th scope="col">Account ID</th><th scope="col">Subscription</th><th scope="col">Method</th><th scope="col">Status</th><th scope="col">Term</th><th scope="col">Amount</th><th scope="col">Payment hash</th></tr></thead><tbody>
+    {% for p, subscription_id, account_id in payment_rows %}<tr><td data-label="Reference"><code>{{ p.id }}</code></td><td data-label="Account ID"><code>{{ account_id }}</code></td><td data-label="Subscription"><code>{{ subscription_id }}</code></td><td data-label="Method">{{ p.method.value }}</td><td data-label="Status"><span class="payment-state payment-{{ p.status.value }}">{{ p.status.value }}</span></td><td data-label="Term">{{ p.billing_term.value }} ({{ p.period_days }} days)</td><td data-label="Amount">{{ p.amount_sats }} sats</td><td data-label="Payment hash"><code>{{ (p.payment_hash or "")[:20] }}</code></td></tr>{% endfor %}
+    </tbody></table></div>{{ pagination(payment_pagination, "payment_page", "payments-title", "Payment history") }}
+  </details>
+
+  {% if reminder_pagination.total_items %}
+  <details class="admin-disclosure admin-section" id="reminders-title"{% if request.query_params.get("reminder_page") %} open{% endif %}>
+    <summary><span><strong>Reminder deliveries</strong><small>{{ reminder_pagination.total_items }} records</small></span></summary>
+    <div class="table-wrap"><table class="responsive-table"><caption>Expiration reminder outbox</caption><thead><tr><th scope="col">Reference</th><th scope="col">Subscription</th><th scope="col">Notice</th><th scope="col">State</th><th scope="col">Attempts</th><th scope="col">Sent</th><th scope="col">Error</th><th scope="col">Updated</th></tr></thead><tbody>
+    {% for reminder, subscription_id in reminder_rows %}<tr><td data-label="Reference"><code>{{ reminder.id }}</code></td><td data-label="Subscription"><code>{{ subscription_id }}</code></td><td data-label="Notice">{{ reminder.kind.value }}</td><td data-label="State">{{ reminder.state.value }}</td><td data-label="Attempts">{{ reminder.attempt_count }}</td><td data-label="Sent">{{ reminder.sent_at or "" }}</td><td data-label="Error"><code>{{ reminder.error_code or "" }}</code></td><td data-label="Updated">{{ reminder.updated_at }}</td></tr>{% endfor %}
+    </tbody></table></div>{{ pagination(reminder_pagination, "reminder_page", "reminders-title", "Reminder deliveries") }}
+  </details>
+  {% endif %}
+</div>
+<script src="/static/admin.js"></script>
+{% endblock %}

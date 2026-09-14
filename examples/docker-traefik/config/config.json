@@ -1,0 +1,9 @@
+{
+  "version": 3,
+  "accounts": [
+    {
+      "name": "public",
+      "token_file": "/run/secrets/blindport-public"
+    }
+  ]
+}

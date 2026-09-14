@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Service terms | {{ brand_name }}{% endblock %}
+{% block content %}
+<article class="terms-page content-narrow prose" aria-labelledby="terms-title">
+  <header>
+    <p class="eyebrow">Plain-language beta terms</p>
+    <h1 id="terms-title">Service terms</h1>
+    <p class="lead">Blindport provides public network identities for lawful services running on hardware you control. By creating an order or operating an endpoint, you agree to these terms.</p>
+    <p class="muted">Effective September 9, 2026</p>
+  </header>
+
+  <section aria-labelledby="intended-use-title">
+    <h2 id="intended-use-title">Intended use</h2>
+    <p>Blindport is built for self-hosters who want easier public reachability and less exposure of their origin address. Framed products provide ingress to selected services. Routed Blindport IP assigns one static public IPv4 address to a WireGuard interface for inbound and outbound traffic without network address translation.</p>
+    <p>The network path can still expose information because application behavior, DNS history, headers, or third-party integrations may reveal an origin address.</p>
+    <p>Routed Blindport IP is prepaid for 365 service days. The address remains assigned for the active paid term unless renumbering is technically, legally, or operationally unavoidable. You receive a right to use the address, not ownership of it.</p>
+    <p>You are responsible for traffic through your endpoint, the service behind it, account and host security, users, content, backups, and compliance with applicable law.</p>
+  </section>
+
+  <section aria-labelledby="beta-title">
+    <h2 id="beta-title">Best-effort beta</h2>
+    <p>The hosted beta is provided on a best-effort basis without an uptime, availability, or high-availability guarantee. Relay and Port use two provider edges to improve resilience for new connections, but DNS does not perform health steering and established sessions do not migrate. A routed dedicated IP is assigned by one provider and becomes unavailable during that provider's outage. The hosted website and control plane currently run at one provider. High availability is planned after beta, but planned work is not a promise about the current service.</p>
+    <p>When the control plane is unreachable, a previously issued signed Relay or Port authorization may remain usable until its bounded grace timestamp. This grace is a reachability safeguard, does not extend the paid service term, and does not override a successful online denial.</p>
+  </section>
+
+  <section aria-labelledby="fair-use-title">
+    <h2 id="fair-use-title">Traffic and fair use</h2>
+    <p>There is currently no fixed traffic limit. This is a fair-use service, not a promise of unlimited capacity.</p>
+    <p>We may introduce reasonable traffic, bandwidth, connection, or rate limits when needed to keep the service reliable and available. We will publish material limits before they apply when practical. Urgent limits may be applied immediately to contain abuse, instability, security incidents, or harm to other users.</p>
+  </section>
+
+  <section aria-labelledby="smtp-title">
+    <h2 id="smtp-title">Outbound email</h2>
+    <p>New outbound TCP connections to port 25 are blocked on routed Blindport IP by default. Ports 465 and 587 are not covered by this default block.</p>
+    <p>A port 25 exception requires contacting support, review of the intended use and technical safeguards, and an additional nonrefundable fee of at least {{ smtp_egress_fee_sats }} sats. Approval is discretionary, applies only to the current IP lease, and may be revoked immediately after spam, a material change in use, inaccurate review information, or an unresolved abuse report.</p>
+  </section>
+
+  <section aria-labelledby="data-title">
+    <h2 id="data-title">Source addresses and logs</h2>
+    <p>Blindport does not persist visitor or request source IP addresses, traffic destinations, DNS queries, or payloads in application records. Addresses are processed transiently where required to route active traffic and enforce network policy. Blindport retains durable account-to-IP lease history, lease state and timestamps, SMTP review and revocation records, subscriptions, account activity times, and payment records as necessary to provide and protect the service.</p>
+    <p>Hosted access logging is disabled. Blindport operational logs omit visitor and request source addresses and are deleted within 30 days. Customer systems and independent network, hosting, DNS, certificate, payment, email, and monitoring providers are outside this retention commitment and may keep their own records. When you choose stablecoin checkout, the selected external provider receives the invoice you provide and can observe your selected asset, network, wallet activity, and swap transaction.</p>
+  </section>
+
+  <section aria-labelledby="billing-title">
+    <h2 id="billing-title">Payments, service time, and upgrades</h2>
+    <p>Lightning and stablecoin checkout amounts, discounts, and service periods are fixed when a payment is created. A configured stablecoin checkout surcharge does not buy service time. When Lightning Swap requires a payment above the service price and surcharge, the additional provider-minimum amount earns proportional service time rounded up to a whole day.</p>
+    <p>Pay only before the checkout deadline shown by Blindport. A provider's Lightning invoice may remain payable longer. A payment first verified after the checkout deadline, or after the subscription becomes ineligible, requires manual review and does not automatically activate service. Verification may be delayed even when you paid before the deadline; contact support with your payment reference if this happens.</p>
+    <p>An active exact customer-owned Relay may be upgraded to a wildcard at the exact hostname's immediate parent. Remaining exact service is valued at the subscription's recorded monthly or annual daily rate, rounded down to satoshis, and capped at the selected wildcard term price. This credit is nonrefundable, cannot be transferred or exchanged for cash, and is consumed only when the wildcard activates. The exact route remains active until wildcard DNS is verified and payment settles, then it is replaced by the wildcard route.</p>
+    <section aria-labelledby="referrals-title">
+    <h3 id="referrals-title">Optional referrals</h3>
+    <p>You can create and share a referral link using a Lightning Address without registering a referrer account. Follow the <a href="/guide#referrals">referral guide</a>. The first valid referral captured in a browser tab's session is attached when a new subscription is created. It remains attached for renewals and wildcard upgrades. Later links do not replace that attribution, and existing subscriptions cannot acquire a referral retroactively. Clearing browser storage, blocking it, using another device, or beginning a separate session may prevent attribution.</p>
+    <p>The current merchant-set commission is {{ referral_commission_percent }}% of the service amount actually paid after discounts, excluding stablecoin surcharges and provider-minimum top-ups, rounded down to whole sats. Each invoice records its applicable rate. Rate changes apply to future invoices, including renewals, and do not alter existing credits. Referrers cannot set commissions or change customer prices.</p>
+    <p>Referral credit requires verified merchant settlement and successful subscription activation or renewal. Unpaid, failed, expired, fully credited, and review-required payments earn no automatic credit. Credits aggregate by the recorded Lightning Address. At least 10,000 sats of available credit are required to reserve a manual payout through an external service. Payouts are not instant and have no guaranteed schedule. Ambiguous payout results are investigated before any further send.</p>
+    <p>You are responsible for providing an address you control and keeping it able to receive payments. We validate format only when recording it, without contacting its provider or verifying ownership. Payouts use the recorded address; a support request alone does not prove ownership or authorize redirecting a balance. An invalid or unreachable destination can delay payment. Account-free attribution cannot distinguish a buyer from a referrer, so self-referrals receive the same fixed commission.</p>
+    <p>We store referral addresses, subscription attribution, credits, and payout records. There is no public balance lookup. The external payout service and the address provider necessarily receive payment details when a payout is processed. Share referral links honestly and identify your financial interest where required.</p>
+    </section>
+  </section>
+
+  <section aria-labelledby="lawful-use-title">
+    <h2 id="lawful-use-title">Lawful use and upstream providers</h2>
+    <p>You may not use Blindport for unlawful activity; child sexual abuse material or exploitation; phishing, fraud, credential theft, malware, ransomware, spyware, botnets, command and control, denial of service, unauthorized access or scanning, source spoofing, unsolicited messaging, illegal commerce, infringement, doxxing, threats, or deliberate resource or network-reputation abuse. You may not resell access as an open proxy or attempt to bypass network controls.</p>
+    <p>Blindport depends on network, hosting, DNS, and payment providers. We cannot prevent those providers from investigating use, filtering traffic, or suspending their services or Blindport infrastructure.</p>
+    <p>We may ask for a response and remediation within a stated deadline when a credible report includes the relevant address, timestamp, protocol, and evidence. We may rate-limit, filter, suspend, or terminate service immediately for an active attack, severe unlawful use, material risk, nonresponse, repeated violations, or an upstream requirement. We disclose only information we retain and only in response to valid binding legal process, unless emergency law permits otherwise.</p>
+    <p><strong>Service suspended or terminated for prohibited activity is not eligible for a refund. Paid SMTP review fees are nonrefundable.</strong></p>
+  </section>
+
+  <section aria-labelledby="address-title">
+    <h2 id="address-title">Address reputation and service limits</h2>
+    <p>Public address reputation, geolocation, acceptance by third parties, and freedom from previous use are not guaranteed. Report a material preexisting reputation problem promptly; replacement remains subject to available inventory and review.</p>
+    <p>There is no backup of customer systems or application data. Expiration or termination removes network authorization and the address may be quarantined before reassignment. Established sessions may end without notice when authorization is removed.</p>
+  </section>
+
+  <section aria-labelledby="threat-model-title">
+    <h2 id="threat-model-title">Privacy and threat model</h2>
+    <p>Blindport is privacy-enhancing network infrastructure, not an anonymity network or censorship-resistance system. Blindport and its providers can observe connection metadata such as addresses, ports or SNI hostnames, timing, and traffic volume. Payloads are opaque to Blindport only when your service uses suitable end-to-end encryption.</p>
+    <p>This architecture is not designed to resist a state-level adversary, targeted traffic correlation, legal compulsion, infrastructure seizure, or coordinated pressure on upstream providers. It is intended for ordinary lawful self-hosting where origin-address privacy and ease of use matter.</p>
+    <p>Operators who require anonymity or censorship resistance should evaluate tools designed for those goals, such as Tor onion services, suitable mixnets, or other specialized systems, against their exact threat model. We support the broader goals of privacy, anonymity, and censorship resistance; Blindport itself provides only the limited privacy benefits described above.</p>
+  </section>
+
+  <section aria-labelledby="changes-title">
+    <h2 id="changes-title">Changes</h2>
+    <p>These beta terms may evolve as the service and its operating constraints become clearer. Material changes will be published on this page with a new effective date.</p>
+  </section>
+</article>
+{% endblock %}

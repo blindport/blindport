@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Blindport</title>
+  <desc id="description">Public reach for self-hosted services. TLS stays on your box.</desc>
+  <path fill="#f8faf9" d="M0 0h1200v630H0z"/>
+  <path fill="#087a5b" d="M0 0h18v630H0z"/>
+  <g transform="translate(86 119) scale(.34375)">
+    <rect width="512" height="512" rx="64" fill="#17201d"/>
+    <path transform="translate(-6 -32)" fill="#fff" fill-rule="evenodd" d="M128 96h140c71 0 116 39 116 101 0 35-16 62-47 79 39 17 59 49 59 91 0 69-49 113-126 113H128V96Zm76 64v88h58c39 0 58-14 58-44s-19-44-58-44h-58Zm0 148v108h63c43 0 65-18 65-54s-22-54-65-54h-63Z"/>
+  </g>
+  <text x="310" y="180" fill="#087a5b" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="0">PUBLIC REACH / PRIVATE KEYS</text>
+  <text x="302" y="300" fill="#17201d" font-family="Inter, Arial, sans-serif" font-size="92" font-weight="750" letter-spacing="0">Blindport</text>
+  <text x="310" y="372" fill="#34403c" font-family="Inter, Arial, sans-serif" font-size="34" letter-spacing="0">Public reach for self-hosted services.</text>
+  <path fill="#d5ddd9" d="M310 429h802v2H310z"/>
+  <circle cx="324" cy="490" r="7" fill="#21a981"/>
+  <text x="346" y="502" fill="#58635f" font-family="Inter, Arial, sans-serif" font-size="25" letter-spacing="0">TLS stays on your box.</text>
+  <text x="1112" y="556" fill="#17201d" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="0" text-anchor="end">blindport.com</text>
+</svg>

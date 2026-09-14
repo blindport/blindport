@@ -1,0 +1,791 @@
+"""Pydantic schemas for API I/O."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+from typing import Any, Literal
+from uuid import UUID
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .lightning_address import validate_lightning_address
+from .models import (
+    AgentOrderState,
+    AnnouncementDeliveryState,
+    AnnouncementState,
+    BillingTerm,
+    DeliveryMode,
+    IPLeaseState,
+    PaymentMethod,
+    PaymentStatus,
+    ProductType,
+    RelayHostnameScope,
+    SubscriptionStatus,
+    Transport,
+)
+from .wireguard import canonical_wireguard_key
+
+
+class SignupResponse(BaseModel):
+    """One-time response containing the user's new bearer token."""
+
+    token: str = Field(..., description="Bearer token. Save it now; cannot be recovered.")
+    user_id: int
+
+
+class PasskeyRegistrationOptionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if value.strip() != value or not value.isprintable():
+            raise ValueError("passkey name must be trimmed printable text")
+        return value
+
+
+class WebAuthnCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    challenge_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    credential: dict[str, Any]
+
+
+class PasskeyRegistrationRequest(WebAuthnCredentialRequest):
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return PasskeyRegistrationOptionsRequest.validate_name(value)
+
+
+class WebAuthnOptionsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    challenge_id: str
+    options: dict[str, Any]
+
+
+class PasskeyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    credential_id: str
+    name: str
+    transports: list[str]
+    device_type: str | None
+    backed_up: bool
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None
+
+
+class PasskeyRegistrationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    passkey: PasskeyResponse
+
+
+class PasskeyAuthenticationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    account_id: UUID
+
+
+class BrowserSessionTokenRequest(BaseModel):
+    """Bearer token exchange request for an opaque browser session."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    token: str = Field(min_length=1, max_length=256)
+
+
+class BrowserSessionTokenResponse(BaseModel):
+    """Public account identity for a completed browser-session exchange."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    account_id: UUID
+
+
+class AccountSignupResponse(BaseModel):
+    """One-time v2 response containing the token and public account identity."""
+
+    token: str = Field(..., description="Bearer token. Save it now; cannot be recovered.")
+    account_id: UUID
+
+
+class MeResponse(BaseModel):
+    user_id: int
+    is_admin: bool
+    created_at: datetime
+    subscriptions: list[SubscriptionResponse] = Field(default_factory=list)
+
+
+class AccountMeResponse(BaseModel):
+    account_id: UUID
+    is_admin: bool
+    created_at: datetime
+    subscriptions: list[SubscriptionResponse] = Field(default_factory=list)
+
+
+class CatalogCapacityResponse(BaseModel):
+    total: int | None = None
+    available: int | None = None
+    framed_available: int | None = None
+    wireguard_available: int | None = None
+    tcp_available: int | None = None
+    udp_available: int | None = None
+    managed_domains_available: int | None = None
+    customer_domains_available: bool | None = None
+
+
+class CatalogProductResponse(BaseModel):
+    product: ProductType
+    enabled: bool
+    sales_paused: bool
+    monthly_price_sats: int | None = None
+    yearly_price_sats: int
+    available: bool
+    sold_out: bool
+    capacity: CatalogCapacityResponse
+    relay_scopes: dict[RelayHostnameScope, CatalogRelayScopeResponse] | None = None
+
+
+class CatalogRelayScopeResponse(BaseModel):
+    monthly_price_sats: int
+    yearly_price_sats: int
+    available: bool
+    tls_passthrough_only: bool
+
+
+class CatalogResponse(BaseModel):
+    products: list[CatalogProductResponse]
+    managed_suffixes: list[str] = Field(default_factory=list)
+    yearly_billing_enabled: bool
+
+
+class AccountStatusResponse(BaseModel):
+    user_id: int
+    is_suspended: bool
+
+
+class PublicAccountStatusResponse(BaseModel):
+    account_id: UUID
+    is_suspended: bool
+
+
+class SMTPApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    intended_use: str = Field(min_length=1, max_length=500)
+    fee_paid_sats: int = Field(ge=0)
+    review_reference: str = Field(min_length=1, max_length=200)
+
+    @field_validator("intended_use", "review_reference")
+    @classmethod
+    def validate_audit_text(cls, value: str) -> str:
+        if value.strip() != value or not value.isascii() or not value.isprintable():
+            raise ValueError("audit text must be trimmed printable ASCII")
+        return value
+
+
+class SMTPRevocationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    reason: str = Field(min_length=1, max_length=255)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        if value.strip() != value or not value.isascii() or not value.isprintable():
+            raise ValueError("reason must be trimmed printable ASCII")
+        return value
+
+
+class SMTPLeaseResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    lease_id: UUID
+    subscription_id: UUID
+    address: str
+    state: IPLeaseState
+    smtp_enabled: bool
+    intended_use: str | None
+    fee_paid_sats: int
+    reviewed_at: datetime | None
+    reviewed_by: str | None
+    review_reference: str | None
+    revoked_at: datetime | None
+    revocation_reason: str | None
+
+
+class CreateSubscriptionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product: ProductType
+    billing_term: BillingTerm = BillingTerm.MONTHLY
+    delivery: DeliveryMode = DeliveryMode.FRAMED
+    location: str | None = None  # advisory only in v0
+    domain: str | None = None  # required for RELAY
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
+    transport: Transport = Transport.TCP
+    referral_address: str | None = Field(default=None, max_length=254)
+
+    @field_validator("referral_address")
+    @classmethod
+    def validate_referral_address(cls, value: str | None) -> str | None:
+        return validate_lightning_address(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_transport(self) -> CreateSubscriptionRequest:
+        if self.product == ProductType.IP:
+            if "delivery" in self.model_fields_set and self.delivery != DeliveryMode.WIREGUARD:
+                raise ValueError("Blindport IP is available with WireGuard delivery only")
+            if "billing_term" in self.model_fields_set and self.billing_term != BillingTerm.YEARLY:
+                raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+            self.delivery = DeliveryMode.WIREGUARD
+            self.billing_term = BillingTerm.YEARLY
+        if self.transport != Transport.TCP and self.product != ProductType.PORT:
+            raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
+        if self.delivery != DeliveryMode.FRAMED and self.product != ProductType.IP:
+            raise ValueError("WireGuard delivery is supported only for Blindport IP subscriptions")
+        if (
+            self.relay_hostname_scope != RelayHostnameScope.EXACT
+            and self.product != ProductType.RELAY
+        ):
+            raise ValueError(
+                "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+            )
+        return self
+
+
+class AnonymousOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    product: ProductType
+    billing_term: BillingTerm = BillingTerm.MONTHLY
+    delivery: DeliveryMode = DeliveryMode.FRAMED
+    domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
+    transport: Transport = Transport.TCP
+    referral_address: str | None = Field(default=None, max_length=254)
+
+    @field_validator("referral_address")
+    @classmethod
+    def validate_referral_address(cls, value: str | None) -> str | None:
+        return validate_lightning_address(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_transport(self) -> AnonymousOrderRequest:
+        if self.product == ProductType.IP:
+            if "delivery" in self.model_fields_set and self.delivery != DeliveryMode.WIREGUARD:
+                raise ValueError("Blindport IP is available with WireGuard delivery only")
+            if "billing_term" in self.model_fields_set and self.billing_term != BillingTerm.YEARLY:
+                raise ValueError("WireGuard Blindport IP is available with yearly billing only")
+            self.delivery = DeliveryMode.WIREGUARD
+            self.billing_term = BillingTerm.YEARLY
+        if self.transport != Transport.TCP and self.product != ProductType.PORT:
+            raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
+        if self.delivery != DeliveryMode.FRAMED and self.product != ProductType.IP:
+            raise ValueError("WireGuard delivery is supported only for Blindport IP subscriptions")
+        if (
+            self.relay_hostname_scope != RelayHostnameScope.EXACT
+            and self.product != ProductType.RELAY
+        ):
+            raise ValueError(
+                "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+            )
+        return self
+
+
+class SubscriptionResponse(BaseModel):
+    id: UUID
+    product: ProductType
+    delivery: DeliveryMode
+    status: SubscriptionStatus
+    assigned_ip: str | None = None
+    assigned_port: int | None = None
+    port_hostname: str | None = None
+    port_ips: list[str] = Field(default_factory=list)
+    transport: Transport
+    domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = RelayHostnameScope.EXACT
+    tls_passthrough_only: bool = False
+    relay_pool_domain: str | None = None
+    domain_is_managed: bool = False
+    domain_verified_at: datetime | None = None
+    domain_verification_expires_at: datetime | None = None
+    domain_renewal_grace_expires_at: datetime | None = None
+    domain_challenge_name: str | None = None
+    domain_challenge_value: str | None = None
+    record_type: str | None = None
+    record_name: str | None = None
+    record_target: str | None = None
+    monthly_price_sats: int
+    yearly_price_sats: int
+    billing_term: BillingTerm
+    period_days: int
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    auto_renew: bool
+    upgrade_from_subscription_id: UUID | None = None
+    upgrade_credit_sats: int = 0
+    upgrade_source_period_end: datetime | None = None
+
+
+class AnonymousOrderResponse(BaseModel):
+    token: str = Field(..., description="Bearer token. Save it now; cannot be recovered.")
+    account_id: UUID
+    monthly_price_sats: int
+    yearly_price_sats: int
+    billing_term: BillingTerm
+    period_days: int
+    subscription: SubscriptionResponse
+
+
+class AgentOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    product: ProductType = Field(strict=False)
+    domain: str | None = None
+    relay_hostname_scope: RelayHostnameScope = Field(
+        default=RelayHostnameScope.EXACT,
+        strict=False,
+    )
+    transport: Transport = Field(default=Transport.TCP, strict=False)
+    delivery: DeliveryMode = Field(default=DeliveryMode.FRAMED, strict=False)
+    billing_term: BillingTerm = Field(default=BillingTerm.MONTHLY, strict=False)
+    referral_address: str | None = Field(default=None, max_length=254)
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        from .hostnames import canonicalize_hostname
+
+        return canonicalize_hostname(value)
+
+    @field_validator("referral_address")
+    @classmethod
+    def validate_referral_address(cls, value: str | None) -> str | None:
+        return validate_lightning_address(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def validate_spec(self) -> AgentOrderRequest:
+        if self.product == ProductType.IP:
+            raise ValueError(
+                "Blindport IP is not supported for agent orders because routed mode has no upstream mapping"
+            )
+        if self.delivery == DeliveryMode.WIREGUARD:
+            raise ValueError("WireGuard delivery is not supported for agent orders")
+        if self.transport != Transport.TCP and self.product != ProductType.PORT:
+            raise ValueError("UDP transport is supported only for Blindport Port subscriptions")
+        if self.product == ProductType.RELAY and self.domain is None:
+            raise ValueError("domain is required for Blindport Relay subscriptions")
+        if self.product != ProductType.RELAY and self.domain is not None:
+            raise ValueError("domain is supported only for Blindport Relay subscriptions")
+        if (
+            self.relay_hostname_scope != RelayHostnameScope.EXACT
+            and self.product != ProductType.RELAY
+        ):
+            raise ValueError(
+                "wildcard hostname scope is supported only for Blindport Relay subscriptions"
+            )
+        return self
+
+
+class AgentOrderResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    order_key: str
+    subscription: SubscriptionResponse
+    payment: PaymentResponse | None = None
+    state: AgentOrderState
+
+
+class DomainVerificationResponse(BaseModel):
+    verified: bool
+    detail: str
+    subscription: SubscriptionResponse
+
+
+class CreatePaymentRequest(BaseModel):
+    subscription_id: UUID
+    method: Literal[
+        PaymentMethod.LIGHTNING,
+        PaymentMethod.NWC,
+        PaymentMethod.CLINK,
+        PaymentMethod.STABLECOIN_SWAP,
+    ]
+    billing_term: BillingTerm | None = None
+
+
+class CreateWildcardUpgradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    billing_term: BillingTerm = Field(strict=False)
+
+
+class PaymentResponse(BaseModel):
+    id: int
+    subscription_id: UUID
+    method: PaymentMethod
+    status: PaymentStatus
+    amount_sats: int
+    base_amount_sats: int
+    markup_sats: int
+    service_price_sats: int
+    discount_sats: int
+    standard_period_days: int
+    bonus_days: int
+    stablecoin_surcharge_sats: int
+    stablecoin_minimum_topup_sats: int
+    billing_term: BillingTerm
+    period_days: int
+    invoice: str | None = None
+    payment_hash: str | None = None
+    lightning_uri: str | None = None
+    qr_svg: str | None = None
+    stablecoin_provider: str | None = None
+    stablecoin_checkout_url: str | None = None
+    stablecoin_asset: str | None = None
+    nwc_state: str | None = None
+    nwc_attempt_count: int = 0
+    nwc_error_code: str | None = None
+    clink_state: str | None = None
+    clink_attempt_count: int = 0
+    clink_error_code: str | None = None
+    clink_nwc_fallback: bool = False
+    expires_at: datetime | None = None
+    invoice_expires_at: datetime | None = None
+    settlement_review_required: bool = False
+
+    @field_validator("expires_at", "invoice_expires_at")
+    @classmethod
+    def normalize_expiry_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value
+
+
+class PaymentConflictResponse(BaseModel):
+    detail: str
+    existing_payment: PaymentResponse
+
+
+class SetNwcRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    nwc_uri: str
+    auto_renew_subscription_id: UUID | None = None
+
+
+class NwcStatusResponse(BaseModel):
+    has_nwc: bool
+    capabilities: tuple[str, ...] = ()
+    encryption: Literal["nip44_v2", "nip04"] | None = None
+    last_validated_at: datetime | None = None
+
+
+class SetClinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ndebit: str
+    auto_renew_subscription_id: UUID | None = None
+
+
+class ClinkStatusResponse(BaseModel):
+    has_clink: bool
+    last_validated_at: datetime | None = None
+
+
+class NotificationEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+
+
+class NotificationEmailStatusResponse(BaseModel):
+    configured: bool
+
+
+class CreateAnnouncementRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    subject: str = Field(min_length=1, max_length=160)
+    body: str = Field(min_length=1, max_length=10_000)
+
+
+class AnnouncementSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    state: AnnouncementState
+    subject: str
+    author_marker: str
+    recipient_count: int
+    created_at: datetime
+    queued_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    delivery_counts: dict[AnnouncementDeliveryState, int] = Field(default_factory=dict)
+
+
+class AnnouncementDetailResponse(AnnouncementSummaryResponse):
+    body: str
+
+
+class RelayAssignmentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    relay_endpoint: str
+    assigned_ip: str | None = None
+
+
+class RelayProvisioningResponse(BaseModel):
+    """Returned to the Linux client at /api/v1/client/config.
+
+    The relay endpoint and the client's bearer token are everything the
+    daemon needs to connect.
+    """
+
+    relay_endpoint: str  # host:port
+    relay_endpoints: list[str]
+    relay_assignments: list[RelayAssignmentResponse] = Field(default_factory=list)
+    assigned_ip: str | None = None
+    assigned_port: int | None = None
+    transport: Transport
+    domain: str | None = None
+    product: ProductType
+    subscription_id: UUID
+
+
+class ClientVersionResponse(BaseModel):
+    version: str
+
+
+class ClientCertResponse(BaseModel):
+    """Issued mTLS material for the client<->relay tunnel.
+
+    The CA cert pins which relay the client trusts; the client cert identity is
+    bound to the account resolved from the bearer token. This endpoint also
+    returns the private key, so the certificate is not a second factor. All
+    values are PEM, ASCII-safe.
+    """
+
+    ca_cert_pem: str
+    client_cert_pem: str
+    client_key_pem: str
+    not_after: str  # ISO-8601 UTC
+    serial: str  # hex, lowercase, no 0x prefix
+
+
+class OfflineEntitlementClaimResponse(BaseModel):
+    """Exact edge-local claim, duplicated from the signed entitlement payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: ProductType
+    ip: str
+    port: int
+    transport: str
+    domain: str
+
+
+class OfflineEntitlementEdgeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    endpoint: str
+    claim: OfflineEntitlementClaimResponse
+    entitlement: str
+    paid_through: int
+    grace_through: int
+    generation: int
+
+
+class OfflineEntitlementProvisioningResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assigned_ip: str | None = None
+    assigned_port: int | None = None
+    transport: Transport
+    domain: str | None = None
+    product: ProductType
+    subscription_id: UUID
+    edges: list[OfflineEntitlementEdgeResponse]
+
+
+class OfflineEntitlementConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = 2
+    subscriptions: list[OfflineEntitlementProvisioningResponse]
+
+
+class OfflineEntitlementV3ClaimResponse(BaseModel):
+    """Complete scope-aware edge-local claim returned by v3 provisioning."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: ProductType = Field(strict=False)
+    ip: str
+    port: int
+    transport: str
+    domain: str
+    scope: RelayHostnameScope = Field(strict=False)
+
+
+class OfflineEntitlementV3EdgeResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    endpoint: str
+    claim: OfflineEntitlementV3ClaimResponse
+    entitlement: str
+    paid_through: int
+    grace_through: int
+    generation: int
+
+
+class OfflineEntitlementV3ProvisioningResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    assigned_ip: str | None = None
+    assigned_port: int | None = None
+    transport: Transport = Field(strict=False)
+    domain: str | None = None
+    product: ProductType = Field(strict=False)
+    subscription_id: UUID
+    relay_hostname_scope: RelayHostnameScope = Field(strict=False)
+    edges: list[OfflineEntitlementV3EdgeResponse]
+
+
+class OfflineEntitlementV3ConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: int = 3
+    subscriptions: list[OfflineEntitlementV3ProvisioningResponse]
+
+
+class ClientCertificateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    instance_id: str = Field(min_length=36, max_length=36)
+    generation: int = Field(ge=1, le=2_147_483_647)
+    csr_pem: str = Field(min_length=1, max_length=16_384)
+
+    @field_validator("instance_id")
+    @classmethod
+    def validate_canonical_instance_id(cls, value: str) -> str:
+        try:
+            parsed = UUID(value)
+        except ValueError as error:
+            raise ValueError("instance_id must be a canonical UUID") from error
+        if str(parsed) != value:
+            raise ValueError("instance_id must be a canonical UUID")
+        return value
+
+    @field_validator("csr_pem")
+    @classmethod
+    def validate_canonical_csr(cls, value: str) -> str:
+        try:
+            csr = x509.load_pem_x509_csr(value.encode("ascii"))
+        except (UnicodeEncodeError, ValueError) as error:
+            raise ValueError("csr_pem must contain one canonical PEM CSR") from error
+        canonical = csr.public_bytes(serialization.Encoding.PEM).decode("ascii")
+        if value != canonical:
+            raise ValueError("csr_pem must contain one canonical PEM CSR")
+        if not csr.is_signature_valid:
+            raise ValueError("CSR signature is invalid")
+        if not isinstance(csr.public_key(), Ed25519PublicKey):
+            raise ValueError("CSR public key must be Ed25519")
+        return value
+
+
+class ClientCertificateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instance_id: str
+    generation: int
+    ca_cert_pem: str
+    client_cert_pem: str
+    serial: str
+    not_before: datetime
+    not_after: datetime
+    renew_after: datetime
+
+
+class WireGuardKeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    instance_id: str = Field(min_length=36, max_length=36)
+    generation: int = Field(ge=1, le=2_147_483_647)
+    public_key: str = Field(min_length=44, max_length=44)
+    signature: str = Field(min_length=88, max_length=88)
+
+    @field_validator("instance_id")
+    @classmethod
+    def validate_canonical_instance_id(cls, value: str) -> str:
+        return ClientCertificateRequest.validate_canonical_instance_id(value)
+
+    @field_validator("public_key")
+    @classmethod
+    def validate_public_key(cls, value: str) -> str:
+        return canonical_wireguard_key(value, "public_key")
+
+    @field_validator("signature")
+    @classmethod
+    def validate_signature(cls, value: str) -> str:
+        import base64
+
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except ValueError as error:
+            raise ValueError("signature must be canonical base64") from error
+        if len(decoded) != 64 or base64.b64encode(decoded).decode("ascii") != value:
+            raise ValueError("signature must encode exactly 64 bytes")
+        return value
+
+
+class WireGuardConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    instance_id: str
+    generation: int
+    public_key: str | None = None
+    assigned_prefixes: list[str]
+    relay_public_key: str
+    endpoint: str
+    mtu: int
+    persistent_keepalive_seconds: int
+
+
+class SubscriptionBandwidthDayResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    day: date
+    ingress_bytes: str
+    egress_bytes: str
+
+
+class SubscriptionBandwidthResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subscription_id: UUID
+    from_day: date
+    to_day: date
+    rows: list[SubscriptionBandwidthDayResponse]
+
+
+# Resolve forward refs
+MeResponse.model_rebuild()
+AccountMeResponse.model_rebuild()
+AgentOrderResponse.model_rebuild()

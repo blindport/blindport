@@ -1,0 +1,4 @@
+services:
+  # GitHub's Docker profile requires a privileged test container for ip netns.
+  tester:
+    privileged: true

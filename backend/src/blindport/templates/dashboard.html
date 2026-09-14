@@ -1,0 +1,391 @@
+{% extends "base.html" %}
+{% block title %}Dashboard | {{ brand_name }}{% endblock %}
+{% block content %}
+{% if settlement_reviews %}
+<section class="status-box" aria-label="Payments awaiting review">
+  <p>Payment verified after checkout or after eligibility changed. Contact support for settlement review.</p>
+  <ul>{% for payment in settlement_reviews %}<li>Payment {{ payment.id }}: {{ payment.amount_sats }} sats</li>{% endfor %}</ul>
+</section>
+{% endif %}
+{% set automatic_wallet_enabled = (clink_enabled and user.has_clink) or (nwc_enabled and user.has_nwc) %}
+{% set automatic_wallet_method = "clink" if clink_enabled and user.has_clink else "nwc" %}
+<div id="dashboardRoot" class="dashboard content-wide" data-account-id="{{ user.public_id }}" data-auth-method="{{ browser_auth_method }}" data-btc-usd="{{ btc_usd_price }}">
+  <header class="dashboard-header">
+    <div>
+      <p class="eyebrow">Control desk</p>
+      <h1>Your public endpoints</h1>
+      <p class="account-line"><span class="signal-dot" aria-hidden="true"></span> Account <code>{{ user.public_id }}</code></p>
+    </div>
+    <button type="button" class="button-secondary" id="logoutBtn">Sign out</button>
+  </header>
+
+  <section class="next-action" aria-labelledby="next-action-title">
+    <span class="next-action-index" aria-hidden="true">{% if not subscriptions %}01{% elif pending_subscriptions %}02{% elif active_subscriptions %}03{% else %}01{% endif %}</span>
+    <div>
+      <p class="eyebrow">Next action</p>
+      {% if not subscriptions %}
+        <h2 id="next-action-title">Create one public endpoint</h2>
+        <p>Choose a hostname, one shared port, or a routed dedicated /32.</p>
+      {% elif pending_subscriptions %}
+        <h2 id="next-action-title">Finish your pending endpoint</h2>
+        <p>Complete DNS when requested, then pay the Lightning invoice.</p>
+      {% elif active_subscriptions %}
+        <h2 id="next-action-title">Connect your origin</h2>
+        <p>Run the agent beside the service you want to publish.</p>
+      {% else %}
+        <h2 id="next-action-title">Create another endpoint</h2>
+      {% endif %}
+    </div>
+    <a class="button-link next-action-link" href="{% if not subscriptions %}#new-subscription{% elif pending_subscriptions %}#subscriptions-title{% elif active_subscriptions %}#client-config-title{% else %}#new-subscription{% endif %}">{% if not subscriptions %}Choose endpoint{% elif pending_subscriptions %}Review pending{% elif active_subscriptions %}Connect origin{% else %}Add endpoint{% endif %}</a>
+  </section>
+
+  <div class="dashboard-grid">
+    <main class="dashboard-primary">
+      <section aria-labelledby="subscriptions-title">
+        <div class="section-heading heading-row">
+          <div>
+            <p class="eyebrow">Endpoints</p>
+            <h2 id="subscriptions-title">Public routes</h2>
+          </div>
+          <span class="endpoint-count">{{ subscriptions | length }} total</span>
+        </div>
+        {% if subscriptions %}
+          <div class="subscription-list">
+          {% for s in subscriptions %}
+            {% set legacy_ip = s.product.value == "ip" and (s.delivery.value != "wireguard" or s.billing_term.value != "yearly") %}
+            {% set dns_payment_blocked = s.product.value == "relay" and s.status.value == "pending" and not s.domain_is_managed and not s.domain_verified_at %}
+            {% set upgrade_pending = s.id in pending_upgrade_source_ids %}
+            {% set upgrade_source = upgrade_sources.get(s.upgrade_from_subscription_id) if s.upgrade_from_subscription_id else none %}
+            <article class="subscription-card" data-sub-id="{{ s.public_id }}" data-sub-status="{{ s.status.value }}" data-delivery="{{ s.delivery.value }}" data-billing-term="{{ s.billing_term.value }}" data-monthly-price="{{ s.monthly_price_sats }}" data-yearly-price="{{ s.yearly_price_sats }}" data-upgrade-credit="{{ s.upgrade_credit_sats }}" data-dns-payment-blocked="{{ 'true' if dns_payment_blocked else 'false' }}">
+              <header>
+                <div>
+                  <p class="endpoint-kind">{% if s.product.value == "ip" %}{{ "Historical framed IP" if legacy_ip else "Routed dedicated /32" }}{% elif s.product.value == "port" %}Shared {{ s.transport.value | upper }} port{% elif s.relay_hostname_scope.value == "wildcard" %}Wildcard hostname relay{% else %}Hostname relay{% endif %}</p>
+                  <h3>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}{{ s.domain }} + *.{% endif %}{{ s.domain }}{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}Awaiting payment{% endif %}</h3>
+                </div>
+                <span class="status-badge status-{{ s.status.value }}">{{ s.status.value }}</span>
+              </header>
+
+              <div class="route-line" aria-label="Traffic route">
+                <span><small>Public</small>{% if s.product.value == "relay" and s.domain %}<code>{% if s.relay_hostname_scope.value == "wildcard" %}{{ s.domain }}:443 + *.{% endif %}{{ s.domain }}:443</code>{% elif s.product.value == "port" and s.assigned_port and port_hostname_suffix %}<code>{{ s.public_id }}.{{ port_hostname_suffix }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip and s.assigned_port %}<code>{{ s.assigned_ip }}:{{ s.assigned_port }}</code>{% elif s.assigned_ip %}<code>{{ s.assigned_ip }}</code>{% else %}<strong>Reserved after payment</strong>{% endif %}</span>
+                <span class="route-arrow" aria-hidden="true">&rarr;</span>
+                <span><small>Origin</small><strong>{% if s.status.value == "active" %}Set in blindportd{% else %}Connect after activation{% endif %}</strong></span>
+              </div>
+
+              {% set card_sats = s.yearly_price_sats if s.billing_term.value == "yearly" else s.monthly_price_sats %}
+              {% set card_usd = approximate_usd(card_sats) %}
+              <dl class="sub-details sub-details-compact">
+                <div><dt>Price</dt><dd><span class="cardPrice">{{ card_sats }}</span> sats / <span class="cardDays">{{ 365 if s.billing_term.value == "yearly" else 30 }}</span> days{% if s.relay_hostname_scope.value == "wildcard" %}, includes <code>{{ s.domain }}</code> + <code>*.{{ s.domain }}</code>{% endif %}<span class="cardUsd">{% if card_usd %} (about {{ card_usd }} USD){% endif %}</span></dd></div>
+                {% if s.current_period_end %}<div><dt>Active until</dt><dd>{{ s.current_period_end }}</dd></div>{% endif %}
+                {% if upgrade_source %}<div><dt>Upgrade</dt><dd>Replacing <code>{{ upgrade_source.domain }}</code> after payment</dd></div>{% endif %}
+                {% if upgrade_source %}<div><dt>Wildcard credit</dt><dd>{{ s.upgrade_credit_sats }} sats, due <span class="upgradeDue">{{ card_sats - s.upgrade_credit_sats }}</span> sats</dd></div>{% endif %}
+                <div><dt>Transport</dt><dd>{% if s.product.value == "port" %}{{ s.transport.value | upper }}{% elif s.delivery.value == "wireguard" %}WireGuard /32{% else %}TCP tunnel{% endif %}</dd></div>
+                {% if s.product.value == "port" and s.assigned_port and port_hostname_suffix %}
+                  <div><dt>CNAME target</dt><dd><code>{{ s.public_id }}.{{ port_hostname_suffix }}</code></dd></div>
+                  <div><dt>Provider IPs</dt><dd>{% for ip in port_ha_ips %}<code>{{ ip }}:{{ s.assigned_port }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}</dd></div>
+                {% endif %}
+              </dl>
+
+              <div class="task-area">
+                {% if legacy_ip and s.status.value in ("pending", "expired", "active") %}
+                  <p class="warning">This historical Blindport IP remains visible, but new payments and renewals are unavailable.</p>
+                {% elif s.delivery.value == "wireguard" and not yearly_billing_enabled and s.status.value in ("pending", "expired", "active") %}
+                  <p class="warning">Annual routed-IP payments are currently unavailable.</p>
+                {% elif s.delivery.value == "wireguard" and s.status.value in ("pending", "expired", "active") %}
+                  <p class="payment-term-summary">One routed dedicated /32 over WireGuard renews annual-only for 365 service days at {{ s.yearly_price_sats }} sats.</p>
+                {% elif upgrade_source %}
+                  <p class="payment-term-summary">{{ 365 if s.billing_term.value == "yearly" else 30 }} wildcard service days at {{ card_sats }} sats, less {{ s.upgrade_credit_sats }} sats remaining-service credit.</p>
+                {% elif s.status.value in ("pending", "expired", "active") and not upgrade_pending and (lightning_enabled or stablecoin_enabled or automatic_wallet_enabled) and yearly_billing_enabled %}
+                  <fieldset class="payment-term-control">
+                    <legend>Service term</legend>
+                    <div class="segmented">
+                      <label><input type="radio" name="paymentTerm-{{ s.public_id }}" value="monthly"{% if s.billing_term.value == "monthly" %} checked{% endif %}><span>30 days</span></label>
+                      <label><input type="radio" name="paymentTerm-{{ s.public_id }}" value="yearly"{% if s.billing_term.value == "yearly" %} checked{% endif %}><span>365 days</span></label>
+                    </div>
+                    <p class="payment-term-summary" aria-live="polite"></p>
+                  </fieldset>
+                {% endif %}
+                {% if dns_payment_blocked %}
+                  <div class="dns-instructions">
+                    <h4>{% if s.relay_hostname_scope.value == "wildcard" %}Configure wildcard DNS routing{% else %}Point this exact hostname to Blindport{% endif %}</h4>
+                    {% if s.relay_hostname_scope.value == "wildcard" %}
+                      <span>Type</span><code>TXT</code>
+                      <span>Name</span><code>{{ s.domain }}</code>
+                      <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
+                      <span>Routing record type</span><code>CNAME</code>
+                      <span>Name</span><code>*.{{ s.domain }}</code>
+                      <span>Target</span><code>{{ s.relay_pool_domain }}</code>
+                      <p class="field-help">Only the TXT record is checked for ownership and payment. Add this value alongside existing SPF or site-verification TXT values at the same base domain. Add the wildcard CNAME when you are ready to route traffic. It does not match the base itself. To also route <code>{{ s.domain }}</code>, point it separately to the same <code>{{ s.relay_pool_domain }}</code> target. Use a standard CNAME when the base is a subdomain. At a DNS zone apex, mandatory NS and SOA records prevent a conventional CNAME; use the authoritative DNS service's ALIAS, ANAME, or CNAME-flattening feature, which normally returns synthesized A and/or AAAA answers.</p>
+                    {% elif s.domain_verification_token %}
+                      <span>Type</span><code>TXT</code>
+                      <span>Name</span><code>{{ s.domain }}</code>
+                      <span>Value</span><code>blindport-verification={{ s.domain_verification_token }}</code>
+                      <p class="field-help">Add this value alongside existing SPF or site-verification TXT values at the same hostname.</p>
+                    {% else %}
+                      <span>Type</span><code>CNAME</code>
+                      <span>Name</span><code>{{ s.domain }}</code>
+                      <span>Target</span><code>{{ s.relay_pool_domain }}</code>
+                    {% endif %}
+                    <p class="field-help">{% if s.relay_hostname_scope.value == "wildcard" %}Wildcard Relay requires TLS passthrough. Verify the TXT challenge before payment becomes available. The CNAME can be added later for a no-downtime cutover.{% else %}Use the full hostname shown above. Verify DNS before payment becomes available.{% endif %}</p>
+                    <div class="button-row">
+                      <button type="button" class="verifyDomainBtn button-secondary" data-sub-id="{{ s.public_id }}">Check DNS</button>
+                      {% if lightning_enabled %}<button type="button" class="payBtn" data-sub-id="{{ s.public_id }}" disabled>Pay with Lightning</button>{% endif %}
+                    </div>
+                  </div>
+                {% elif upgrade_pending %}
+                  <p class="warning">Wildcard upgrade pending. This exact route remains active until the wildcard payment settles.</p>
+                {% elif not legacy_ip and s.status.value in ("pending", "expired") and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <button type="button" class="payBtn" data-sub-id="{{ s.public_id }}">{% if s.status.value == "expired" %}Renew{% else %}Pay{% endif %} with Lightning</button>
+                {% elif not legacy_ip and s.status.value == "active" and lightning_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <button type="button" class="payBtn button-secondary" data-sub-id="{{ s.public_id }}">Extend service</button>
+                {% elif s.status.value == "active" %}
+                  <p class="success-text">Endpoint active</p>
+                {% endif %}
+                {% if not legacy_ip and not upgrade_pending and stablecoin_enabled and (yearly_billing_enabled or s.delivery.value != "wireguard") %}<button type="button" class="stablecoinPayBtn button-secondary" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with stablecoin</button>{% endif %}
+                {% if not legacy_ip and not upgrade_pending and automatic_wallet_enabled and s.status.value in ("pending", "expired", "active") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <button type="button" class="walletPayBtn button-secondary" data-wallet-method="{{ automatic_wallet_method }}" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Pay with connected wallet</button>
+                {% endif %}
+                {% if not legacy_ip and not upgrade_pending and clink_enabled and not automatic_wallet_enabled and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <form class="inline-clink-form" data-sub-id="{{ s.public_id }}">
+                    <label for="inlineClinkPointer-{{ s.public_id }}">Pay with CLINK</label>
+                    <p class="field-help">Paste your static CLINK debit pointer. Your wallet may ask you to approve this payment.</p>
+                    <div class="inline-nwc-controls">
+                      <input id="inlineClinkPointer-{{ s.public_id }}" class="inlineClinkPointer" type="password" autocomplete="off" maxlength="4096" placeholder="ndebit1" required>
+                      <button type="submit" class="inlineClinkPayBtn" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Connect and pay</button>
+                    </div>
+                    <label class="terms-consent"><input class="inlineClinkAutoRenew" type="checkbox"> <span>Renew this endpoint automatically using this wallet connection.</span></label>
+                  </form>
+                {% endif %}
+                {% if not legacy_ip and not upgrade_pending and not clink_enabled and nwc_enabled and not user.has_nwc and s.status.value in ("pending", "expired") and (yearly_billing_enabled or s.delivery.value != "wireguard") %}
+                  <form class="inline-nwc-form" data-sub-id="{{ s.public_id }}">
+                    <label for="inlineNwcUri-{{ s.public_id }}">Pay with Nostr Wallet Connect</label>
+                    <p class="field-help">Paste the complete connection URI from your wallet. It is encrypted after validation. Set the wallet budget above the service price to allow for possible routing fees.</p>
+                    <div class="inline-nwc-controls">
+                      <input id="inlineNwcUri-{{ s.public_id }}" class="inlineNwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required>
+                      <button type="submit" class="inlineNwcPayBtn" data-sub-id="{{ s.public_id }}"{% if dns_payment_blocked %} disabled{% endif %}>Connect and pay</button>
+                    </div>
+                    <label class="terms-consent"><input class="inlineNwcAutoRenew" type="checkbox"> <span>Renew this endpoint automatically using this wallet connection.</span></label>
+                  </form>
+                {% endif %}
+                {% if s.product.value == "relay" and s.relay_hostname_scope.value == "exact" and not s.domain_is_managed and s.status.value == "active" and not upgrade_pending %}<button type="button" class="wildcardUpgradeBtn button-secondary" data-sub-id="{{ s.public_id }}">Upgrade to wildcard</button>{% endif %}
+                {% if s.status.value == "pending" %}<button type="button" class="cancelSubBtn button-secondary button-danger" data-sub-id="{{ s.public_id }}">Cancel order</button>{% endif %}
+                <p class="cardStatus field-help" role="status" aria-live="polite"></p>
+              </div>
+
+              <details class="endpoint-details">
+                <summary>Endpoint details</summary>
+                <dl class="sub-details">
+                  <div><dt>Subscription ID</dt><dd><code>{{ s.public_id }}</code></dd></div>
+                  <div><dt>Delivery</dt><dd>{{ "Framed tunnel" if s.delivery.value == "framed" else "One routed dedicated /32 over WireGuard, annual-only" }}</dd></div>
+                  <div><dt>Billing</dt><dd class="cardTermLabel">{{ s.billing_term.value | capitalize }}</dd></div>
+                  {% if s.relay_pool_domain %}<div><dt>DNS target</dt><dd><code>{{ s.relay_pool_domain }}</code></dd></div>{% endif %}
+                  {% if clink_enabled or nwc_enabled %}<div><dt>Auto-renew</dt><dd class="autoRenewStatus">{% if legacy_ip %}Unavailable for historical endpoint{% else %}{{ "On" if s.auto_renew else "Off" }}{% endif %}</dd></div>{% endif %}
+                </dl>
+                {% if not legacy_ip and automatic_wallet_enabled and s.status.value == "active" %}<label class="choice-row"><input type="checkbox" class="autoRenewToggle" data-sub-id="{{ s.public_id }}"{% if s.auto_renew %} checked{% endif %}> <span>Automatic renewal</span></label>{% endif %}
+              </details>
+            </article>
+          {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-state"><p>No endpoints yet.</p></div>
+        {% endif %}
+      </section>
+
+      <section id="payPanel" class="payment-panel" aria-labelledby="payment-title" tabindex="-1" hidden>
+        <div>
+          <p class="eyebrow" id="payEyebrow">Lightning invoice</p>
+          <h2 id="payment-title">Complete payment</h2>
+          <p id="payStatus" role="status" aria-live="polite"></p>
+          <p id="paymentSatsAmount"><strong id="payAmount"></strong> sats <span id="payUsd" class="field-help"></span></p>
+          <p id="payBreakdown" class="field-help" hidden></p>
+          <p id="paymentDeadlineWarning" class="warning" role="status" aria-live="polite" hidden></p>
+          <p id="paymentReviewNotice" class="warning" role="status" aria-live="polite" hidden></p>
+          <p><a id="payUri" class="button-link" href="#">Open in wallet</a></p>
+          <p id="stablecoinInstructions" class="field-help" hidden></p>
+          <p id="stablecoinNotice" class="warning" hidden></p>
+          <details id="payInvoiceDetails"><summary>Show BOLT11 invoice</summary><pre id="payBolt11" class="invoice-box"></pre></details>
+          <button type="button" class="button-secondary" id="copyInvoiceBtn">Copy invoice</button>
+        </div>
+        <div id="qrBox" role="img" aria-label="Lightning invoice QR code"></div>
+      </section>
+
+      <details id="new-subscription" class="order-drawer"{% if not subscriptions %} open{% endif %}>
+        <summary>
+          <span class="drawer-symbol" aria-hidden="true">+</span>
+          <span><strong>Add public endpoint</strong><small>Hostname, shared port, or routed dedicated /32</small></span>
+        </summary>
+        <form id="newSubForm" class="subscription-form">
+          <div class="form-grid">
+            <div class="field-group">
+              <label for="product">Endpoint type</label>
+              <select id="product">
+                {% for item in catalog.products %}<option value="{{ item.product.value }}"{% if item.product.value != "ip" %} data-monthly-price="{{ item.monthly_price_sats }}"{% endif %} data-yearly-price="{{ item.yearly_price_sats }}"{% if not item.available or (item.product.value == "ip" and not item.capacity.wireguard_available) %} disabled{% endif %}>{% if item.product.value == "ip" %}One routed dedicated /32 over WireGuard (annual-only){% elif item.product.value == "port" %}One public port{% else %}Public hostname{% endif %}{% if item.product.value == "ip" and not item.available %}{% if item.sales_paused %} (sales paused){% elif not yearly_billing_enabled %} (annual billing disabled){% elif not item.enabled %} (unavailable){% else %} (no free WireGuard inventory){% endif %}{% elif item.sales_paused %} (sales paused){% elif not item.available %} (unavailable){% endif %}</option>{% endfor %}
+              </select>
+              <p class="field-help">Most web services need a public hostname. Choose a port for raw TCP or UDP.</p>
+            </div>
+            <div id="transportField" class="field-group" hidden>
+              <label for="transport">Protocol</label>
+              <select id="transport"><option value="tcp"{% if not catalog_by_product.port.capacity.tcp_available %} disabled{% endif %}>TCP</option><option value="udp"{% if not catalog_by_product.port.capacity.udp_available %} disabled{% endif %}>UDP</option></select>
+            </div>
+          </div>
+          {% if yearly_billing_enabled %}<fieldset id="newOrderTerm" class="new-order-term"><legend>Service term</legend><div class="segmented"><label><input type="radio" name="newBillingTerm" value="monthly" checked><span>30 days</span></label><label><input type="radio" name="newBillingTerm" value="yearly"><span>365 days</span></label></div></fieldset>{% endif %}
+          <p id="dashboardIpAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, available annual-only for 365 days.</p>
+          <div id="domainField" class="domain-order-fields" hidden>
+            {% set relay = catalog_by_product.relay %}
+            <fieldset>
+              <legend>Hostname scope</legend>
+              <div class="choice-list compact">
+                <label><input type="radio" name="dashboardRelayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span>Exact hostname (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+                <label><input type="radio" name="dashboardRelayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span>Customer-owned wildcard base (price includes <code>base</code> + <code>*.base</code>, <strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Hostname source</legend>
+              <div class="choice-list compact">
+                <label><input id="dashboardManagedMode" type="radio" name="dashboardDomainMode" value="managed" checked data-available="{{ 'true' if catalog.managed_suffixes and catalog_by_product.relay.capacity.managed_domains_available else 'false' }}"{% if not catalog.managed_suffixes or not catalog_by_product.relay.capacity.managed_domains_available %} disabled{% endif %}> <span>Blindport hostname</span></label>
+                <label><input id="dashboardCustomerMode" type="radio" name="dashboardDomainMode" value="customer"{% if not catalog_by_product.relay.capacity.customer_domains_available %} disabled{% endif %}> <span>My own hostname</span></label>
+              </div>
+            </fieldset>
+            <div id="dashboardManagedFields" class="field-group">
+              <label for="dashboardManagedLabel">Full public hostname</label>
+              <div class="domain-builder"><input id="dashboardManagedLabel" type="text" placeholder="photos" maxlength="63"><span aria-hidden="true">.</span><label class="visually-hidden" for="dashboardManagedSuffix">Managed suffix</label><select id="dashboardManagedSuffix">{% for suffix in catalog.managed_suffixes %}<option value="{{ suffix }}">{{ suffix }}</option>{% endfor %}</select></div>
+              <p class="field-help">Preview: <strong id="dashboardManagedPreview">Enter a label</strong></p>
+            </div>
+            <div id="dashboardCustomerFields" class="field-group" hidden>
+              <label id="dashboardCustomerDomainLabel" for="domain">Full public hostname</label>
+              <input type="text" id="domain" placeholder="service.example.com" maxlength="253">
+              <p id="dashboardCustomerDomainHelp" class="field-help">Enter the exact hostname to publish, not only the root domain.</p>
+              <p id="dashboardWildcardDomainPreview" class="field-help" hidden>Wildcard price includes <strong class="wildcard-base-preview">a base domain</strong> + <strong class="wildcard-descendant-preview">*.base</strong></p>
+            </div>
+          </div>
+          <div class="form-actions form-actions-end"><span id="selectedPrice" class="selected-price" aria-live="polite"></span><button id="createSubBtn" type="submit">Create order</button></div>
+          <p class="field-help">Creating an order does not charge you. By continuing, you agree to the <a href="/terms">service terms</a>.</p>
+        </form>
+        <div id="subOut" class="status-message" role="status" aria-live="polite"></div>
+      </details>
+
+      <section class="dashboard-section client-setup" aria-labelledby="client-config-title">
+        <div class="section-heading heading-row">
+          <div><p class="eyebrow">Origin agent</p><h2 id="client-config-title">Connect your service</h2></div>
+          <a class="text-link" href="/guide">Full guide</a>
+        </div>
+        {% if client_subscriptions %}
+          <ol class="origin-setup-steps">
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">1</span><div><h3>Install the agent</h3><p>Run as your normal Linux user.</p></div></div>
+              <div class="quick-command"><code id="installAgentCommand">curl -fsSL {{ install_script_url_shell }} | sh</code><button type="button" class="copyCommandBtn" data-copy-target="installAgentCommand">Copy</button></div>
+              <p class="field-help">The installer downloads and verifies the current release. It installs <code>blindportd</code> to <code>$HOME/.local/bin</code> for a normal user, or <code>/usr/local/bin</code> when run as root, and adds the user path to your shell profile when needed.</p>
+            </li>
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">2</span><div><h3>Configure local targets</h3><p>Enter the host and port where each service listens on this machine.</p></div></div>
+              <div id="mappingControls" class="mapping-controls">
+                {% for s in client_subscriptions %}
+                <div class="mapping-control" data-subscription-id="{{ s.public_id }}" data-tls-mode="{{ 'automatic' if s.product.value == 'relay' and s.relay_hostname_scope.value != 'wildcard' else 'passthrough' }}">
+                  <div><strong>{% if s.product.value == "relay" and s.domain %}{% if s.relay_hostname_scope.value == "wildcard" %}{{ s.domain }} + *.{% endif %}{{ s.domain }}{% elif s.assigned_ip and s.assigned_port %}{{ s.assigned_ip }}:{{ s.assigned_port }}{% elif s.assigned_ip %}{{ s.assigned_ip }}{% else %}{{ s.public_id }}{% endif %}</strong><span>{% if s.product.value == "relay" and s.relay_hostname_scope.value != "wildcard" %}Automatic HTTPS{% elif s.product.value == "relay" %}TLS passthrough{% else %}TCP/UDP passthrough{% endif %}</span></div>
+                  <label for="mappingUpstream-{{ loop.index }}">Local target</label>
+                  <input id="mappingUpstream-{{ loop.index }}" class="mappingUpstream" type="text" value="127.0.0.1:8080" maxlength="259" inputmode="url" autocomplete="off" spellcheck="false" aria-describedby="mappingError-{{ loop.index }}">
+                  <p id="mappingError-{{ loop.index }}" class="mapping-error field-help" aria-live="polite"></p>
+                </div>
+                {% endfor %}
+              </div>
+              {% set exact_relay_subscriptions = client_subscriptions | selectattr('product.value', 'equalto', 'relay') | rejectattr('relay_hostname_scope.value', 'equalto', 'wildcard') | list %}
+              {% set wildcard_relay_subscriptions = client_subscriptions | selectattr('product.value', 'equalto', 'relay') | selectattr('relay_hostname_scope.value', 'equalto', 'wildcard') | list %}
+              {% if exact_relay_subscriptions %}
+              <p class="field-help">For exact-name Blindport Relay, your agent terminates TLS and retains automatic certificate private keys while Blindport routes the connection.</p>
+              <label class="terms-consent"><input id="acmeTermsAccepted" type="checkbox"> <span>I agree to the <a href="https://letsencrypt.org/repository/" target="_blank" rel="noopener noreferrer external">Let's Encrypt Subscriber Agreement</a> for automatic HTTPS.</span></label>
+              {% endif %}
+              {% if wildcard_relay_subscriptions %}<p class="field-help">Wildcard Relay uses TLS passthrough. When you point a base hostname, including a DNS zone apex, its local TLS listener and certificate must serve both the base and its descendant hostnames.</p>{% endif %}
+              <div class="field-group">
+                <label for="linuxHomePath">Absolute Linux home directory</label>
+                <input id="linuxHomePath" type="text" placeholder="/home/alice" maxlength="255" autocomplete="off" spellcheck="false" aria-describedby="linuxHomePathHelp">
+                <p id="linuxHomePathHelp" class="field-help">Used for the account token and private agent state paths.</p>
+              </div>
+              <details class="advanced-config" open>
+                <summary class="disclosure-summary"><span>Review and install configuration</span><span class="disclosure-icon" aria-hidden="true"></span></summary>
+                <div class="config-heading"><strong><code>~/.config/blindport/config.json</code></strong><button type="button" class="copyCommandBtn button-secondary configDependent" data-copy-target="generatedClientConfig" disabled>Copy JSON</button></div>
+                <pre><code id="generatedClientConfig">{{ client_config_json }}</code></pre>
+                <div class="config-heading"><strong>Secure config install</strong></div>
+                <code id="framedConfigInstallCommand">install -d -m 700 "$HOME/.config/blindport" &amp;&amp;
+temporary=$(mktemp "$HOME/.config/blindport/config.json.XXXXXX") &amp;&amp;
+chmod 600 "$temporary" &amp;&amp;
+cat &gt; "$temporary" &lt;&lt;'BLINDPORT_CONFIG' &amp;&amp;
+{{ client_config_json }}
+BLINDPORT_CONFIG
+([ ! -f "$HOME/.config/blindport/config.json" ] || install -m 600 "$HOME/.config/blindport/config.json" "$HOME/.config/blindport/config.json.backup") &amp;&amp;
+mv -f -- "$temporary" "$HOME/.config/blindport/config.json"</code>
+                <button type="button" class="copyCommandBtn button-secondary configDependent" data-copy-target="framedConfigInstallCommand" disabled>Copy config install</button>
+                <p id="configSetupStatus" class="field-help" role="status" aria-live="polite"></p>
+              </details>
+            </li>
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">3</span><div><h3>Start the persistent service</h3><p>This prompts for your account token if it has not been stored, then starts the agent.</p></div></div>
+              <div class="quick-command"><code id="installServiceCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd -install-user-service{{ backend_flag_shell }}</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="installServiceCommand" disabled>Copy</button></div>
+              <div class="service-commands"><code>systemctl --user status blindportd.service</code><code>journalctl --user -u blindportd.service -f</code></div>
+              <p class="field-help">For startup before login, enable lingering with <code>loginctl enable-linger "$USER"</code>. Your administrator may need to approve it.</p>
+              <details class="service-update"><summary>Update later</summary><div class="service-commands"><code>curl -fsSL {{ install_script_url_shell }} | sh</code><code>blindportd -version</code><code>systemctl --user restart blindportd.service</code></div></details>
+            </li>
+            <li class="origin-setup-step">
+              <div class="origin-step-heading"><span aria-hidden="true">4</span><div><h3>Or run in the foreground</h3><p>Use this instead of the persistent service for a temporary session.</p></div></div>
+              <div class="quick-command"><code id="framedRunCommand">export PATH="$HOME/.local/bin:$PATH" &amp;&amp; blindportd{{ backend_flag_shell }} -config="$HOME/.config/blindport/config.json"</code><button type="button" class="copyCommandBtn configDependent" data-copy-target="framedRunCommand" disabled>Copy</button></div>
+            </li>
+          </ol>
+        {% elif subscriptions %}
+          <p class="muted">The connection command appears after payment activates an endpoint.</p>
+        {% else %}
+          <p class="muted">Create and activate an endpoint first.</p>
+        {% endif %}
+        {% if active_wireguard_subscriptions %}
+          <details class="advanced-config"><summary>Routed WireGuard setup</summary><p>Your one routed dedicated /32 is installed directly on <code>bpwg0</code>. Applications can listen on any port and send traffic with the same public source address. Outbound TCP port 25 is blocked by default; contact support for a reviewed, paid exception.</p><code id="wireGuardRunCommand">curl -fsSL {{ install_script_url_shell }} | sh &amp;&amp; sudo blindportd -wireguard{{ backend_flag_shell }}</code><button type="button" class="copyCommandBtn button-secondary" data-copy-target="wireGuardRunCommand">Copy WireGuard command</button></details>
+        {% endif %}
+      </section>
+    </main>
+
+    <aside class="dashboard-sidebar" aria-label="Account settings">
+      <details class="sidebar-section account-token-section">
+        <summary>Account token</summary>
+        <p class="field-help">Required to sign in and connect the agent. Blindport cannot recover it.</p>
+        <div id="accountTokenControls" class="account-token-controls">
+          <label class="visually-hidden" for="accountToken">Bearer token</label>
+          <input id="accountToken" type="password" readonly spellcheck="false" aria-label="Bearer token">
+          <div class="button-row"><button type="button" class="button-secondary" id="revealTokenBtn" aria-pressed="false">Reveal</button><button type="button" class="button-secondary" id="copyAccountTokenBtn">Copy</button></div>
+          <button type="button" class="button-secondary button-danger" id="forgetAccountBtn">Forget account</button>
+          <p id="accountTokenStatus" class="field-help" role="status" aria-live="polite"></p>
+        </div>
+        <p id="accountTokenUnavailable" class="field-help" role="status" aria-live="polite" hidden>Token unavailable in this browser. Sign in with a saved token to recover it.</p>
+      </details>
+      {% if passkeys_enabled %}
+      <details id="passkeySection" class="sidebar-section" hidden>
+        <summary>Passkeys</summary>
+        <p id="passkeyStatus" class="field-help" role="status" aria-live="polite"></p>
+        <div id="passkeyList" class="passkey-list"></div>
+        <form id="passkeyForm">
+          <label for="passkeyName">Passkey name</label>
+          <input id="passkeyName" type="text" maxlength="100" required>
+          <button id="addPasskeyBtn" type="submit">Add passkey</button>
+        </form>
+      </details>
+      {% endif %}
+      {% if clink_enabled %}<details class="sidebar-section"><summary>CLINK wallet</summary><p id="clinkStatus" role="status" aria-live="polite">{{ "Connected" if user.has_clink else "Not connected" }}</p><form id="clinkForm"><label for="clinkPointer">Static debit pointer</label><input id="clinkPointer" type="password" autocomplete="off" maxlength="4096" placeholder="ndebit1" required><p class="field-help">Use the static debit pointer from your CLINK-compatible wallet.</p><div class="button-row"><button id="saveClinkBtn" type="submit">Connect</button>{% if user.has_clink %}<button id="revokeClinkBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
+      {% if nwc_enabled %}<details class="sidebar-section"><summary>NWC wallet</summary><p id="nwcStatus" role="status" aria-live="polite">{% if user.has_nwc %}Connected{% if nwc_encryption == "nip04" %} (legacy NIP-04){% elif nwc_encryption == "nip44_v2" %} (NIP-44){% endif %}{% else %}Not connected{% endif %}</p>{% if user.has_nwc and nwc_encryption == "nip04" %}<p class="field-help">Legacy NIP-04 encryption is deprecated and does not authenticate ciphertext. Upgrade the wallet when possible.</p>{% endif %}{% if user.has_nwc %}<p id="nwcBudget" class="field-help" role="status" aria-live="polite">Checking wallet spending limit.</p>{% endif %}<form id="nwcForm"><label for="nwcUri">Nostr Wallet Connect URI</label><input id="nwcUri" type="password" autocomplete="off" maxlength="4096" placeholder="nostr+walletconnect://" required><p class="field-help">Use a dedicated connection with a wallet-enforced spending budget above the service price to allow for possible routing fees.</p><div class="button-row"><button id="saveNwcBtn" type="submit">Connect</button>{% if user.has_nwc %}<button id="revokeNwcBtn" type="button" class="button-secondary">Revoke</button>{% endif %}</div></form></details>{% endif %}
+      {% if notification_email_enabled %}
+      <details class="sidebar-section">
+        <summary>Service notifications</summary>
+        <p class="field-help">Account lifecycle updates and service announcements use one email preference.</p>
+        <p id="notificationEmailStatus" role="status" aria-live="polite">{% if user.has_notification_email %}Enabled{% else %}Disabled{% endif %}</p>
+        <form id="notificationEmailForm">
+          <label for="notificationEmail">Email address</label>
+          <input id="notificationEmail" type="email" autocomplete="email" maxlength="254" required>
+          <div class="button-row">
+            <button id="saveNotificationEmailBtn" type="submit">Enable</button>
+            {% if user.has_notification_email %}<button id="deleteNotificationEmailBtn" type="button" class="button-secondary">Disable</button>{% endif %}
+          </div>
+        </form>
+      </details>
+      {% endif %}
+    </aside>
+  </div>
+</div>
+<script src="/static/account-storage.js"></script>
+<script src="/static/referrals.js"></script>
+{% if passkeys_enabled %}<script src="/static/passkeys.js"></script>{% endif %}
+<script src="/static/dashboard.js"></script>
+{% endblock %}

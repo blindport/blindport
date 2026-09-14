@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}{{ brand_name }} | Public ingress for self-hosting{% endblock %}
+{% block content %}
+{% set relay = catalog_by_product.relay %}
+<section class="intro content-width" aria-labelledby="intro-title">
+  <div class="intro-copy">
+    <p class="eyebrow">Public ingress for self-hosters</p>
+    <h1 id="intro-title">{{ brand_name }}</h1>
+    <p class="lead">Put a self-hosted web service on a durable public HTTPS address without exposing your residential IP, giving a cloud gateway access to your traffic, or maintaining a VPS.</p>
+    <p>An HTTPS subdomain is included. Choose a name, pay in sats over Lightning, and run one small agent beside your service. No port forwarding, DDNS, or ISP negotiation. Your service and its encrypted traffic stay on your machine.</p>
+    <div class="intro-actions">
+      <a class="button-link product-jump" href="#order" data-order-product="relay">Choose your address</a>
+      <a class="text-link" href="#why">Why Blindport?</a>
+    </div>
+  </div>
+  <dl class="intro-facts" aria-label="Service summary">
+    <div><dt>Relay price</dt><dd>From {{ relay.relay_scopes.exact.monthly_price_sats }} sats for 30 days{% set relay_usd = approximate_usd(relay.relay_scopes.exact.monthly_price_sats) %}{% if relay_usd %} (about {{ relay_usd }} USD){% endif %}</dd></div>
+    <div><dt>Included</dt><dd>Your choice below a Blindport domain, with automatic HTTPS</dd></div>
+    <div><dt>Payment</dt><dd>Lightning; no email, name, or identity profile required</dd></div>
+  </dl>
+</section>
+
+<section id="why" class="explain-band" aria-labelledby="why-title">
+  <div class="content-width explain-grid">
+    <header class="explain-copy">
+      <p class="eyebrow">The middle ground</p>
+      <h2 id="why-title">Managed simplicity, local privacy</h2>
+      <p>Preview tunnels are useful for short-lived sharing. Managed cloud gateways make ongoing services easy, but commonly decrypt web traffic. A private VPS keeps control local, but adds another server to operate. Blindport offers a durable address without either tradeoff.</p>
+    </header>
+    <dl class="concept-list">
+      <div><dt>Easy to start</dt><dd>Pick an included HTTPS subdomain or bring your own. Blindport handles the public side.</dd></div>
+      <div><dt>Private by design</dt><dd>Your web traffic remains encrypted until it reaches your server.</dd></div>
+      <div><dt>Shared cost</dt><dd>Pay in sats over Lightning for the endpoint you need instead of an entire VPS. Relay starts at {{ relay.relay_scopes.exact.monthly_price_sats }} sats.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section id="referrals" class="explain-band" aria-labelledby="referrals-title">
+  <div class="content-width explain-grid">
+    <header class="explain-copy">
+      <p class="eyebrow">Referrals</p>
+      <h2 id="referrals-title">Share Blindport</h2>
+      <p>Earn {{ referral_commission_percent }}% of the service base, excluding fees, when a new customer starts through your link and on their renewals. The first valid referral link opened in a browser session is kept for that session.</p>
+    </header>
+    <form id="referralLinkForm" class="field-group" data-public-origin="{{ public_origin }}" novalidate>
+      <label for="referralLinkAddress">Lightning Address</label>
+      <input id="referralLinkAddress" type="text" inputmode="email" autocomplete="off" maxlength="254" placeholder="you@coinos.io">
+      <p class="field-help">Payouts are processed manually from 10,000 sats. Referral addresses and balances are not public.</p>
+      <div class="form-actions"><button type="submit">Create referral link</button></div>
+      <label class="visually-hidden" for="referralLinkOutput">Referral link</label>
+      <input id="referralLinkOutput" type="text" readonly aria-describedby="referralLinkStatus" hidden>
+      <p id="referralLinkStatus" class="status-message" role="status" aria-live="polite"></p>
+      <p class="field-help"><a href="/guide#referrals">How referrals work</a> and <a href="/terms#referrals-title">referral terms</a>.</p>
+    </form>
+  </div>
+</section>
+
+<section class="workflow-band" aria-labelledby="workflow-title">
+  <div class="content-width workflow-layout">
+    <header class="section-heading">
+      <p class="eyebrow">From private to public</p>
+      <h2 id="workflow-title">Online in three steps</h2>
+      <p>No network project and no new server to administer.</p>
+    </header>
+    <ol class="workflow-steps">
+      <li><span>1</span><div><strong>Choose an HTTPS address</strong><p>Use an included Blindport subdomain or bring your own.</p></div></li>
+      <li><span>2</span><div><strong>Pay in sats</strong><p>Back up your account token and pay the Lightning invoice.</p></div></li>
+      <li><span>3</span><div><strong>Run the command</strong><p>Point the generated agent command at your local service. No router changes required.</p></div></li>
+    </ol>
+  </div>
+</section>
+
+<section id="order" class="order-band" aria-labelledby="order-title">
+  <div class="content-width order-layout">
+    <header class="section-heading">
+      <p class="eyebrow">Pricing and configuration</p>
+      <h2 id="order-title">Choose your public address</h2>
+      <p>Most blogs, dashboards, and web apps should start with Relay. Choose a managed hostname to skip DNS setup. A new account needs no identity profile and uses one bearer token, shown once; payment happens in the dashboard.</p>
+      <p>Prices are denominated in Bitcoin (BTC). One bitcoin is 100 million satoshis (sats).</p>
+    </header>
+
+    <div class="order-shell">
+      <ol class="step-list" aria-label="Order progress">
+        <li class="is-current" id="planStep" aria-current="step"><span>1</span> Plan</li>
+        <li id="configStep"><span>2</span> Configure</li>
+        <li id="reviewStep"><span>3</span> Review</li>
+      </ol>
+
+      <form id="orderForm" novalidate>
+        <section id="planPanel" class="order-panel" aria-labelledby="plan-heading">
+          <fieldset>
+            <legend id="plan-heading">Select a plan</legend>
+            {% if yearly_billing_enabled %}<div id="orderTermControl" class="term-control">
+              <span id="orderBillingTermLabel">Billing term</span>
+              <div class="segmented" role="group" aria-labelledby="orderBillingTermLabel">
+                <label><input type="radio" name="orderBillingTerm" value="monthly" checked><span>Monthly</span></label>
+                <label><input type="radio" name="orderBillingTerm" value="yearly"><span>Yearly</span></label>
+              </div>
+            </div>{% endif %}
+            <div class="plan-grid">
+              {% set ip = catalog_by_product.ip %}
+              {% set ip_wireguard_available = ip.available and ip.capacity.wireguard_available %}
+              {% set port = catalog_by_product.port %}
+              {% set relay = catalog_by_product.relay %}
+              <label class="plan-option{% if not relay.available %} is-unavailable{% endif %}">
+                <input type="radio" name="orderProduct" value="relay" data-monthly-price="{{ relay.monthly_price_sats }}" data-yearly-price="{{ relay.yearly_price_sats }}" data-name="Blindport Relay"{% if not relay.available %} disabled{% endif %}>
+                <span class="plan-title">Blindport Relay</span>
+                <span class="plan-price" data-monthly-price="{{ relay.monthly_price_sats }}" data-yearly-price="{{ relay.yearly_price_sats }}"><strong>{{ relay.monthly_price_sats }}</strong> sats / <span>30</span> days</span>
+                <span>One TLS hostname on shared SNI ingress.</span>
+                <span class="availability">{% if relay.available %}Available{% elif relay.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</span>
+              </label>
+              <label class="plan-option{% if not port.available %} is-unavailable{% endif %}">
+                <input type="radio" name="orderProduct" value="port" data-monthly-price="{{ port.monthly_price_sats }}" data-yearly-price="{{ port.yearly_price_sats }}" data-name="Blindport Port"{% if not port.available %} disabled{% endif %}>
+                <span class="plan-title">Blindport Port</span>
+                <span class="plan-price" data-monthly-price="{{ port.monthly_price_sats }}" data-yearly-price="{{ port.yearly_price_sats }}"><strong>{{ port.monthly_price_sats }}</strong> sats / <span>30</span> days</span>
+                <span>One shared-IP tuple: public IP, port, and TCP or UDP.</span>
+                <span class="availability">{% if port.available %}Available{% elif port.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</span>
+              </label>
+              <label class="plan-option{% if not ip_wireguard_available %} is-unavailable{% endif %}">
+                <input type="radio" name="orderProduct" value="ip" data-yearly-price="{{ ip.yearly_price_sats }}" data-name="Blindport IP"{% if not ip_wireguard_available %} disabled{% endif %}>
+                <span class="plan-title">Blindport IP</span>
+                <span class="plan-price" data-yearly-price="{{ ip.yearly_price_sats }}"><strong>{{ ip.yearly_price_sats }}</strong> sats / <span>365</span> days</span>
+                <span>One routed dedicated /32 over WireGuard, annual-only.</span>
+                <span class="availability">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not yearly_billing_enabled %}Annual billing disabled{% elif not ip.enabled %}Unavailable{% else %}No free WireGuard inventory{% endif %}</span>
+              </label>
+            </div>
+            <p id="ipAnnualOnlyHint" class="field-help" hidden>Blindport IP is one routed dedicated /32 over WireGuard, annual-only for 365 days.</p>
+          </fieldset>
+          <div class="form-actions form-actions-end">
+            <button type="button" id="toConfigBtn" disabled>Configure plan</button>
+          </div>
+        </section>
+
+        <section id="configPanel" class="order-panel" aria-labelledby="config-heading" hidden>
+          <h3 id="config-heading">Configure <span id="configProductName"></span></h3>
+          <div id="ipConfig" class="notice" hidden>Blindport IP is one routed dedicated /32 over WireGuard, annual-only for 365 days. It requires Linux kernel WireGuard with <code>CAP_NET_ADMIN</code> or equivalent root privileges.</div>
+          <fieldset id="portConfig" hidden>
+            <legend>Transport</legend>
+            <div class="segmented">
+              <label><input type="radio" name="orderTransport" value="tcp" checked{% if not catalog_by_product.port.capacity.tcp_available %} disabled{% endif %}><span>TCP</span></label>
+              <label><input type="radio" name="orderTransport" value="udp"{% if not catalog_by_product.port.capacity.udp_available %} disabled{% endif %}><span>UDP</span></label>
+            </div>
+            <p class="field-help">The lease is exactly one protocol-specific socket. TCP and UDP on the same number are separate tuples.</p>
+          </fieldset>
+          <div id="relayConfig" hidden>
+            <fieldset>
+              <legend>Hostname scope</legend>
+              <div class="choice-list compact">
+                <label><input type="radio" name="relayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span><strong>Exact hostname</strong> (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+                <label><input type="radio" name="relayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span><strong>Customer-owned wildcard base</strong> (price includes <code>base</code> + <code>*.base</code>, <strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+              </div>
+            </fieldset>
+            <fieldset>
+              <legend>Domain ownership</legend>
+              <div class="choice-list">
+                <label><input id="managedMode" type="radio" name="domainMode" value="managed" checked data-available="{{ 'true' if catalog.managed_suffixes and catalog_by_product.relay.capacity.managed_domains_available else 'false' }}"{% if not catalog.managed_suffixes or not catalog_by_product.relay.capacity.managed_domains_available %} disabled{% endif %}> <span><strong>Managed subdomain</strong> (choose a name below a Blindport suffix; no DNS ownership proof)</span></label>
+                <label><input id="customerMode" type="radio" name="domainMode" value="customer"{% if not catalog_by_product.relay.capacity.customer_domains_available %} disabled{% endif %}> <span><strong>Bring your own subdomain</strong> (point one direct, DNS-only CNAME record to Blindport before payment)</span></label>
+              </div>
+            </fieldset>
+            <div id="managedDomainFields" class="field-group">
+              <label for="managedLabel">Subdomain label</label>
+              <div class="domain-builder">
+                <input id="managedLabel" name="managedLabel" type="text" inputmode="url" autocomplete="off" pattern="[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?" maxlength="63" placeholder="photos">
+                <span aria-hidden="true">.</span>
+                <label class="visually-hidden" for="managedSuffix">Managed suffix</label>
+                <select id="managedSuffix" name="managedSuffix">
+                  {% for suffix in catalog.managed_suffixes %}<option value="{{ suffix }}">{{ suffix }}</option>{% endfor %}
+                </select>
+              </div>
+              <p class="field-help">Preview: <strong id="managedPreview">Enter a label</strong></p>
+            </div>
+            <div id="customerDomainFields" class="field-group" hidden>
+              <label id="customerDomainLabel" for="customerDomain">Full public hostname</label>
+              <input id="customerDomain" name="customerDomain" type="text" inputmode="url" autocomplete="off" placeholder="service.example.com" maxlength="253">
+              <p id="customerDomainHelp" class="field-help">After ordering, add the exact DNS-only CNAME record shown in the dashboard, then check DNS.</p>
+              <p id="wildcardDomainPreview" class="field-help" hidden>Wildcard price includes <strong class="wildcard-base-preview">a base domain</strong> + <strong class="wildcard-descendant-preview">*.base</strong></p>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="button-secondary" id="backToPlanBtn">Back</button>
+            <button type="button" id="toReviewBtn">Review order</button>
+          </div>
+        </section>
+
+        <section id="reviewPanel" class="order-panel" aria-labelledby="review-heading" hidden>
+          <h3 id="review-heading">Review order</h3>
+          <dl class="review-list">
+            <div><dt>Plan</dt><dd id="reviewProduct"></dd></div>
+            <div><dt>Configuration</dt><dd id="reviewConfig"></dd></div>
+            <div><dt>Term</dt><dd id="reviewTerm"></dd></div>
+            <div><dt>Due after order</dt><dd><strong id="reviewPrice"></strong> sats</dd></div>
+          </dl>
+          <p id="accountOrderNote" class="notice" aria-live="polite"></p>
+          <p class="field-help">By creating this order, you agree to the <a href="/terms">service terms</a>.</p>
+          <div class="form-actions">
+            <button type="button" class="button-secondary" id="backToConfigBtn">Back</button>
+            <button type="submit" id="placeOrderBtn">Create pending order</button>
+          </div>
+        </section>
+      </form>
+
+      <div id="orderStatus" class="status-message" role="status" aria-live="polite" aria-atomic="true"></div>
+      <section id="tokenBackup" class="token-backup" aria-labelledby="token-heading" tabindex="-1" hidden>
+        <p class="eyebrow">Account created</p>
+        <h3 id="token-heading">Back up your bearer token</h3>
+        <p>This is the only account credential, and Blindport cannot recover it. Store it in a password manager before continuing.</p>
+        <pre id="newToken" class="token-box"></pre>
+        <button type="button" class="button-secondary" id="copyTokenBtn">Copy token</button>
+        <label class="confirm-check"><input type="checkbox" id="tokenSavedCheck"> <span>I saved this token somewhere other than this browser.</span></label>
+        <button type="button" id="continueDashboardBtn" disabled>Continue to dashboard</button>
+      </section>
+    </div>
+  </div>
+</section>
+
+<section class="content-width landing-boundaries" aria-labelledby="boundaries-title">
+  <header>
+    <p class="eyebrow">Honest boundaries</p>
+    <h2 id="boundaries-title">Simple does not mean hidden</h2>
+  </header>
+  <div>
+    <p><strong>Blindport is a best-effort beta.</strong> It has no current uptime guarantee. The published agent requires Linux, and payment requires {% if stablecoin_enabled %}a Lightning or supported stablecoin wallet{% else %}a Lightning wallet{% endif %}.</p>
+    <p>Blindport can observe connection metadata such as network addresses, hostname, timing, and volume, but Relay does not receive your decrypted web traffic. Applications, DNS history, and third-party services can still reveal an origin. Blindport is not an anonymity network.</p>
+    <p class="boundary-links"><a href="/guide">Installation guide</a><a href="/terms">Service terms</a><a href="https://github.com/blindport/blindport">Source code</a></p>
+  </div>
+</section>
+
+<script src="/static/account-storage.js"></script>
+<script src="/static/referrals.js"></script>
+<script src="/static/landing.js"></script>
+{% endblock %}

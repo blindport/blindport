@@ -1,0 +1,161 @@
+# Wildcard Relay with Traefik
+
+This example publishes one application through an active customer-owned wildcard
+Blindport Relay. Blindport routes by SNI without terminating TLS. `blindportd`
+prepends trusted PROXY protocol v2 metadata, Traefik terminates TLS on the customer
+machine, and Traefik supplies `X-Forwarded-For` to the application.
+
+No service publishes a host port. The fixed private `172.30.0.2` agent address is
+trusted only on Traefik's private entrypoints.
+
+## DNS
+
+Complete the Blindport ownership and routing records shown by the dashboard:
+
+```text
+example.com                       TXT    blindport-verification=<Blindport token>
+*.example.com                     CNAME  <subscription pool target>
+example.com                       ALIAS  <subscription pool target>  # Optional base route
+```
+
+Publish the Blindport value alongside any existing SPF or site-verification TXT
+values at `example.com`. The wildcard CNAME routes descendants but does not match
+`example.com`, so publish the optional third record when the base should also be
+reachable. `ALIAS` is representative syntax: use the ALIAS, ANAME, or CNAME-flattening
+feature offered by the authoritative DNS service. A conventional CNAME cannot be used
+at a zone apex because that name also contains mandatory NS and SOA records. Apex alias
+features behave like a hostname target in the control panel and typically return
+synthesized A and/or AAAA answers to resolvers. For a subdomain base, use a normal CNAME
+to the same subscription pool target instead.
+
+The default Traefik router requests one certificate containing `example.com` and
+`*.example.com`. ACME wildcard issuance requires DNS-01, so Traefik creates this
+separate record through the Cloudflare API:
+
+```text
+_acme-challenge.example.com       TXT    <ACME proof>
+```
+
+Adapt the Traefik DNS provider and secret variable for another supported provider.
+The Blindport ownership token and ACME proof are unrelated.
+
+## Configure
+
+Create the environment and bind-mounted config, state, and owner-only secrets:
+
+```sh
+cp .env.example .env
+chmod 600 .env
+sudo install -d -o 10001 -g 10001 -m 0700 \
+  /opt/blindport/config /opt/blindport/secrets /opt/blindport/state
+sudo install -d -o root -g root -m 0700 /opt/blindport/traefik-acme
+sudo install -o 10001 -g 10001 -m 0600 \
+  config/config.json /opt/blindport/config/config.json
+sudo install -o 10001 -g 10001 -m 0600 \
+  /dev/null /opt/blindport/secrets/public-token
+sudoedit /opt/blindport/secrets/public-token
+sudo install -o root -g root -m 0600 \
+  /dev/null /opt/blindport/secrets/cloudflare-dns-api-token
+sudoedit /opt/blindport/secrets/cloudflare-dns-api-token
+```
+
+Set `BASE_DOMAIN`, `APP_HOSTNAME`, `BLINDPORT_SUBSCRIPTION_ID`, and `ACME_EMAIL`
+in `.env`. Docker group ID `999` is the default; override `DOCKER_GID` when the
+host socket uses another group. The account token must own the active wildcard
+subscription.
+Use a Cloudflare API token limited to DNS edits for the selected zone. Keep the
+Blindport state and Traefik ACME paths across upgrades and back them up as secrets.
+
+The account config and public token must be owned by UID `10001`, with mode
+`0600`; `/opt/blindport/state` must be owned by `10001:10001` with mode `0700`.
+The config, secrets, and state directories must use mode `0700`; directory mode
+`0600` omits the execute bit required to reach files inside them. A readable
+token with broader permissions produces a warning and continues, while an
+inaccessible token remains a startup error.
+Bind each token file separately as shown in `compose.yaml`. Do not bind the
+whole host secrets directory onto `/run/secrets`; the source directory's mode
+would replace the container directory and can prevent the agent from traversing
+it.
+The bind-mounted `state/`, `secrets/`, and `traefik-acme/` paths contain private
+keys and should be backed up as secrets. A production deployment should use
+digest-pinned images and a narrowly authorized Docker socket proxy. Version 3
+account configs require `blindportd v0.3.0` or newer.
+The example config omits `state_dir`, which defaults to
+`/var/lib/blindport/accounts/public`, and omits `mappings` because Traefik's
+container labels define the mapping. Its single account is selected
+automatically. Any mapping object in `config.json` is
+static and must include both `subscription_id` and `upstream`.
+
+The published `v0.3.0` image's executable carries the `NET_ADMIN` file
+capability, so the container must retain that capability to start. The Compose
+file drops every capability and adds back only `NET_ADMIN`. Docker discovery
+does not otherwise use it.
+
+If `172.30.0.0/24` conflicts with an existing network, change the Compose subnet,
+the two fixed container addresses, and both Traefik `trustedips` values together.
+
+## Start
+
+```sh
+docker compose config --quiet
+docker compose pull blindportd
+docker compose up -d
+docker compose exec blindportd blindportd -version
+docker compose logs -f blindportd traefik
+```
+
+After Traefik installs the certificate:
+
+```sh
+curl --fail --show-error --silent "https://${APP_HOSTNAME}/"
+```
+
+Traefik accepts PROXY protocol only from `172.30.0.2/32`. Do not replace this with
+an unrestricted trust setting. The application should trust forwarding headers only
+from Traefik. The reported address is the direct source observed by the Blindport
+Relay; an additional provider-side TCP proxy or large NAT can still be that source.
+
+## Exact HTTP-01 certificates
+
+The mapping also forwards validated port 80 challenge requests to `traefik:80`.
+To let Traefik obtain an exact certificate such as `app.example.com` without DNS
+credentials:
+
+1. Change the router's certificate resolver to `letsencrypt-http`.
+2. Remove both `tls.domains[0]` labels so Traefik infers `APP_HOSTNAME` from the
+   exact `Host` rule.
+3. Remove the Cloudflare environment and secret mount when no DNS resolver uses it.
+
+The public validation path is CA to Blindport Relay port 80, through the tunnel to
+`blindportd`, then to Traefik. `blindportd` validates and transports the request but
+does not own the ACME account or certificate. HTTP-01 cannot issue `*.example.com`.
+
+## Plaintext local hop
+
+For an exact Relay subscription, `blindportd` can own the certificate and send
+decrypted HTTP plus PROXY v2 to an internal Traefik entrypoint:
+
+```yaml
+tech.blindport.mapping.edge.upstream: "traefik:8080"
+tech.blindport.mapping.edge.tls_mode: "automatic"
+tech.blindport.mapping.edge.acme_terms_accepted: "true"
+tech.blindport.mapping.edge.proxy_protocol: "v2"
+```
+
+Configure Traefik entrypoint `:8080` to trust `172.30.0.2/32` for PROXY protocol and
+route it without Traefik TLS:
+
+```yaml
+command:
+  - --entrypoints.blindport-http.address=:8080
+  - --entrypoints.blindport-http.proxyprotocol.trustedips=172.30.0.2/32
+labels:
+  traefik.http.routers.site.entrypoints: "blindport-http"
+  traefik.http.routers.site.tls: "false"
+```
+
+Remove the router certificate resolver and TLS domain labels in this mode. Traefik
+uses the PROXY source to create `X-Forwarded-For` before forwarding HTTP to the app.
+`blindportd`, not Traefik, requests the exact-hostname certificate. Wildcard Relay
+subscriptions reject automatic TLS, so their local hop to Traefik remains the
+original encrypted TLS stream.
