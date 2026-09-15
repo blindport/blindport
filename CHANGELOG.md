@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.1] - 2026-09-15
+## [0.3.2] - 2026-09-15
 
 ### Added
 
@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Release workflow permissions now allow its reusable CI workflow to start.
 - PostgreSQL heartbeat upserts now persist per-subscription agent connection
   observations instead of leaving every admin connection timestamp as never.
 - Relay TLS ingress behind the production HAProxy edge now preserves real client
