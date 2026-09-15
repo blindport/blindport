@@ -42,7 +42,7 @@
 sudo install -m 0755 blindportd-{{ blindportd_version }}-linux-amd64 /usr/local/bin/blindportd
 blindportd -version</code></pre>
       <p>A successful checksum says <code>OK</code> and only detects transfer corruption. It does not authenticate the CI-built binary. Do not rename the binary until after checking it because the checksum file contains the release filename.</p>
-      <p>If GitHub Actions is outside your trust boundary, verify the pinned fingerprint and signed source tag and commit before building the checked-out source locally:</p>
+      <p>If GitHub Actions is outside your trust boundary, verify the pinned fingerprint and signed source tag and commit, then build the checked-out source locally:</p>
       <pre><code>cd go
 CGO_ENABLED=0 go build -trimpath \
   -ldflags "-s -w -X main.version={{ blindportd_version }}" \
