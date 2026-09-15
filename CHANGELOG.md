@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-15
+
 ### Added
 
 - Optional CLINK Debits automatic Lightning payments with encrypted static
   pointers, CLINK-first provider selection, and explicit-rejection NWC fallback.
 - Admin traffic totals by relay VPS edge, subscription type, and subscription for
   the current UTC day and rolling 7-day and 30-day periods.
+- Receive-only LNURL payments and referral attribution with manual payouts.
+
+### Changed
+
+- Public source distribution now excludes internal operations documentation and
+  deployment configuration. Public CI and documentation are self-contained.
 
 ### Fixed
 
