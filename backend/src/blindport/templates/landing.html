@@ -103,23 +103,23 @@
               {% set port = catalog_by_product.port %}
               {% set relay = catalog_by_product.relay %}
               <label class="plan-option{% if not relay.available %} is-unavailable{% endif %}">
-                <input type="radio" name="orderProduct" value="relay" data-monthly-price="{{ relay.monthly_price_sats }}" data-yearly-price="{{ relay.yearly_price_sats }}" data-name="Blindport Relay"{% if not relay.available %} disabled{% endif %}>
+                <input type="radio" name="orderProduct" value="relay" data-monthly-price="{{ relay.monthly_price_sats }}" data-yearly-price="{{ relay.yearly_price_sats }}" data-monthly-usd="{{ approximate_usd(relay.monthly_price_sats) }}" data-yearly-usd="{{ approximate_usd(relay.yearly_price_sats) }}" data-name="Blindport Relay"{% if not relay.available %} disabled{% endif %}>
                 <span class="plan-title">Blindport Relay</span>
-                <span class="plan-price" data-monthly-price="{{ relay.monthly_price_sats }}" data-yearly-price="{{ relay.yearly_price_sats }}"><strong>{{ relay.monthly_price_sats }}</strong> sats / <span>30</span> days</span>
+                <span class="plan-price" data-monthly-price="{{ relay.monthly_price_sats }}" data-yearly-price="{{ relay.yearly_price_sats }}" data-monthly-usd="{{ approximate_usd(relay.monthly_price_sats) }}" data-yearly-usd="{{ approximate_usd(relay.yearly_price_sats) }}"><strong>{{ relay.monthly_price_sats }}</strong> sats / <span class="price-days">30</span> days<span class="price-usd"{% if not approximate_usd(relay.monthly_price_sats) %} hidden{% endif %}>{% set relay_card_usd = approximate_usd(relay.monthly_price_sats) %}{% if relay_card_usd %}about {{ relay_card_usd }} USD{% endif %}</span></span>
                 <span>One TLS hostname on shared SNI ingress.</span>
                 <span class="availability">{% if relay.available %}Available{% elif relay.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</span>
               </label>
               <label class="plan-option{% if not port.available %} is-unavailable{% endif %}">
-                <input type="radio" name="orderProduct" value="port" data-monthly-price="{{ port.monthly_price_sats }}" data-yearly-price="{{ port.yearly_price_sats }}" data-name="Blindport Port"{% if not port.available %} disabled{% endif %}>
+                <input type="radio" name="orderProduct" value="port" data-monthly-price="{{ port.monthly_price_sats }}" data-yearly-price="{{ port.yearly_price_sats }}" data-monthly-usd="{{ approximate_usd(port.monthly_price_sats) }}" data-yearly-usd="{{ approximate_usd(port.yearly_price_sats) }}" data-name="Blindport Port"{% if not port.available %} disabled{% endif %}>
                 <span class="plan-title">Blindport Port</span>
-                <span class="plan-price" data-monthly-price="{{ port.monthly_price_sats }}" data-yearly-price="{{ port.yearly_price_sats }}"><strong>{{ port.monthly_price_sats }}</strong> sats / <span>30</span> days</span>
+                <span class="plan-price" data-monthly-price="{{ port.monthly_price_sats }}" data-yearly-price="{{ port.yearly_price_sats }}" data-monthly-usd="{{ approximate_usd(port.monthly_price_sats) }}" data-yearly-usd="{{ approximate_usd(port.yearly_price_sats) }}"><strong>{{ port.monthly_price_sats }}</strong> sats / <span class="price-days">30</span> days<span class="price-usd"{% if not approximate_usd(port.monthly_price_sats) %} hidden{% endif %}>{% set port_card_usd = approximate_usd(port.monthly_price_sats) %}{% if port_card_usd %}about {{ port_card_usd }} USD{% endif %}</span></span>
                 <span>One shared-IP tuple: public IP, port, and TCP or UDP.</span>
                 <span class="availability">{% if port.available %}Available{% elif port.sales_paused %}Sales paused{% else %}Unavailable{% endif %}</span>
               </label>
               <label class="plan-option{% if not ip_wireguard_available %} is-unavailable{% endif %}">
-                <input type="radio" name="orderProduct" value="ip" data-yearly-price="{{ ip.yearly_price_sats }}" data-name="Blindport IP"{% if not ip_wireguard_available %} disabled{% endif %}>
+                <input type="radio" name="orderProduct" value="ip" data-yearly-price="{{ ip.yearly_price_sats }}" data-yearly-usd="{{ approximate_usd(ip.yearly_price_sats) }}" data-name="Blindport IP"{% if not ip_wireguard_available %} disabled{% endif %}>
                 <span class="plan-title">Blindport IP</span>
-                <span class="plan-price" data-yearly-price="{{ ip.yearly_price_sats }}"><strong>{{ ip.yearly_price_sats }}</strong> sats / <span>365</span> days</span>
+                <span class="plan-price" data-yearly-price="{{ ip.yearly_price_sats }}" data-yearly-usd="{{ approximate_usd(ip.yearly_price_sats) }}"><strong>{{ ip.yearly_price_sats }}</strong> sats / <span class="price-days">365</span> days<span class="price-usd"{% if not approximate_usd(ip.yearly_price_sats) %} hidden{% endif %}>{% set ip_card_usd = approximate_usd(ip.yearly_price_sats) %}{% if ip_card_usd %}about {{ ip_card_usd }} USD{% endif %}</span></span>
                 <span>One routed dedicated /32 over WireGuard, annual-only.</span>
                 <span class="availability">{% if ip_wireguard_available %}Available{% elif ip.sales_paused %}Sales paused{% elif not yearly_billing_enabled %}Annual billing disabled{% elif not ip.enabled %}Unavailable{% else %}No free WireGuard inventory{% endif %}</span>
               </label>
@@ -146,8 +146,8 @@
             <fieldset>
               <legend>Hostname scope</legend>
               <div class="choice-list compact">
-                <label><input type="radio" name="relayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span><strong>Exact hostname</strong> (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
-                <label><input type="radio" name="relayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span><strong>Customer-owned wildcard base</strong> (price includes <code>base</code> + <code>*.base</code>, <strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days)</span></label>
+                <label><input type="radio" name="relayHostnameScope" value="exact" data-monthly-price="{{ relay.relay_scopes.exact.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.exact.yearly_price_sats }}" data-monthly-usd="{{ approximate_usd(relay.relay_scopes.exact.monthly_price_sats) }}" data-yearly-usd="{{ approximate_usd(relay.relay_scopes.exact.yearly_price_sats) }}" checked{% if not relay.relay_scopes.exact.available %} disabled{% endif %}> <span><strong>Exact hostname</strong> (<strong class="relay-scope-price">{{ relay.relay_scopes.exact.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days<span class="price-usd relay-scope-usd"{% if not approximate_usd(relay.relay_scopes.exact.monthly_price_sats) %} hidden{% endif %}>{% set relay_exact_usd = approximate_usd(relay.relay_scopes.exact.monthly_price_sats) %}{% if relay_exact_usd %}, about {{ relay_exact_usd }} USD{% endif %}</span>)</span></label>
+                <label><input type="radio" name="relayHostnameScope" value="wildcard" data-monthly-price="{{ relay.relay_scopes.wildcard.monthly_price_sats }}" data-yearly-price="{{ relay.relay_scopes.wildcard.yearly_price_sats }}" data-monthly-usd="{{ approximate_usd(relay.relay_scopes.wildcard.monthly_price_sats) }}" data-yearly-usd="{{ approximate_usd(relay.relay_scopes.wildcard.yearly_price_sats) }}"{% if not relay.relay_scopes.wildcard.available %} disabled{% endif %}> <span><strong>Customer-owned wildcard base</strong> (price includes <code>base</code> + <code>*.base</code>, <strong class="relay-scope-price">{{ relay.relay_scopes.wildcard.monthly_price_sats }}</strong> sats / <span class="relay-scope-days">30</span> days<span class="price-usd relay-scope-usd"{% if not approximate_usd(relay.relay_scopes.wildcard.monthly_price_sats) %} hidden{% endif %}>{% set relay_wildcard_usd = approximate_usd(relay.relay_scopes.wildcard.monthly_price_sats) %}{% if relay_wildcard_usd %}, about {{ relay_wildcard_usd }} USD{% endif %}</span>)</span></label>
               </div>
             </fieldset>
             <fieldset>
@@ -188,7 +188,7 @@
             <div><dt>Plan</dt><dd id="reviewProduct"></dd></div>
             <div><dt>Configuration</dt><dd id="reviewConfig"></dd></div>
             <div><dt>Term</dt><dd id="reviewTerm"></dd></div>
-            <div><dt>Due after order</dt><dd><strong id="reviewPrice"></strong> sats</dd></div>
+            <div><dt>Due after order</dt><dd><strong id="reviewPrice"></strong> sats<span id="reviewUsd" class="price-usd" hidden></span></dd></div>
           </dl>
           <p id="accountOrderNote" class="notice" aria-live="polite"></p>
           <p class="field-help">By creating this order, you agree to the <a href="/terms">service terms</a>.</p>

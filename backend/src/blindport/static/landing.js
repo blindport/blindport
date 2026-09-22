@@ -37,6 +37,22 @@ function selectedPrice(product = selectedProduct()?.value, term = selectedBillin
   return option?.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"] || "";
 }
 
+function selectedUsd(product = selectedProduct()?.value, term = selectedBillingTerm()) {
+  if (product === "relay") {
+    const scope = orderForm.querySelector(
+      `input[name="relayHostnameScope"][value="${selectedRelayHostnameScope()}"]`,
+    );
+    return scope?.dataset[term === "yearly" ? "yearlyUsd" : "monthlyUsd"] || "";
+  }
+  const option = selectedProduct();
+  return option?.dataset[term === "yearly" ? "yearlyUsd" : "monthlyUsd"] || "";
+}
+
+function setUsdHint(element, usd, prefix = "about ") {
+  element.textContent = usd ? `${prefix}${usd} USD` : "";
+  element.hidden = !usd;
+}
+
 function updatePlanPrices() {
   document.querySelectorAll(".plan-price").forEach((price) => {
     const product = price.closest(".plan-option")?.querySelector("input")?.value;
@@ -45,13 +61,24 @@ function updatePlanPrices() {
     price.querySelector("strong").textContent = product === "relay"
       ? selectedPrice(product, term)
       : price.dataset[priceKey];
-    price.querySelector("span").textContent = billingDays(term);
+    price.querySelector(".price-days").textContent = billingDays(term);
+    setUsdHint(
+      price.querySelector(".price-usd"),
+      product === "relay"
+        ? selectedUsd(product, term)
+        : price.dataset[term === "yearly" ? "yearlyUsd" : "monthlyUsd"],
+    );
   });
   const term = selectedBillingTerm();
   orderForm.querySelectorAll('input[name="relayHostnameScope"]').forEach((scope) => {
     scope.closest("label").querySelector(".relay-scope-price").textContent =
       scope.dataset[term === "yearly" ? "yearlyPrice" : "monthlyPrice"];
     scope.closest("label").querySelector(".relay-scope-days").textContent = billingDays(term);
+    setUsdHint(
+      scope.closest("label").querySelector(".relay-scope-usd"),
+      scope.dataset[term === "yearly" ? "yearlyUsd" : "monthlyUsd"],
+      ", about ",
+    );
   });
 }
 
@@ -231,6 +258,10 @@ function populateReview() {
   const body = orderBody();
   document.getElementById("reviewProduct").textContent = product.dataset.name;
   document.getElementById("reviewPrice").textContent = selectedPrice(product.value, body.billing_term);
+  setUsdHint(
+    document.getElementById("reviewUsd"),
+    selectedUsd(product.value, body.billing_term),
+  );
   document.getElementById("reviewTerm").textContent =
     `${body.billing_term === "yearly" ? "Yearly" : "Monthly"}, ${billingDays(body.billing_term)} days`;
   let configuration = "Framed delivery";

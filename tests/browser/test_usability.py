@@ -500,6 +500,47 @@ def test_landing_wildcard_relay_order_uses_wildcard_price_and_scope(
         context.close()
 
 
+def test_landing_usd_hints_follow_relay_term_scope_and_review(
+    browser: Browser,
+    browser_server: BrowserServer,
+) -> None:
+    context = browser.new_context(viewport={"width": 390, "height": 844})
+    page = context.new_page()
+    try:
+        page.goto(browser_server.base_url, wait_until="networkidle")
+        page.locator('input[name="relayHostnameScope"][value="exact"]').evaluate(
+            "element => Object.assign(element.dataset, {monthlyUsd: '$1.28', yearlyUsd: '$12.80'})"
+        )
+        page.locator('input[name="relayHostnameScope"][value="wildcard"]').evaluate(
+            "element => Object.assign(element.dataset, {monthlyUsd: '$3.20', yearlyUsd: '$32.00'})"
+        )
+
+        page.locator('input[name="orderProduct"][value="relay"]').check()
+        plan_usd = page.locator('.plan-option:has(input[value="relay"]) .price-usd')
+        assert plan_usd.inner_text() == "about $1.28 USD"
+        page.locator('input[name="orderBillingTerm"][value="yearly"]').check()
+        assert plan_usd.inner_text() == "about $12.80 USD"
+
+        page.locator("#toConfigBtn").click()
+        exact_usd = page.locator(
+            'label:has(input[name="relayHostnameScope"][value="exact"]) .relay-scope-usd'
+        )
+        wildcard_usd = page.locator(
+            'label:has(input[name="relayHostnameScope"][value="wildcard"]) .relay-scope-usd'
+        )
+        assert exact_usd.inner_text() == ", about $12.80 USD"
+        page.locator('input[name="relayHostnameScope"][value="wildcard"]').check()
+        assert wildcard_usd.inner_text() == ", about $32.00 USD"
+        assert plan_usd.inner_text() == "about $32.00 USD"
+
+        page.locator("#customerDomain").fill("base.example")
+        page.locator("#toReviewBtn").click()
+        assert page.locator("#reviewUsd").inner_text() == "about $32.00 USD"
+        _assert_layout(page)
+    finally:
+        context.close()
+
+
 def test_dashboard_wildcard_relay_order_uses_wildcard_price_and_scope(
     browser: Browser,
     browser_server: BrowserServer,

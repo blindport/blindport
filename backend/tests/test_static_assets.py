@@ -924,6 +924,68 @@ def test_pages_explain_bitcoin_and_show_cached_approximate_usd(app_client, monke
     assert "about $0.64 USD" in dashboard.text
 
 
+def test_landing_price_hints_follow_catalog_terms_and_cached_usd_rate(
+    app_client, monkeypatch
+) -> None:
+    from blindport.api import pages
+
+    client, _ = app_client
+    monkeypatch.setattr(pages.settings, "BTC_USD_PRICE_ENABLED", True)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={"time": 1_785_859_508, "USD": 64_000},
+            request=request,
+        )
+    )
+    with httpx.Client(transport=transport) as price_client:
+        pages.price_cache.refresh(price_client)
+
+    landing = client.get("/")
+
+    for product, monthly_usd, yearly_usd in (
+        ("relay", "$1.28", "$12.80"),
+        ("port", "$0.64", "$6.40"),
+    ):
+        assert re.search(
+            rf'name="orderProduct" value="{product}"[^>]+data-monthly-usd="{re.escape(monthly_usd)}"'
+            rf'[^>]+data-yearly-usd="{re.escape(yearly_usd)}"',
+            landing.text,
+        )
+    assert re.search(r'name="orderProduct" value="ip"[^>]+data-yearly-usd="\$32\.00"', landing.text)
+    assert re.search(
+        r'name="relayHostnameScope" value="exact"[^>]+data-monthly-usd="\$1\.28"'
+        r'[^>]+data-yearly-usd="\$12\.80"',
+        landing.text,
+    )
+    assert re.search(
+        r'name="relayHostnameScope" value="wildcard"[^>]+data-monthly-usd="\$3\.20"'
+        r'[^>]+data-yearly-usd="\$32\.00"',
+        landing.text,
+    )
+    assert "From 2000 sats for 30 days (about $1.28 USD)" in landing.text
+
+    landing_script = _asset("static/landing.js")
+    assert "function selectedUsd(" in landing_script
+    assert 'scope.dataset[term === "yearly" ? "yearlyUsd" : "monthlyUsd"]' in landing_script
+    assert 'option?.dataset[term === "yearly" ? "yearlyUsd" : "monthlyUsd"]' in landing_script
+    assert 'product === "relay"\n        ? selectedUsd(product, term)' in landing_script
+    assert 'element.textContent = usd ? `${prefix}${usd} USD` : "";' in landing_script
+    assert "element.hidden = !usd;" in landing_script
+    assert 'document.getElementById("reviewUsd")' in landing_script
+
+    monkeypatch.setattr(pages.settings, "BTC_USD_PRICE_ENABLED", False)
+    unavailable = client.get("/")
+    assert 'data-monthly-usd=""' in unavailable.text
+    assert 'data-yearly-usd=""' in unavailable.text
+    assert "about $" not in unavailable.text
+
+    monkeypatch.setattr(pages.settings, "BTC_USD_PRICE_ENABLED", True)
+    monkeypatch.setattr(pages.settings, "BTC_USD_PRICE_MAX_STALE_SECONDS", -1)
+    stale = client.get("/")
+    assert "about $" not in stale.text
+
+
 def test_catalog_exposes_only_configured_managed_suffix_metadata(app_client) -> None:
     client, _ = app_client
 

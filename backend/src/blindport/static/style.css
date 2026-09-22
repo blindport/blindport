@@ -273,6 +273,8 @@ summary { display: flex; min-height: 44px; align-items: center; cursor: pointer;
 .plan-option.is-unavailable { background: var(--soft); color: var(--muted); cursor: not-allowed; }
 .plan-title { font-size: 1.1rem; font-weight: 800; }
 .plan-price strong { font-size: 1.35rem; }
+.price-usd { margin-left: 0.25rem; color: var(--muted); font-size: 0.86rem; font-weight: 650; }
+.plan-price .price-usd { display: block; margin-left: 0; }
 .availability { margin-top: auto; color: var(--accent-dark); font-size: 0.85rem; font-weight: 750; }
 .is-unavailable .availability { color: var(--danger); }
 .choice-list { display: grid; gap: 0.65rem; }
