@@ -23,6 +23,7 @@ from ..core.models import (
     NotificationDelivery,
     NotificationDeliveryState,
     NotificationKind,
+    Payment,
     Subscription,
     SubscriptionStatus,
     User,
@@ -98,6 +99,7 @@ def _queue_due_expirations(now: datetime, batch_size: int) -> int:
                     Subscription.current_period_end > now,  # type: ignore[operator]
                     User.has_notification_email,
                     User.notification_email_generation >= 1,
+                    User.has_nwc.is_(False),  # type: ignore[union-attr]
                     User.is_suspended.is_(False),  # type: ignore[union-attr]
                     or_(
                         and_(
@@ -165,12 +167,17 @@ def _cancel_invalid_queued_deliveries(now: datetime, batch_size: int) -> None:
                 if delivery.subscription_id is not None
                 else None
             )
+            payment = (
+                session.get(Payment, delivery.payment_id)
+                if delivery.payment_id is not None
+                else None
+            )
             announcement = (
                 session.get(Announcement, delivery.announcement_id)
                 if delivery.announcement_id is not None
                 else None
             )
-            if not _is_delivery_eligible(delivery, user, subscription, announcement, now):
+            if not _is_delivery_eligible(delivery, user, subscription, payment, announcement, now):
                 cancel_notification(delivery, "notification_no_longer_eligible", now)
                 session.add(delivery)
                 changed = True
@@ -314,6 +321,9 @@ def _process_claimed_delivery(
             if delivery.subscription_id is not None
             else None
         )
+        payment = (
+            session.get(Payment, delivery.payment_id) if delivery.payment_id is not None else None
+        )
         announcement = (
             session.get(Announcement, delivery.announcement_id)
             if delivery.announcement_id is not None
@@ -331,7 +341,7 @@ def _process_claimed_delivery(
             session.commit()
         elif user is None:
             _fail_unavailable(session, delivery, now)
-        elif not _is_delivery_eligible(delivery, user, subscription, announcement, now):
+        elif not _is_delivery_eligible(delivery, user, subscription, payment, announcement, now):
             cancel_notification(delivery, "notification_no_longer_eligible", now)
             session.add(delivery)
             session.commit()
@@ -342,6 +352,7 @@ def _process_claimed_delivery(
                 user,
                 get_smtp_adapter(),
                 subscription=subscription,
+                payment=payment,
                 announcement=announcement,
                 now=now,
             )
@@ -457,6 +468,7 @@ def _is_delivery_eligible(
     delivery: NotificationDelivery,
     user: User,
     subscription: Subscription | None,
+    payment: Payment | None,
     announcement: Announcement | None,
     now: datetime,
 ) -> bool:
@@ -468,11 +480,20 @@ def _is_delivery_eligible(
             and user.has_notification_email
             and delivery.recipient_generation == user.notification_email_generation
         )
-        if not account_consent or subscription is None or subscription.user_id != user.id:
+        if (
+            not account_consent
+            or subscription is None
+            or subscription.user_id != user.id
+            or (
+                delivery.payment_id is not None
+                and (payment is None or payment.subscription_id != subscription.id)
+            )
+        ):
             return False
         if delivery.kind in (NotificationKind.EXPIRATION_7_DAY, NotificationKind.EXPIRATION_1_DAY):
             return bool(
-                subscription.status == SubscriptionStatus.ACTIVE
+                not user.has_nwc
+                and subscription.status == SubscriptionStatus.ACTIVE
                 and period_end is not None
                 and delivery.event_at is not None
                 and _aware(period_end) == _aware(delivery.event_at)

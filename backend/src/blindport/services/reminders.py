@@ -137,6 +137,13 @@ def send_reminder(
             delivery.recipient_generation,
             cipher=cipher,
         )
+        locked_user = session.get(User, user.id)
+        if locked_user is not None and locked_user.has_nwc:
+            if fence_reminder_lease(session, delivery, lease_token):
+                cancel_reminder(delivery, "reminder_no_longer_eligible", attempted_at)
+                session.add(delivery)
+                session.commit()
+            return delivery
         rendered = render_expiration_reminder(delivery.kind, delivery.current_period_end)
         adapter.send_message(
             recipient,

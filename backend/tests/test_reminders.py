@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -147,6 +147,48 @@ def test_smtp_acceptance_marks_sent_with_deterministic_message_id(monkeypatch) -
         assert delivery.state == ReminderDeliveryState.SENT
         assert delivery.sent_at is not None
         assert adapter.calls[0][3] == first_id == reminder_message_id(delivery)
+    finally:
+        session.close()
+
+
+def test_smtp_cancels_when_nwc_is_enabled_before_recipient_lock(monkeypatch) -> None:
+    from blindport import config
+    from blindport.core.models import SubscriptionStatus
+    from blindport.services import reminders as service
+    from blindport.services.reminder_reconciliation import _is_delivery_eligible
+
+    session, user, subscription, delivery = _delivery_fixture()
+    engine = session.get_bind()
+    adapter = _Smtp()
+    lock_recipient = service.lock_and_decrypt_notification_email
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    subscription.status = SubscriptionStatus.ACTIVE
+    session.add(subscription)
+    session.commit()
+    assert _is_delivery_eligible(
+        delivery,
+        subscription,
+        user,
+        (delivery.current_period_end - timedelta(days=1)).replace(tzinfo=UTC),
+    )
+
+    def enable_nwc_before_lock(*args, **kwargs):
+        with Session(engine) as preference_session:
+            current = preference_session.get(User, user.id)
+            assert current is not None
+            current.has_nwc = True
+            preference_session.add(current)
+            preference_session.commit()
+        return lock_recipient(*args, **kwargs)
+
+    try:
+        monkeypatch.setattr(service, "lock_and_decrypt_notification_email", enable_nwc_before_lock)
+
+        send_reminder(session, delivery, user, adapter)
+
+        assert adapter.calls == []
+        assert delivery.state == ReminderDeliveryState.CANCELLED
+        assert delivery.error_code == "reminder_no_longer_eligible"
     finally:
         session.close()
 

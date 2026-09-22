@@ -23,6 +23,9 @@ from blindport.core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    ReminderDelivery,
+    ReminderDeliveryState,
+    ReminderKind,
     Subscription,
     SubscriptionStatus,
     User,
@@ -260,7 +263,7 @@ def test_lifecycle_notification_eligibility_and_rendering(
         assert subject in rendered.subject
         assert "Blindport IP" in rendered.body
         assert rendered.body.endswith("\n\nSign in to Blindport: https://blindport.example")
-        assert _is_delivery_eligible(delivery, user, subscription, None, datetime.now(UTC))
+        assert _is_delivery_eligible(delivery, user, subscription, None, None, datetime.now(UTC))
 
 
 def test_delayed_expiration_rendering_is_truthful_and_message_id_is_stable(tmp_path) -> None:
@@ -271,13 +274,124 @@ def test_delayed_expiration_rendering_is_truthful_and_message_id_is_stable(tmp_p
         assert user is not None and subscription is not None
         delivery = _queue_expiration(session, user, subscription, "expiration:delayed")
         session.commit()
-        rendered = render_notification(delivery, now=datetime.now(UTC))
+        rendered = render_notification(delivery, subscription=subscription, now=datetime.now(UTC))
+        assert "Blindport IP" in rendered.subject
+        assert "Your Blindport IP subscription" in rendered.body
+        assert subscription.current_period_end.strftime("%Y-%m-%d %H:%M UTC") in rendered.body
         assert "within 3 days" in rendered.subject
         assert "7 days" not in rendered.subject
         message_id = notification_message_id(delivery)
         assert message_id == notification_message_id(delivery)
         delivery.recipient_generation += 1
         assert message_id != notification_message_id(delivery)
+
+
+def test_nwc_users_do_not_receive_queued_expiration_notices(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from blindport import config
+    from blindport.services import notification_reconciliation as worker
+    from blindport.services.reminders import queue_reminder
+
+    engine, user_id, subscription_id = _setup(tmp_path)
+    monkeypatch.setattr(worker.db, "engine", engine)
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        unified = _queue_expiration(session, user, subscription, "expiration:nwc")
+        legacy = queue_reminder(session, subscription, ReminderKind.SEVEN_DAY)
+        undiscovered = Subscription(
+            user_id=user.id or 0,
+            product=ProductType.PORT,
+            status=SubscriptionStatus.ACTIVE,
+            monthly_price_sats=1000,
+            current_period_end=subscription.current_period_end,
+        )
+        session.add(undiscovered)
+        user.has_nwc = True
+        session.add(user)
+        session.commit()
+        unified_id = unified.id
+        legacy_id = legacy.id
+        undiscovered_id = undiscovered.id
+
+    summary = worker.reconcile_notifications_once(batch_size=10)
+
+    assert summary.queued == 0
+    with Session(engine) as session:
+        unified = session.get(NotificationDelivery, unified_id)
+        legacy = session.get(ReminderDelivery, legacy_id)
+        assert unified is not None and unified.state == NotificationDeliveryState.CANCELLED
+        assert legacy is not None and legacy.state == ReminderDeliveryState.CANCELLED
+        assert (
+            session.exec(
+                select(NotificationDelivery).where(
+                    NotificationDelivery.subscription_id == undiscovered_id
+                )
+            ).first()
+            is None
+        )
+
+
+def test_automatic_renewal_notification_wording_uses_payment_provenance(tmp_path) -> None:
+    engine, user_id, subscription_id = _setup(tmp_path)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert (
+            user is not None
+            and subscription is not None
+            and subscription.current_period_end is not None
+        )
+        automatic_payment = Payment(
+            subscription_id=subscription.id or 0,
+            method=PaymentMethod.CLINK,
+            status=PaymentStatus.PAID,
+            amount_sats=1000,
+            automatic_renewal=True,
+        )
+        manual_payment = Payment(
+            subscription_id=subscription.id or 0,
+            method=PaymentMethod.NWC,
+            status=PaymentStatus.PAID,
+            amount_sats=1000,
+        )
+        session.add_all([automatic_payment, manual_payment])
+        session.flush()
+        automatic = queue_notification(
+            session,
+            user,
+            NotificationCategory.ACCOUNT,
+            NotificationKind.SUBSCRIPTION_RENEWED,
+            "renewal:automatic",
+            subscription=subscription,
+            payment=automatic_payment,
+            event_at=subscription.current_period_end,
+        )
+        manual = queue_notification(
+            session,
+            user,
+            NotificationCategory.ACCOUNT,
+            NotificationKind.SUBSCRIPTION_RENEWED,
+            "renewal:manual",
+            subscription=subscription,
+            payment=manual_payment,
+            event_at=subscription.current_period_end,
+        )
+
+        automatic_rendered = render_notification(
+            automatic, subscription=subscription, payment=automatic_payment
+        )
+        manual_rendered = render_notification(
+            manual, subscription=subscription, payment=manual_payment
+        )
+
+    assert automatic_rendered.subject == "Blindport subscription automatically renewed"
+    assert "was automatically renewed" in automatic_rendered.body
+    assert manual_rendered.subject == "Blindport subscription renewed"
+    assert "has been renewed" in manual_rendered.body
 
 
 @pytest.mark.parametrize(
@@ -353,6 +467,44 @@ def test_smtp_reloads_and_locks_notification_generation_before_send(tmp_path) ->
         assert smtp.calls == 0
         assert delivery.state == NotificationDeliveryState.FAILED
         assert delivery.error_code == "recipient_unavailable"
+
+
+def test_smtp_cancels_expiration_when_nwc_is_enabled_before_recipient_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from blindport import config
+    from blindport.services import notifications as service
+    from blindport.services.notification_reconciliation import _is_delivery_eligible
+
+    engine, user_id, subscription_id = _setup(tmp_path)
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        delivery = _queue_expiration(session, user, subscription, "smtp:nwc-race")
+        session.commit()
+        assert _is_delivery_eligible(delivery, user, subscription, None, None, datetime.now(UTC))
+
+        lock_recipient = service.lock_and_decrypt_notification_email
+
+        def enable_nwc_before_lock(*args, **kwargs):
+            with Session(engine) as preference_session:
+                current = preference_session.get(User, user_id)
+                assert current is not None
+                current.has_nwc = True
+                preference_session.add(current)
+                preference_session.commit()
+            return lock_recipient(*args, **kwargs)
+
+        monkeypatch.setattr(service, "lock_and_decrypt_notification_email", enable_nwc_before_lock)
+        smtp = _Smtp()
+
+        send_notification(session, delivery, user, smtp, subscription=subscription)
+
+        assert smtp.calls == 0
+        assert delivery.state == NotificationDeliveryState.CANCELLED
+        assert delivery.error_code == "notification_no_longer_eligible"
 
 
 def test_reconciliation_discovers_once_cancels_generation_change_and_recovers_sending(

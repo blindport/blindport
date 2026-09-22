@@ -1189,6 +1189,8 @@ def create_payment(
     method: PaymentMethod,
     billing_term: BillingTerm | None = None,
     agent_order_id: int | None = None,
+    *,
+    automatic_renewal: bool = False,
 ) -> Payment:
     """Reserve capacity and create one bounded external payment request."""
     require_payment_method_enabled(method)
@@ -1341,6 +1343,7 @@ def create_payment(
         referral_commission_bps=(
             settings.REFERRAL_COMMISSION_BPS if subscription.referral_address else 0
         ),
+        automatic_renewal=automatic_renewal,
     )
     session.add(payment)
     try:

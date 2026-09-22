@@ -564,6 +564,9 @@ class Payment(SQLModel, table=True):
     clink_nwc_fallback: bool = Field(
         default=False, sa_column_kwargs={"server_default": text("false")}
     )
+    automatic_renewal: bool = Field(
+        default=False, sa_column_kwargs={"server_default": text("false")}
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     paid_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     expires_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))

@@ -99,7 +99,7 @@ def test_0033_preserves_legacy_invoices_and_defaults_rolling_inserts(tmp_path) -
 
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0033", "0033")
+    assert database_revisions(engine) == ("0034", "0034")
     metadata = MetaData()
     subscription = Table("subscription", metadata, autoload_with=engine)
     payment = Table("payment", metadata, autoload_with=engine)
@@ -244,14 +244,14 @@ def test_0033_rejects_downgrade_when_lnurl_or_referral_data_exists(
         RuntimeError, match="cannot downgrade while LNURL or referral records exist"
     ):
         downgrade_database(engine, "0032")
-    assert database_revisions(engine) == ("0033", "0033")
+    assert database_revisions(engine) == ("0034", "0034")
 
 
 def test_0033_fresh_schema_matches_orm_metadata(tmp_path) -> None:
     engine = _sqlite_engine(tmp_path)
     upgrade_database(engine)
 
-    assert database_revisions(engine) == ("0033", "0033")
+    assert database_revisions(engine) == ("0034", "0034")
     with engine.connect() as connection:
         context = MigrationContext.configure(connection, opts={"compare_type": True})
         assert compare_metadata(context, SQLModel.metadata) == []

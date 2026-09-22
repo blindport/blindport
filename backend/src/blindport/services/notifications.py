@@ -139,6 +139,7 @@ def render_notification(
     delivery: NotificationDelivery,
     *,
     subscription: Subscription | None = None,
+    payment: Payment | None = None,
     announcement: Announcement | None = None,
     now: datetime | None = None,
 ) -> RenderedNotification:
@@ -147,7 +148,11 @@ def render_notification(
     if delivery.kind in _EXPIRATION_KINDS:
         if delivery.event_at is None:
             raise ValueError("expiration notification has no period end")
-        return _render_expiration(delivery.event_at, rendered_at)
+        return _render_expiration(
+            subscription.product if subscription is not None else None,
+            delivery.event_at,
+            rendered_at,
+        )
     if delivery.kind == NotificationKind.SERVICE_ANNOUNCEMENT:
         if announcement is None:
             raise ValueError("service announcement is unavailable")
@@ -156,7 +161,12 @@ def render_notification(
     if subscription is None:
         raise ValueError("subscription notification is unavailable")
     event_at = delivery.event_at or subscription.current_period_end
-    return _render_subscription_event(delivery.kind, subscription.product, event_at)
+    return _render_subscription_event(
+        delivery.kind,
+        subscription.product,
+        event_at,
+        automatic_renewal=bool(payment and payment.automatic_renewal),
+    )
 
 
 def send_notification(
@@ -166,6 +176,7 @@ def send_notification(
     adapter: SmtpAdapter,
     *,
     subscription: Subscription | None = None,
+    payment: Payment | None = None,
     announcement: Announcement | None = None,
     cipher: CredentialCipher | None = None,
     now: datetime | None = None,
@@ -196,9 +207,17 @@ def send_notification(
             delivery.recipient_generation,
             cipher,
         )
+        locked_user = session.get(User, user.id)
+        if delivery.kind in _EXPIRATION_KINDS and locked_user is not None and locked_user.has_nwc:
+            if fence_notification_lease(session, delivery, lease_token):
+                cancel_notification(delivery, "notification_no_longer_eligible", attempted_at)
+                session.add(delivery)
+                session.commit()
+            return delivery
         rendered = render_notification(
             delivery,
             subscription=subscription,
+            payment=payment,
             announcement=announcement,
             now=attempted_at,
         )
@@ -426,7 +445,14 @@ def _locked_recipient(
     return lock_and_decrypt_notification_email(session, user.id, generation, cipher=cipher)
 
 
-def _render_expiration(period_end: datetime, rendered_at: datetime) -> RenderedNotification:
+def _render_expiration(
+    product: ProductType | None, period_end: datetime, rendered_at: datetime
+) -> RenderedNotification:
+    label = {
+        ProductType.IP: "Blindport IP",
+        ProductType.PORT: "Blindport Port",
+        ProductType.RELAY: "Blindport Relay",
+    }.get(product, "Blindport")
     remaining = _aware(period_end) - rendered_at
     deadline = _aware(period_end).strftime("%Y-%m-%d %H:%M UTC")
     if remaining <= timedelta(0):
@@ -437,9 +463,9 @@ def _render_expiration(period_end: datetime, rendered_at: datetime) -> RenderedN
         days = max(1, (remaining.days + (1 if remaining.seconds else 0)))
         timing = f"expires within {days} {'day' if days == 1 else 'days'}"
     return RenderedNotification(
-        subject=f"Blindport subscription {timing}",
+        subject=f"{label} subscription {timing}",
         body=(
-            "Your Blindport subscription is approaching the end of its paid period.\n\n"
+            f"Your {label} subscription is approaching the end of its paid period.\n\n"
             f"It {timing}, on {deadline}.\n\n"
             "Sign in to Blindport to renew it before expiration.\n\n"
             "This reminder was sent because expiration notices are enabled for your account."
@@ -451,6 +477,8 @@ def _render_subscription_event(
     kind: NotificationKind,
     product: ProductType,
     event_at: datetime | None,
+    *,
+    automatic_renewal: bool = False,
 ) -> RenderedNotification:
     label = {
         ProductType.IP: "Blindport IP",
@@ -463,8 +491,16 @@ def _render_subscription_event(
         subject = "Blindport subscription activated"
         period_line = f"\n\nPaid through {deadline}." if deadline else ""
     elif kind == NotificationKind.SUBSCRIPTION_RENEWED:
-        detail = f"Your {label} subscription has been renewed."
-        subject = "Blindport subscription renewed"
+        detail = (
+            f"Your {label} subscription was automatically renewed."
+            if automatic_renewal
+            else f"Your {label} subscription has been renewed."
+        )
+        subject = (
+            "Blindport subscription automatically renewed"
+            if automatic_renewal
+            else "Blindport subscription renewed"
+        )
         period_line = f"\n\nPaid through {deadline}." if deadline else ""
     elif kind == NotificationKind.SUBSCRIPTION_EXPIRED:
         detail = f"Your {label} subscription has expired."

@@ -167,6 +167,7 @@ def _create_due_auto_renewals(batch_size: int) -> tuple[int, int]:
                         and subscription.delivery == DeliveryMode.WIREGUARD
                         else subscription.billing_term
                     ),
+                    automatic_renewal=True,
                 )
                 created += 1
         except ValueError:

@@ -74,6 +74,7 @@ def test_nwc_success_uses_lnd_and_verifies_returned_preimage(app_client, monkeyp
     with Session(engine) as session:
         payment = session.get(Payment, response.json()["id"])
         assert payment is not None
+        assert payment.automatic_renewal is False
         assert payment.nwc_preimage_hash == payment.payment_hash
         assert payment.nwc_fees_paid_msats == 21
         assert payment.nwc_attempt_count == 1
@@ -466,9 +467,18 @@ def test_terminal_wallet_policy_failure_disables_auto_renew(app_client, monkeypa
     assert current["subscriptions"][0]["auto_renew"] is False
 
 
-def test_due_auto_renew_uses_shared_nwc_payment_path(app_client) -> None:
+def test_due_auto_renew_uses_shared_nwc_payment_path(app_client, monkeypatch) -> None:
     client, factory = app_client
     token, subscription = _wallet_subscription(client)
+    from blindport import config
+
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    notification_email = client.post(
+        "/api/v1/me/notification-email",
+        json={"email": "person@example.com"},
+        headers=_auth(token),
+    )
+    assert notification_email.status_code == 200, notification_email.text
     initial = client.post(
         "/api/v1/payments",
         json={"subscription_id": subscription["id"], "method": "lightning"},
@@ -481,7 +491,13 @@ def test_due_auto_renew_uses_shared_nwc_payment_path(app_client) -> None:
         headers=_auth(token),
     )
 
-    from blindport.core.models import Payment, PaymentMethod
+    from blindport.core.models import (
+        NotificationDelivery,
+        NotificationKind,
+        Payment,
+        PaymentMethod,
+        Subscription,
+    )
     from blindport.db import engine
     from blindport.services.payment_reconciliation import reconcile_pending_payments_once
 
@@ -497,8 +513,31 @@ def test_due_auto_renew_uses_shared_nwc_payment_path(app_client) -> None:
     assert summary.auto_renewed == 1
     with Session(engine) as session:
         renewal = session.exec(select(Payment).where(Payment.method == PaymentMethod.NWC)).one()
+        assert renewal.automatic_renewal is True
         assert renewal.nwc_attempt_count == 1
         assert renewal.nwc_state == "pending"
+        assert renewal.payment_hash is not None
+        renewal_id = renewal.id
+        payment_hash = renewal.payment_hash
+
+    factory.get_lightning_adapter().mark_paid(payment_hash)
+    reconcile_pending_payments_once()
+
+    from blindport.services.notifications import render_notification
+
+    with Session(engine) as session:
+        settled = session.get(Payment, renewal_id)
+        assert settled is not None and settled.status.value == "paid"
+        delivery = session.exec(
+            select(NotificationDelivery).where(
+                NotificationDelivery.kind == NotificationKind.SUBSCRIPTION_RENEWED,
+                NotificationDelivery.payment_id == settled.id,
+            )
+        ).one()
+        subscription = session.get(Subscription, settled.subscription_id)
+        assert subscription is not None
+        rendered = render_notification(delivery, subscription=subscription, payment=settled)
+        assert rendered.subject == "Blindport subscription automatically renewed"
 
 
 def test_auto_renew_skips_suspended_and_legacy_admin_accounts(app_client) -> None:

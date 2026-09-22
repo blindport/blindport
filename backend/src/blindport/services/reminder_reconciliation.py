@@ -92,6 +92,7 @@ def _queue_due_reminders(now: datetime, batch_size: int) -> int:
                     Subscription.current_period_end.is_not(None),  # type: ignore[union-attr]
                     Subscription.current_period_end > now,  # type: ignore[operator]
                     User.has_notification_email,
+                    User.has_nwc.is_(False),  # type: ignore[union-attr]
                     User.is_suspended.is_(False),  # type: ignore[union-attr]
                     or_(
                         and_(
@@ -273,6 +274,7 @@ def _is_delivery_eligible(
         and _aware(period_end) == _aware(delivery.current_period_end)
         and _aware(period_end) > now
         and not user.is_suspended
+        and not user.has_nwc
         and user.has_notification_email
         and delivery.recipient_generation == user.notification_email_generation
     )
