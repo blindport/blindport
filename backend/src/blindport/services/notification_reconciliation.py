@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from loguru import logger
 from sqlalchemy import and_, func, or_, update
+from sqlalchemy.orm import object_session
 from sqlmodel import Session, select
 
 from .. import config, db
@@ -37,6 +38,7 @@ from .notifications import (
 )
 from .payment_reconciliation import ReconcilerHealth
 from .reminder_reconciliation import get_smtp_adapter, reconcile_reminders_once
+from .renewal_alerts import account_event_still_eligible
 
 _TERMINAL_STATES = (
     NotificationDeliveryState.SENT,
@@ -89,6 +91,15 @@ def _queue_due_expirations(now: datetime, batch_size: int) -> int:
             )
             .exists()
         )
+        failure_exists = (
+            select(NotificationDelivery.id)
+            .where(
+                NotificationDelivery.subscription_id == Subscription.id,
+                NotificationDelivery.event_at == Subscription.current_period_end,
+                NotificationDelivery.kind == NotificationKind.AUTOMATIC_RENEWAL_FAILED,
+            )
+            .exists()
+        )
         subscriptions = list(
             session.exec(
                 select(Subscription)
@@ -99,7 +110,8 @@ def _queue_due_expirations(now: datetime, batch_size: int) -> int:
                     Subscription.current_period_end > now,  # type: ignore[operator]
                     User.has_notification_email,
                     User.notification_email_generation >= 1,
-                    User.has_nwc.is_(False),  # type: ignore[union-attr]
+                    Subscription.auto_renew.is_(False),  # type: ignore[union-attr]
+                    ~failure_exists,
                     User.is_suspended.is_(False),  # type: ignore[union-attr]
                     or_(
                         and_(
@@ -146,6 +158,64 @@ def _queue_due_expirations(now: datetime, batch_size: int) -> int:
                 event_at=subscription.current_period_end,
             )
             queued += existed is None
+        remaining_capacity = batch_size - len(subscriptions)
+        if remaining_capacity > 0:
+            unconfirmed_exists = (
+                select(NotificationDelivery.id)
+                .where(
+                    NotificationDelivery.subscription_id == Subscription.id,
+                    NotificationDelivery.event_at == Subscription.current_period_end,
+                    NotificationDelivery.kind == NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+                )
+                .exists()
+            )
+            lead = timedelta(
+                seconds=min(12 * 60 * 60, config.settings.NWC_AUTO_RENEW_LEAD_SECONDS // 2)
+            )
+            unconfirmed = session.exec(
+                select(Subscription)
+                .join(User, User.id == Subscription.user_id)
+                .where(
+                    Subscription.status == SubscriptionStatus.ACTIVE,
+                    Subscription.auto_renew,
+                    Subscription.current_period_end.is_not(None),  # type: ignore[union-attr]
+                    Subscription.current_period_end > now,  # type: ignore[operator]
+                    Subscription.current_period_end <= now + lead,  # type: ignore[operator]
+                    User.has_notification_email,
+                    User.notification_email_generation >= 1,
+                    User.is_suspended.is_(False),  # type: ignore[union-attr]
+                    ~failure_exists,
+                    ~unconfirmed_exists,
+                )
+                .order_by(Subscription.current_period_end, Subscription.id)
+                .limit(remaining_capacity)
+            ).all()
+            for subscription in unconfirmed:
+                assert subscription.id is not None
+                assert subscription.current_period_end is not None
+                user = session.get(User, subscription.user_id)
+                if user is None:  # pragma: no cover - FK integrity protects this path
+                    continue
+                key = _expiration_idempotency_key(
+                    subscription.id,
+                    subscription.current_period_end,
+                    NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+                )
+                existed = session.exec(
+                    select(NotificationDelivery.id).where(
+                        NotificationDelivery.idempotency_key == key
+                    )
+                ).first()
+                queue_notification(
+                    session,
+                    user,
+                    NotificationCategory.ACCOUNT,
+                    NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+                    key,
+                    subscription=subscription,
+                    event_at=subscription.current_period_end,
+                )
+                queued += existed is None
         session.commit()
     return queued
 
@@ -341,7 +411,9 @@ def _process_claimed_delivery(
             session.commit()
         elif user is None:
             _fail_unavailable(session, delivery, now)
-        elif not _is_delivery_eligible(delivery, user, subscription, payment, announcement, now):
+        elif not _is_delivery_eligible(
+            delivery, user, subscription, payment, announcement, now, session=session
+        ):
             cancel_notification(delivery, "notification_no_longer_eligible", now)
             session.add(delivery)
             session.commit()
@@ -471,9 +543,10 @@ def _is_delivery_eligible(
     payment: Payment | None,
     announcement: Announcement | None,
     now: datetime,
+    *,
+    session: Session | None = None,
 ) -> bool:
     if delivery.category == NotificationCategory.ACCOUNT:
-        period_end = subscription.current_period_end if subscription is not None else None
         account_consent = bool(
             config.settings.REMINDER_EMAIL_ENABLED
             and not user.is_suspended
@@ -490,33 +563,11 @@ def _is_delivery_eligible(
             )
         ):
             return False
-        if delivery.kind in (NotificationKind.EXPIRATION_7_DAY, NotificationKind.EXPIRATION_1_DAY):
-            return bool(
-                not user.has_nwc
-                and subscription.status == SubscriptionStatus.ACTIVE
-                and period_end is not None
-                and delivery.event_at is not None
-                and _aware(period_end) == _aware(delivery.event_at)
-                and _aware(period_end) > now
-            )
-        if delivery.kind in (
-            NotificationKind.SUBSCRIPTION_ACTIVATED,
-            NotificationKind.SUBSCRIPTION_RENEWED,
-        ):
-            return bool(
-                subscription.status == SubscriptionStatus.ACTIVE
-                and period_end is not None
-                and delivery.event_at is not None
-                and _aware(period_end) == _aware(delivery.event_at)
-            )
-        if delivery.kind == NotificationKind.SUBSCRIPTION_EXPIRED:
-            return bool(
-                subscription.status == SubscriptionStatus.EXPIRED
-                and period_end is not None
-                and delivery.event_at is not None
-                and _aware(period_end) == _aware(delivery.event_at)
-            )
-        return False
+        failure_session = session or object_session(subscription)
+        return bool(
+            failure_session is not None
+            and account_event_still_eligible(failure_session, delivery, subscription, payment, now)
+        )
     return bool(
         config.settings.ANNOUNCEMENT_EMAIL_ENABLED
         and delivery.kind == NotificationKind.SERVICE_ANNOUNCEMENT

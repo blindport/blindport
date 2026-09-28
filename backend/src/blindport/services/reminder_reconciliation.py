@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from loguru import logger
 from sqlalchemy import and_, func, or_, update
+from sqlalchemy.orm import object_session
 from sqlmodel import Session, select
 
 from .. import config, db
@@ -22,6 +23,7 @@ from ..core.models import (
     User,
 )
 from .reminders import cancel_reminder, queue_reminder, send_reminder
+from .renewal_alerts import has_period_automatic_renewal_failure
 
 _TERMINAL_STATES = (
     ReminderDeliveryState.SENT,
@@ -92,7 +94,7 @@ def _queue_due_reminders(now: datetime, batch_size: int) -> int:
                     Subscription.current_period_end.is_not(None),  # type: ignore[union-attr]
                     Subscription.current_period_end > now,  # type: ignore[operator]
                     User.has_notification_email,
-                    User.has_nwc.is_(False),  # type: ignore[union-attr]
+                    Subscription.auto_renew.is_(False),  # type: ignore[union-attr]
                     User.is_suspended.is_(False),  # type: ignore[union-attr]
                     or_(
                         and_(
@@ -266,15 +268,20 @@ def _is_delivery_eligible(
     subscription: Subscription,
     user: User,
     now: datetime,
+    *,
+    session: Session | None = None,
 ) -> bool:
     period_end = subscription.current_period_end
+    failure_session = session or object_session(subscription)
     return bool(
         subscription.status == SubscriptionStatus.ACTIVE
         and period_end is not None
         and _aware(period_end) == _aware(delivery.current_period_end)
         and _aware(period_end) > now
         and not user.is_suspended
-        and not user.has_nwc
+        and not subscription.auto_renew
         and user.has_notification_email
         and delivery.recipient_generation == user.notification_email_generation
+        and failure_session is not None
+        and not has_period_automatic_renewal_failure(failure_session, subscription.id, period_end)
     )

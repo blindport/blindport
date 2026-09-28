@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,12 @@ from ..core.models import (
     User,
 )
 from .notification_email import lock_and_decrypt_notification_email
+from .notification_identity import (
+    resource_identity,
+    snapshot_resource_identity,
+    store_resource_identity,
+)
+from .renewal_alerts import account_event_still_eligible
 
 MAX_NOTIFICATION_ATTEMPTS = 20
 _MESSAGE_ID_VERSION = "blindport-notification-v1"
@@ -38,6 +45,8 @@ _ACCOUNT_KINDS = (
     *_EXPIRATION_KINDS,
     NotificationKind.SUBSCRIPTION_ACTIVATED,
     NotificationKind.SUBSCRIPTION_RENEWED,
+    NotificationKind.AUTOMATIC_RENEWAL_FAILED,
+    NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
     NotificationKind.SUBSCRIPTION_EXPIRED,
 )
 
@@ -132,6 +141,9 @@ def queue_notification(
             announcement.id if announcement is not None else None,
             _aware(event_at) if event_at is not None else None,
         )
+    # Snapshot failures are deliberately nonfatal, see store_resource_identity.
+    if subscription is not None:
+        store_resource_identity(delivery, user, subscription)
     return delivery
 
 
@@ -141,6 +153,8 @@ def render_notification(
     subscription: Subscription | None = None,
     payment: Payment | None = None,
     announcement: Announcement | None = None,
+    user: User | None = None,
+    cipher: CredentialCipher | None = None,
     now: datetime | None = None,
 ) -> RenderedNotification:
     """Render delivery content just before SMTP, keeping it out of durable state."""
@@ -152,6 +166,7 @@ def render_notification(
             subscription.product if subscription is not None else None,
             delivery.event_at,
             rendered_at,
+            _resource_details(delivery, subscription, user, cipher),
         )
     if delivery.kind == NotificationKind.SERVICE_ANNOUNCEMENT:
         if announcement is None:
@@ -166,6 +181,8 @@ def render_notification(
         subscription.product,
         event_at,
         automatic_renewal=bool(payment and payment.automatic_renewal),
+        resource_details=_resource_details(delivery, subscription, user, cipher),
+        rendered_at=rendered_at,
     )
 
 
@@ -207,8 +224,29 @@ def send_notification(
             delivery.recipient_generation,
             cipher,
         )
+        # Consent is locked above; reload all event state after the committed
+        # SENDING transition so a payment settling during the lock cannot send
+        # a stale warning alongside its successful renewal confirmation.
+        session.expire_all()
         locked_user = session.get(User, user.id)
-        if delivery.kind in _EXPIRATION_KINDS and locked_user is not None and locked_user.has_nwc:
+        subscription = (
+            session.get(Subscription, delivery.subscription_id)
+            if delivery.subscription_id is not None
+            else None
+        )
+        payment = (
+            session.get(Payment, delivery.payment_id) if delivery.payment_id is not None else None
+        )
+        if delivery.category == NotificationCategory.ACCOUNT and (
+            locked_user is None
+            or locked_user.is_suspended
+            or not locked_user.has_notification_email
+            or locked_user.notification_email_generation != delivery.recipient_generation
+            or subscription is None
+            or not account_event_still_eligible(
+                session, delivery, subscription, payment, attempted_at
+            )
+        ):
             if fence_notification_lease(session, delivery, lease_token):
                 cancel_notification(delivery, "notification_no_longer_eligible", attempted_at)
                 session.add(delivery)
@@ -219,6 +257,8 @@ def send_notification(
             subscription=subscription,
             payment=payment,
             announcement=announcement,
+            user=locked_user,
+            cipher=cipher,
             now=attempted_at,
         )
         adapter.send_message(
@@ -391,6 +431,14 @@ def _validate_notification_refs(
             raise ValueError("account notification references are invalid")
         if kind in _EXPIRATION_KINDS and event_at is None:
             raise ValueError("expiration notification requires an event time")
+        if kind in (
+            NotificationKind.AUTOMATIC_RENEWAL_FAILED,
+            NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+        ) and (
+            event_at is None
+            or (kind == NotificationKind.AUTOMATIC_RENEWAL_FAILED) != (payment is not None)
+        ):
+            raise ValueError("automatic renewal notification references are invalid")
         if kind == NotificationKind.SUBSCRIPTION_EXPIRED and payment is not None:
             raise ValueError("expired subscription notification cannot reference a payment")
         return
@@ -446,7 +494,10 @@ def _locked_recipient(
 
 
 def _render_expiration(
-    product: ProductType | None, period_end: datetime, rendered_at: datetime
+    product: ProductType | None,
+    period_end: datetime,
+    rendered_at: datetime,
+    resource_details: str,
 ) -> RenderedNotification:
     label = {
         ProductType.IP: "Blindport IP",
@@ -466,7 +517,8 @@ def _render_expiration(
         subject=f"{label} subscription {timing}",
         body=(
             f"Your {label} subscription is approaching the end of its paid period.\n\n"
-            f"It {timing}, on {deadline}.\n\n"
+            f"It {timing}, on {deadline}. Automatic renewal is not enabled.\n\n"
+            f"{resource_details}\n\n"
             "Sign in to Blindport to renew it before expiration.\n\n"
             "This reminder was sent because expiration notices are enabled for your account."
         ),
@@ -479,6 +531,8 @@ def _render_subscription_event(
     event_at: datetime | None,
     *,
     automatic_renewal: bool = False,
+    resource_details: str,
+    rendered_at: datetime,
 ) -> RenderedNotification:
     label = {
         ProductType.IP: "Blindport IP",
@@ -502,6 +556,35 @@ def _render_subscription_event(
             else "Blindport subscription renewed"
         )
         period_line = f"\n\nPaid through {deadline}." if deadline else ""
+    elif kind in (
+        NotificationKind.AUTOMATIC_RENEWAL_FAILED,
+        NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+    ):
+        failure = kind == NotificationKind.AUTOMATIC_RENEWAL_FAILED
+        detail = (
+            f"Automatic renewal failed for your {label} subscription. Check your payment settings."
+            if failure
+            else f"Automatic renewal is not yet confirmed for your {label} subscription."
+        )
+        subject = (
+            "Blindport automatic renewal failed"
+            if failure
+            else "Blindport automatic renewal not yet confirmed"
+        )
+        remaining = _aware(event_at) - rendered_at if event_at else timedelta(0)
+        period_line = (
+            f"\n\nYour paid period ends on {deadline} "
+            f"(about {max(1, math.ceil(remaining.total_seconds() / 3600))} hours remaining)."
+            if remaining > timedelta(0) and deadline
+            else f"\n\nYour paid period ended on {deadline}."
+            if deadline
+            else ""
+        )
+        period_line += (
+            " Renew manually to restore or keep service."
+            if failure
+            else " Check your payment status before paying again; the automatic attempt may still succeed."
+        )
     elif kind == NotificationKind.SUBSCRIPTION_EXPIRED:
         detail = f"Your {label} subscription has expired."
         subject = "Blindport subscription expired"
@@ -514,8 +597,38 @@ def _render_subscription_event(
         raise ValueError("subscription notification kind is invalid")
     return RenderedNotification(
         subject=subject,
-        body=f"{detail}{period_line}\n\nSign in to Blindport: {config.settings.PUBLIC_SITE_URL}",
+        body=(
+            f"{detail}{period_line}\n\n{resource_details}\n\n"
+            f"Sign in to Blindport: {config.settings.PUBLIC_SITE_URL}"
+        ),
     )
+
+
+def _resource_details(
+    delivery: NotificationDelivery,
+    subscription: Subscription | None,
+    user: User | None,
+    cipher: CredentialCipher | None,
+) -> str:
+    snapshot = snapshot_resource_identity(delivery, user, cipher=cipher)
+    identity = snapshot[0] if snapshot is not None else None
+    if (
+        identity is None
+        and delivery.resource_identity_ciphertext is None
+        and delivery.resource_identity_key_version is None
+        and subscription is not None
+        and _same_time(delivery.event_at, subscription.current_period_end)
+    ):
+        identity = resource_identity(subscription)
+    public_id = (
+        snapshot[1]
+        if snapshot is not None
+        else str(subscription.public_id)
+        if subscription is not None
+        else "unavailable"
+    )
+    resource = identity or "Resource details unavailable"
+    return f"{resource}\nSubscription ID: {public_id}"
 
 
 def _cancel_queued(session: Session, *conditions: object, code: str, now: datetime) -> None:

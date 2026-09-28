@@ -177,6 +177,10 @@ def test_smtp_cancels_when_nwc_is_enabled_before_recipient_lock(monkeypatch) -> 
             current = preference_session.get(User, user.id)
             assert current is not None
             current.has_nwc = True
+            current_subscription = preference_session.get(Subscription, subscription.id)
+            assert current_subscription is not None
+            current_subscription.auto_renew = True
+            preference_session.add(current_subscription)
             preference_session.add(current)
             preference_session.commit()
         return lock_recipient(*args, **kwargs)

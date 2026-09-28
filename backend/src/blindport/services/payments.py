@@ -33,6 +33,7 @@ from ..core.models import (
     BillingTerm,
     DeliveryMode,
     NotificationCategory,
+    NotificationDelivery,
     NotificationKind,
     Payment,
     PaymentMethod,
@@ -632,6 +633,7 @@ def _release_failed_nwc_payment(
         subscription.auto_renew = False
         subs.release_reservation(session, subscription, payment_id)
         session.add(subscription)
+        _queue_automatic_renewal_failure_notification(session, payment, subscription)
     session.commit()
     return _reload_payment(session, payment_id)
 
@@ -676,8 +678,62 @@ def _release_failed_clink_payment(
         subscription.auto_renew = False
         subs.release_reservation(session, subscription, payment_id)
         session.add(subscription)
+        _queue_automatic_renewal_failure_notification(session, payment, subscription)
     session.commit()
     return _reload_payment(session, payment_id)
+
+
+def _queue_automatic_renewal_failure_notification(
+    session: Session, payment: Payment, subscription: Subscription
+) -> None:
+    """Queue one failure notice only for the still-current automatic renewal period."""
+    period_end = _aware(payment.automatic_renewal_period_end)
+    current_period_end = _aware(subscription.current_period_end)
+    if (
+        not payment.automatic_renewal
+        or period_end is None
+        or subscription.status not in (SubscriptionStatus.ACTIVE, SubscriptionStatus.EXPIRED)
+        or current_period_end != period_end
+    ):
+        return
+    user = session.get(User, subscription.user_id)
+    if (
+        not settings.REMINDER_EMAIL_ENABLED
+        or user is None
+        or user.is_suspended
+        or not user.has_notification_email
+        or user.notification_email_generation < 1
+    ):
+        return
+    idempotency_key = f"automatic-renewal-failed:{subscription.id}:{period_end.isoformat()}"
+    existing = session.exec(
+        select(NotificationDelivery.id).where(
+            NotificationDelivery.idempotency_key == idempotency_key
+        )
+    ).first()
+    if existing is not None:
+        return
+    try:
+        queue_notification(
+            session,
+            user,
+            NotificationCategory.ACCOUNT,
+            NotificationKind.AUTOMATIC_RENEWAL_FAILED,
+            idempotency_key,
+            subscription=subscription,
+            payment=payment,
+            event_at=period_end,
+        )
+    except ValueError:
+        # A concurrent worker may have committed this period's notification
+        # after the lookup above. Never replace its payment reference.
+        existing = session.exec(
+            select(NotificationDelivery.id).where(
+                NotificationDelivery.idempotency_key == idempotency_key
+            )
+        ).first()
+        if existing is None:
+            raise
 
 
 def _verify_clink_result(
@@ -1344,6 +1400,9 @@ def create_payment(
             settings.REFERRAL_COMMISSION_BPS if subscription.referral_address else 0
         ),
         automatic_renewal=automatic_renewal,
+        automatic_renewal_period_end=(
+            _aware(subscription.current_period_end) if automatic_renewal else None
+        ),
     )
     session.add(payment)
     try:

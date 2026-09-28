@@ -129,6 +129,8 @@ class NotificationKind(StrEnum):
     EXPIRATION_1_DAY = "expiration_1_day"
     SUBSCRIPTION_ACTIVATED = "subscription_activated"
     SUBSCRIPTION_RENEWED = "subscription_renewed"
+    AUTOMATIC_RENEWAL_FAILED = "automatic_renewal_failed"
+    AUTOMATIC_RENEWAL_UNCONFIRMED = "automatic_renewal_unconfirmed"
     SUBSCRIPTION_EXPIRED = "subscription_expired"
     SERVICE_ANNOUNCEMENT = "service_announcement"
 
@@ -567,6 +569,9 @@ class Payment(SQLModel, table=True):
     automatic_renewal: bool = Field(
         default=False, sa_column_kwargs={"server_default": text("false")}
     )
+    automatic_renewal_period_end: datetime | None = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
     created_at: datetime = Field(default_factory=_utcnow, sa_type=DateTime(timezone=True))
     paid_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
     expires_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
@@ -725,6 +730,10 @@ class NotificationDelivery(SQLModel, table=True):
             "attempt_count >= 0 AND attempt_count <= 20",
             name="ck_notificationdelivery_attempt_count",
         ),
+        CheckConstraint(
+            "(resource_identity_ciphertext IS NULL) = (resource_identity_key_version IS NULL)",
+            name="ck_notificationdelivery_resource_identity_pair",
+        ),
         Index("ix_notificationdelivery_due", "state", "next_attempt_at", "id"),
         Index("ix_notificationdelivery_announcement_state", "announcement_id", "state"),
     )
@@ -745,6 +754,8 @@ class NotificationDelivery(SQLModel, table=True):
     idempotency_key: str = Field(max_length=255, unique=True)
     recipient_generation: int
     event_at: datetime | None = Field(default=None, sa_type=DateTime(timezone=True))
+    resource_identity_ciphertext: str | None = Field(default=None, sa_type=Text)
+    resource_identity_key_version: str | None = Field(default=None, max_length=32)
     state: NotificationDeliveryState = Field(
         default=NotificationDeliveryState.QUEUED,
         sa_type=Enum(

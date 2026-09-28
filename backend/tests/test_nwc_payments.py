@@ -75,6 +75,7 @@ def test_nwc_success_uses_lnd_and_verifies_returned_preimage(app_client, monkeyp
         payment = session.get(Payment, response.json()["id"])
         assert payment is not None
         assert payment.automatic_renewal is False
+        assert payment.automatic_renewal_period_end is None
         assert payment.nwc_preimage_hash == payment.payment_hash
         assert payment.nwc_fees_paid_msats == 21
         assert payment.nwc_attempt_count == 1
@@ -505,6 +506,7 @@ def test_due_auto_renew_uses_shared_nwc_payment_path(app_client, monkeypatch) ->
         stored = subscription_by_public_id(session, subscription["id"])
         assert stored is not None
         stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
+        renewal_period_end = stored.current_period_end
         session.add(stored)
         session.commit()
 
@@ -514,6 +516,7 @@ def test_due_auto_renew_uses_shared_nwc_payment_path(app_client, monkeypatch) ->
     with Session(engine) as session:
         renewal = session.exec(select(Payment).where(Payment.method == PaymentMethod.NWC)).one()
         assert renewal.automatic_renewal is True
+        assert renewal.automatic_renewal_period_end == renewal_period_end.replace(tzinfo=None)
         assert renewal.nwc_attempt_count == 1
         assert renewal.nwc_state == "pending"
         assert renewal.payment_hash is not None
@@ -538,6 +541,71 @@ def test_due_auto_renew_uses_shared_nwc_payment_path(app_client, monkeypatch) ->
         assert subscription is not None
         rendered = render_notification(delivery, subscription=subscription, payment=settled)
         assert rendered.subject == "Blindport subscription automatically renewed"
+
+
+def test_terminal_automatic_nwc_failure_queues_one_period_notice(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token, subscription = _wallet_subscription(client)
+    from blindport import config
+    from blindport.core.models import NotificationDelivery, NotificationKind, Payment, PaymentMethod
+    from blindport.db import engine
+    from blindport.services.payments import create_payment
+
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    assert (
+        client.post(
+            "/api/v1/me/notification-email",
+            json={"email": "person@example.com"},
+            headers=_auth(token),
+        ).status_code
+        == 200
+    )
+    initial = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    ).json()
+    factory.get_lightning_adapter().mark_paid(initial["payment_hash"])
+    client.get(f"/api/v1/payments/{initial['id']}", headers=_auth(token))
+    assert (
+        client.post(
+            f"/api/v1/subscriptions/{subscription['id']}/auto-renew?enable=true",
+            headers=_auth(token),
+        ).status_code
+        == 200
+    )
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
+        period_end = stored.current_period_end
+        session.add(stored)
+        session.commit()
+    monkeypatch.setattr(
+        factory.get_nwc_adapter(),
+        "pay_invoice",
+        lambda uri, invoice: (_ for _ in ()).throw(
+            NwcAdapterError("quota_exceeded", "wallet spending quota was exceeded", retryable=False)
+        ),
+    )
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        renewal = create_payment(session, stored, PaymentMethod.NWC, automatic_renewal=True)
+        assert renewal.status.value == "failed"
+
+    with Session(engine) as session:
+        payment = session.exec(select(Payment).where(Payment.automatic_renewal)).one()
+        assert payment.automatic_renewal_period_end == period_end.replace(tzinfo=None)
+        deliveries = session.exec(
+            select(NotificationDelivery).where(
+                NotificationDelivery.kind == NotificationKind.AUTOMATIC_RENEWAL_FAILED
+            )
+        ).all()
+        assert len(deliveries) == 1
+        assert deliveries[0].payment_id == payment.id
+        assert deliveries[0].event_at == period_end.replace(tzinfo=None)
 
 
 def test_auto_renew_skips_suspended_and_legacy_admin_accounts(app_client) -> None:

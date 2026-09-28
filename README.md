@@ -140,11 +140,15 @@ a whole service day.
 Yearly issuance is controlled by `BILLING_YEARLY_ENABLED`; Blindport IP sales have
 no capacity while that gate is disabled.
 Accounts can optionally store an encrypted address for ACCOUNT lifecycle mail,
-including activation, renewal, seven-day and one-day expiration notices, and actual
-expiry. SERVICE announcements use separate consent. A privacy-preserving unified
-outbox stores references and recipient generations, not message material. Its worker
-is independent of payment reconciliation; it drains legacy outboxes, expands queue-time
-campaign snapshots in bounded pages, and retries only before an ambiguous SMTP boundary.
+including activation, renewal, seven-day and one-day expiration notices, automatic
+renewal issues, and actual expiry. Advance expiration notices apply when a subscription
+has no automatic renewal; an unresolved automatic renewal gets a neutral status notice,
+and a proven failed payment gets a failure notice. Emails identify the subscribed
+resource. SERVICE announcements use separate consent. The unified outbox keeps
+references, recipient generations, and an encrypted resource identifier, but not
+plaintext message content. Its worker is independent of payment reconciliation; it
+drains legacy outboxes, expands queue-time campaign snapshots in bounded pages, and
+retries only before an ambiguous SMTP boundary.
 
 ## Repository layout
 

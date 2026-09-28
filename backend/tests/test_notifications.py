@@ -15,6 +15,7 @@ from blindport.core.models import (
     AnnouncementDelivery,
     AnnouncementDeliveryState,
     AnnouncementRecipientSnapshot,
+    DeliveryMode,
     NotificationCategory,
     NotificationDelivery,
     NotificationDeliveryState,
@@ -23,11 +24,13 @@ from blindport.core.models import (
     PaymentMethod,
     PaymentStatus,
     ProductType,
+    RelayHostnameScope,
     ReminderDelivery,
     ReminderDeliveryState,
     ReminderKind,
     Subscription,
     SubscriptionStatus,
+    Transport,
     User,
 )
 from blindport.services.announcements import (
@@ -286,6 +289,73 @@ def test_delayed_expiration_rendering_is_truthful_and_message_id_is_stable(tmp_p
         assert message_id != notification_message_id(delivery)
 
 
+@pytest.mark.parametrize(
+    ("product", "fields", "expected"),
+    [
+        (
+            ProductType.RELAY,
+            {"domain": "relay.example", "relay_hostname_scope": RelayHostnameScope.WILDCARD},
+            "Relay domain: *.relay.example (also relay.example)",
+        ),
+        (
+            ProductType.PORT,
+            {"assigned_ip": "2001:db8::1", "assigned_port": 4242, "transport": Transport.UDP},
+            "Port: 2001:db8::1:4242 (UDP)",
+        ),
+        (
+            ProductType.IP,
+            {"assigned_ip": "198.51.100.8", "delivery": DeliveryMode.WIREGUARD},
+            "IP address: 198.51.100.8 (wireguard)",
+        ),
+    ],
+)
+def test_account_notification_snapshots_resource_identity_after_resource_changes(
+    tmp_path, product, fields, expected
+) -> None:
+    engine, user_id, subscription_id = _setup(tmp_path)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        subscription.product = product
+        for name, value in fields.items():
+            setattr(subscription, name, value)
+        delivery = _queue_expiration(session, user, subscription, f"identity:{product.value}")
+        session.commit()
+        assert delivery.resource_identity_ciphertext is not None
+        assert delivery.resource_identity_key_version is not None
+        assert expected not in delivery.resource_identity_ciphertext
+        subscription.domain = None
+        subscription.assigned_ip = None
+        subscription.assigned_port = None
+        subscription.current_period_end = datetime.now(UTC) + timedelta(days=30)
+        rendered = render_notification(delivery, subscription=subscription, user=user)
+        assert expected in rendered.body
+        assert f"Subscription ID: {subscription.public_id}" in rendered.body
+
+
+def test_invalid_or_copied_identity_snapshot_uses_sanitized_fallback(tmp_path) -> None:
+    engine, user_id, subscription_id = _setup(tmp_path)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        subscription.assigned_ip = "198.51.100.8"
+        first = _queue_expiration(session, user, subscription, "identity:first")
+        second = _queue_expiration(session, user, subscription, "identity:second")
+        assert first.resource_identity_ciphertext is not None
+        second.resource_identity_ciphertext = first.resource_identity_ciphertext
+        second.resource_identity_key_version = first.resource_identity_key_version
+        subscription.assigned_ip = None
+        subscription.current_period_end = datetime.now(UTC) + timedelta(days=30)
+        copied = render_notification(second, subscription=subscription, user=user)
+        assert "Resource details unavailable" in copied.body
+        first.resource_identity_ciphertext = "invalid"
+        first.resource_identity_key_version = "0" * 32
+        invalid = render_notification(first, subscription=subscription, user=user)
+        assert "Resource details unavailable" in invalid.body
+
+
 def test_nwc_users_do_not_receive_queued_expiration_notices(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
@@ -310,6 +380,8 @@ def test_nwc_users_do_not_receive_queued_expiration_notices(
             current_period_end=subscription.current_period_end,
         )
         session.add(undiscovered)
+        subscription.auto_renew = True
+        undiscovered.auto_renew = True
         user.has_nwc = True
         session.add(user)
         session.commit()
@@ -493,6 +565,10 @@ def test_smtp_cancels_expiration_when_nwc_is_enabled_before_recipient_lock(
                 current = preference_session.get(User, user_id)
                 assert current is not None
                 current.has_nwc = True
+                current_subscription = preference_session.get(Subscription, subscription_id)
+                assert current_subscription is not None
+                current_subscription.auto_renew = True
+                preference_session.add(current_subscription)
                 preference_session.add(current)
                 preference_session.commit()
             return lock_recipient(*args, **kwargs)
@@ -505,6 +581,124 @@ def test_smtp_cancels_expiration_when_nwc_is_enabled_before_recipient_lock(
         assert smtp.calls == 0
         assert delivery.state == NotificationDeliveryState.CANCELLED
         assert delivery.error_code == "notification_no_longer_eligible"
+
+
+def test_smtp_sends_expiration_when_wallet_connected_but_auto_renewal_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from blindport import config
+    from blindport.services.notification_reconciliation import _is_delivery_eligible
+
+    engine, user_id, subscription_id = _setup(tmp_path)
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        user.has_nwc = True
+        subscription.auto_renew = False
+        session.add(user)
+        session.add(subscription)
+        delivery = _queue_expiration(session, user, subscription, "smtp:nwc-auto-off")
+        session.commit()
+
+        assert _is_delivery_eligible(delivery, user, subscription, None, None, datetime.now(UTC))
+        smtp = _Smtp()
+        send_notification(session, delivery, user, smtp, subscription=subscription)
+        assert smtp.calls == 1
+        assert delivery.state == NotificationDeliveryState.SENT
+
+
+def test_unconfirmed_notice_cancels_if_renewal_succeeds_during_recipient_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from blindport import config
+    from blindport.services import notifications as service
+
+    engine, user_id, subscription_id = _setup(tmp_path, period_delta=timedelta(hours=6))
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        subscription.auto_renew = True
+        delivery = queue_notification(
+            session,
+            user,
+            NotificationCategory.ACCOUNT,
+            NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+            "renewal:race:unconfirmed",
+            subscription=subscription,
+            event_at=subscription.current_period_end,
+        )
+        session.commit()
+
+        locked_recipient = service.lock_and_decrypt_notification_email
+
+        def renew_before_recipient_lock(*args, **kwargs):
+            with Session(engine) as renewal:
+                current = renewal.get(Subscription, subscription_id)
+                assert current is not None and current.current_period_end is not None
+                current.current_period_end += timedelta(days=30)
+                renewal.add(current)
+                renewal.commit()
+            return locked_recipient(*args, **kwargs)
+
+        monkeypatch.setattr(
+            service, "lock_and_decrypt_notification_email", renew_before_recipient_lock
+        )
+        smtp = _Smtp()
+        send_notification(session, delivery, user, smtp, subscription=subscription)
+        assert smtp.calls == 0
+        assert delivery.state == NotificationDeliveryState.CANCELLED
+
+
+def test_proven_automatic_failure_is_deliverable_after_period_expires(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from blindport import config
+    from blindport.services.notification_reconciliation import _is_delivery_eligible
+    from blindport.services.payments import _queue_automatic_renewal_failure_notification
+
+    engine, user_id, subscription_id = _setup(tmp_path, period_delta=-timedelta(hours=1))
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        subscription.status = SubscriptionStatus.EXPIRED
+        subscription.assigned_ip = "198.51.100.42"
+        payment = Payment(
+            subscription_id=subscription_id,
+            method=PaymentMethod.NWC,
+            status=PaymentStatus.FAILED,
+            amount_sats=1000,
+            automatic_renewal=True,
+            automatic_renewal_period_end=subscription.current_period_end,
+        )
+        session.add(subscription)
+        session.add(payment)
+        session.flush()
+        _queue_automatic_renewal_failure_notification(session, payment, subscription)
+        session.commit()
+        delivery = session.exec(
+            select(NotificationDelivery).where(
+                NotificationDelivery.kind == NotificationKind.AUTOMATIC_RENEWAL_FAILED
+            )
+        ).one()
+        assert _is_delivery_eligible(delivery, user, subscription, payment, None, datetime.now(UTC))
+        subscription.assigned_ip = None
+        session.add(subscription)
+        session.commit()
+        rendered = render_notification(
+            delivery, subscription=subscription, payment=payment, user=user
+        )
+        assert "198.51.100.42" in rendered.body
+        assert "paid period ended" in rendered.body
+        smtp = _Smtp()
+        send_notification(session, delivery, user, smtp, subscription=subscription, payment=payment)
+        assert smtp.calls == 1
+        assert delivery.state == NotificationDeliveryState.SENT
 
 
 def test_reconciliation_discovers_once_cancels_generation_change_and_recovers_sending(
@@ -587,6 +781,92 @@ def test_expiration_discovery_respects_batch_bound(
     assert worker._queue_due_expirations(datetime.now(UTC), 1) == 1
     with Session(engine) as session:
         assert len(session.exec(select(NotificationDelivery)).all()) == 1
+
+
+def test_expiration_discovery_uses_auto_renewal_state_and_queues_unconfirmed_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from blindport import config
+    from blindport.services import notification_reconciliation as worker
+
+    engine, user_id, subscription_id = _setup(tmp_path, period_delta=timedelta(hours=6))
+    monkeypatch.setattr(worker.db, "engine", engine)
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    monkeypatch.setattr(config.settings, "NWC_AUTO_RENEW_LEAD_SECONDS", 86400)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert user is not None and subscription is not None
+        user.has_nwc = True
+        session.commit()
+
+    assert worker._queue_due_expirations(datetime.now(UTC), 10) == 1
+    with Session(engine) as session:
+        delivery = session.exec(select(NotificationDelivery)).one()
+        assert delivery.kind == NotificationKind.EXPIRATION_1_DAY
+        subscription = session.get(Subscription, subscription_id)
+        assert subscription is not None
+        subscription.auto_renew = True
+        session.commit()
+
+    assert worker._queue_due_expirations(datetime.now(UTC), 10) == 1
+    assert worker._queue_due_expirations(datetime.now(UTC), 10) == 0
+    with Session(engine) as session:
+        deliveries = session.exec(select(NotificationDelivery)).all()
+        assert {delivery.kind for delivery in deliveries} == {
+            NotificationKind.EXPIRATION_1_DAY,
+            NotificationKind.AUTOMATIC_RENEWAL_UNCONFIRMED,
+        }
+        expiration = next(
+            delivery
+            for delivery in deliveries
+            if delivery.kind == NotificationKind.EXPIRATION_1_DAY
+        )
+        subscription = session.get(Subscription, subscription_id)
+        user = session.get(User, user_id)
+        assert subscription is not None and user is not None
+        assert not worker._is_delivery_eligible(
+            expiration, user, subscription, None, None, datetime.now(UTC), session=session
+        )
+
+
+def test_failure_event_suppresses_off_expiration_notice(tmp_path) -> None:
+    from blindport.services import notification_reconciliation as worker
+
+    engine, user_id, subscription_id = _setup(tmp_path)
+    with Session(engine) as session:
+        user = session.get(User, user_id)
+        subscription = session.get(Subscription, subscription_id)
+        assert (
+            user is not None
+            and subscription is not None
+            and subscription.current_period_end is not None
+        )
+        expiration = _queue_expiration(session, user, subscription, "expiration:after-failure")
+        payment = Payment(
+            subscription_id=subscription.id or 0,
+            method=PaymentMethod.NWC,
+            status=PaymentStatus.FAILED,
+            amount_sats=1000,
+            automatic_renewal=True,
+            automatic_renewal_period_end=subscription.current_period_end,
+        )
+        session.add(payment)
+        session.flush()
+        queue_notification(
+            session,
+            user,
+            NotificationCategory.ACCOUNT,
+            NotificationKind.AUTOMATIC_RENEWAL_FAILED,
+            "automatic-renewal-failed:test",
+            subscription=subscription,
+            payment=payment,
+            event_at=subscription.current_period_end,
+        )
+        session.commit()
+        assert not worker._is_delivery_eligible(
+            expiration, user, subscription, None, None, datetime.now(UTC), session=session
+        )
 
 
 def test_legacy_reminder_does_not_suppress_unified_discovery(

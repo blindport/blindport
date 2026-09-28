@@ -83,6 +83,11 @@ def test_clink_success_uses_lnd_and_verifies_preimage(app_client, monkeypatch) -
     assert response.json()["clink_state"] == "settled"
     assert response.json()["clink_nwc_fallback"] is False
     assert response.json()["nwc_attempt_count"] == 0
+    from blindport.db import engine
+
+    with Session(engine) as session:
+        payment = session.exec(select(Payment)).one()
+        assert payment.automatic_renewal_period_end is None
     assert nwc_calls == 0
 
 
@@ -326,6 +331,7 @@ def test_auto_renew_prefers_clink_when_both_wallets_are_connected(app_client) ->
         stored = subscription_by_public_id(session, subscription["id"])
         assert stored is not None
         stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
+        renewal_period_end = stored.current_period_end
         session.add(stored)
         session.commit()
 
@@ -334,9 +340,73 @@ def test_auto_renew_prefers_clink_when_both_wallets_are_connected(app_client) ->
     assert summary.auto_renewed == 1
     with Session(engine) as session:
         renewal = session.exec(select(Payment).where(Payment.method == PaymentMethod.CLINK)).one()
+        assert renewal.automatic_renewal is True
+        assert renewal.automatic_renewal_period_end == renewal_period_end.replace(tzinfo=None)
         assert renewal.clink_attempt_count == 1
         assert renewal.clink_state == "pending"
         assert renewal.nwc_attempt_count == 0
+
+
+def test_terminal_automatic_clink_failure_queues_period_notice(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    token, subscription = _connected_subscription(client)
+    from blindport import config
+    from blindport.core.models import NotificationDelivery, NotificationKind, PaymentMethod
+    from blindport.db import engine
+    from blindport.services.payments import create_payment
+
+    monkeypatch.setattr(config.settings, "REMINDER_EMAIL_ENABLED", True)
+    assert (
+        client.post(
+            "/api/v1/me/notification-email",
+            json={"email": "person@example.com"},
+            headers=_auth(token),
+        ).status_code
+        == 200
+    )
+    initial = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    ).json()
+    factory.get_lightning_adapter().mark_paid(initial["payment_hash"])
+    client.get(f"/api/v1/payments/{initial['id']}", headers=_auth(token))
+    assert (
+        client.post(
+            f"/api/v1/subscriptions/{subscription['id']}/auto-renew?enable=true",
+            headers=_auth(token),
+        ).status_code
+        == 200
+    )
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.current_period_end = datetime.now(UTC) + timedelta(minutes=1)
+        period_end = stored.current_period_end
+        session.add(stored)
+        session.commit()
+
+    def deny(ndebit: str, invoice: str, amount_sats: int, description: str) -> ClinkPayResult:
+        del ndebit, invoice, amount_sats, description
+        raise ClinkAdapterError(
+            "invalid_amount", "amount rejected", retryable=False, wallet_rejection=True
+        )
+
+    monkeypatch.setattr(factory.get_clink_adapter(), "pay_invoice", deny)
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        renewal = create_payment(session, stored, PaymentMethod.CLINK, automatic_renewal=True)
+        assert renewal.status.value == "failed"
+
+    with Session(engine) as session:
+        delivery = session.exec(
+            select(NotificationDelivery).where(
+                NotificationDelivery.kind == NotificationKind.AUTOMATIC_RENEWAL_FAILED
+            )
+        ).one()
+        assert delivery.payment_id is not None
+        assert delivery.event_at == period_end.replace(tzinfo=None)
 
 
 def test_removing_one_wallet_preserves_auto_renew_until_last_wallet_is_removed(

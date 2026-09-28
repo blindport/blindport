@@ -22,6 +22,7 @@ class CredentialPurpose(StrEnum):
     NWC = "nwc"
     CLINK = "clink"
     NOTIFICATION_EMAIL = "notification-email"
+    NOTIFICATION_IDENTITY = "notification-identity"
 
 
 class CredentialError(ValueError):

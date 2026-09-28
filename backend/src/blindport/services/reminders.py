@@ -21,6 +21,8 @@ from ..core.models import (
     User,
 )
 from .notification_email import lock_and_decrypt_notification_email
+from .notification_identity import resource_identity
+from .renewal_alerts import has_period_automatic_renewal_failure
 
 MAX_REMINDER_ATTEMPTS = 20
 
@@ -32,7 +34,7 @@ class RenderedReminder:
 
 
 def render_expiration_reminder(
-    kind: ReminderKind, current_period_end: datetime
+    kind: ReminderKind, current_period_end: datetime, subscription: Subscription | None = None
 ) -> RenderedReminder:
     period_end = _aware(current_period_end)
     if kind == ReminderKind.SEVEN_DAY:
@@ -43,12 +45,19 @@ def render_expiration_reminder(
         raise ValueError("reminder kind is invalid")
     day_word = "day" if days == 1 else "days"
     deadline = period_end.strftime("%Y-%m-%d %H:%M UTC")
+    resource_details = resource_identity(subscription) if subscription is not None else None
+    if subscription is not None:
+        resource_details = (
+            f"{resource_details}\n" if resource_details else "Resource details unavailable\n"
+        ) + f"Subscription ID: {subscription.public_id}"
+    details_line = f"\n\n{resource_details}" if resource_details else ""
     return RenderedReminder(
         subject=f"Blindport subscription expires within {days} {day_word}",
         body=(
             "Your Blindport subscription is approaching the end of its paid period.\n\n"
-            f"It expires within {days} {day_word}, on {deadline}.\n\n"
-            "Sign in to Blindport to renew it before expiration.\n\n"
+            f"It expires within {days} {day_word}, on {deadline}. "
+            "Automatic renewal is not enabled."
+            f"{details_line}\n\nSign in to Blindport to renew it before expiration.\n\n"
             "This reminder was sent because expiration notices are enabled for your account."
         ),
     )
@@ -138,13 +147,29 @@ def send_reminder(
             cipher=cipher,
         )
         locked_user = session.get(User, user.id)
-        if locked_user is not None and locked_user.has_nwc:
+        current_subscription = session.get(Subscription, delivery.subscription_id)
+        if current_subscription is not None:
+            session.refresh(current_subscription)
+        if (
+            locked_user is None
+            or locked_user.is_suspended
+            or current_subscription is None
+            or current_subscription.current_period_end is None
+            or _aware(current_subscription.current_period_end)
+            != _aware(delivery.current_period_end)
+            or current_subscription.auto_renew
+            or has_period_automatic_renewal_failure(
+                session, current_subscription.id, current_subscription.current_period_end
+            )
+        ):
             if fence_reminder_lease(session, delivery, lease_token):
                 cancel_reminder(delivery, "reminder_no_longer_eligible", attempted_at)
                 session.add(delivery)
                 session.commit()
             return delivery
-        rendered = render_expiration_reminder(delivery.kind, delivery.current_period_end)
+        rendered = render_expiration_reminder(
+            delivery.kind, delivery.current_period_end, current_subscription
+        )
         adapter.send_message(
             recipient,
             rendered.subject,
