@@ -37,7 +37,7 @@ func newAccountRuntimes(accounts []staticAccount, options framedRuntimeOptions) 
 			tokenFile:   account.TokenFile,
 			stateDir:    account.StateDir,
 			mappings:    mappings,
-			coordinator: newMappingProvisioningCoordinator(mappings, options.relayOverride, false),
+			coordinator: newMappingProvisioningCoordinator(mappings, options.relayOverride, true),
 			options:     accountOptions,
 		})
 	}

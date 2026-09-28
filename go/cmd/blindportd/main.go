@@ -273,7 +273,7 @@ func main() {
 
 	var coordinator *provisioningCoordinator
 	if multiMapping {
-		coordinator = newMappingProvisioningCoordinator(mappings, *relayOverride, false)
+		coordinator = newMappingProvisioningCoordinator(mappings, *relayOverride, true)
 	} else {
 		coordinator = newLegacyProvisioningCoordinator(legacySelection{kind: *claimKind, ip: *claimIP, port: *claimPort, transport: *claimTransport, domain: *claimDomain}, *upstream, *httpChallengeUpstream, *relayOverride)
 	}

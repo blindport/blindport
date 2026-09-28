@@ -55,6 +55,22 @@ func TestLoadStaticAccountTokenRequiresPrivateRegularFile(t *testing.T) {
 	}
 }
 
+func TestStaticAccountCanKeepProvisionedMappingsWhenAnotherExpires(t *testing.T) {
+	accounts := []staticAccount{{Name: "public", Mappings: []mapping{
+		{SubscriptionID: testSubscriptionID1, Upstream: "relay:80"},
+		{SubscriptionID: testSubscriptionID2, Upstream: "port:80"},
+	}}}
+	runtimes := newAccountRuntimes(accounts, framedRuntimeOptions{})
+	if len(runtimes) != 1 {
+		t.Fatalf("account runtimes = %+v", runtimes)
+	}
+	result := provisioningResult{V1: []provisioning{{SubscriptionID: testSubscriptionID1, Product: "relay", Domain: "site.example", RelayEndpoint: "edge.example:5443"}}}
+	plans, err := runtimes[0].coordinator.plans(result)
+	if err != nil || len(plans) != 1 || plans[0].SubscriptionID != testSubscriptionID1 {
+		t.Fatalf("available account plans = %+v, %v", plans, err)
+	}
+}
+
 func TestAccountTokenPermissionWarningIncludesRuntimeIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(path, []byte("ACCOUNT-TOKEN\n"), 0o644); err != nil {

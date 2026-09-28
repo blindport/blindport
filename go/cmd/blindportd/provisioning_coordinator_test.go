@@ -136,6 +136,85 @@ func TestProvisioningReconcilerRetainsInfrastructureThenFailsClosedAndRecovers(t
 	}
 }
 
+func TestProvisioningReconcilerKeepsAvailableSubscription(t *testing.T) {
+	port := provisioning{RelayEndpoint: "edge.example:5443", Product: "port", AssignedIP: "203.0.113.20", AssignedPort: 10000, Transport: "tcp", SubscriptionID: testSubscriptionID1}
+	relay := provisioning{RelayEndpoint: "edge.example:5443", Product: "relay", Domain: "site.example", Transport: "tcp", SubscriptionID: testSubscriptionID2}
+	responses := []provisioningResult{
+		{V1: []provisioning{port, relay}, Source: provisioningOnlineV1},
+		{V1: []provisioning{relay}, Source: provisioningOnlineV1},
+		{V1: []provisioning{}, Source: provisioningOnlineV1},
+		{V1: []provisioning{port, relay}, Source: provisioningOnlineV1},
+	}
+	index := 0
+	fetch := func(context.Context) (provisioningResult, error) {
+		response := responses[index]
+		if index < len(responses)-1 {
+			index++
+		}
+		return response, nil
+	}
+	recorder := &planRecorder{ch: make(chan struct{}, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- runProvisioningReconciler(ctx, fetch, newMappingProvisioningCoordinator([]mapping{
+			{SubscriptionID: testSubscriptionID1, Upstream: "port:80"},
+			{SubscriptionID: testSubscriptionID2, Upstream: "relay:80"},
+		}, "", true), recorder, 5*time.Millisecond, func(string, error) {})
+	}()
+	for range responses {
+		select {
+		case <-recorder.ch:
+		case <-time.After(time.Second):
+			cancel()
+			t.Fatal("timed out waiting for subscription reconciliation")
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	calls := recorder.snapshot()
+	if len(calls) < 4 || len(calls[0]) != 2 || len(calls[1]) != 1 || calls[1][0].SubscriptionID != testSubscriptionID2 || len(calls[2]) != 0 || len(calls[3]) != 2 {
+		t.Fatalf("subscription reconciliations = %+v", calls)
+	}
+}
+
+func TestStaticMappingCoordinatorSkipsMissingButRejectsInvalidV2AndV3(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	instance := "11111111-2222-4333-8444-555555555555"
+	domain := "site.example"
+	claim := provisioningV2Claim{Kind: protocol.ClaimRelay, Domain: domain}
+	v2Edge := testV2Edge(now, "edge-a", "edge.example:5443", claim, testSubscriptionID1, instance, 7)
+	v2 := testV2Config(now, testSubscriptionID1, instance, 7, []provisioningV2Edge{v2Edge})
+	v2.Subscriptions[0].AssignedIP = nil
+	v2.Subscriptions[0].AssignedPort = nil
+	v2.Subscriptions[0].Domain = &domain
+	v2.Subscriptions[0].Product = "relay"
+	v3 := provisioningV3{Version: 3, Subscriptions: []provisioningV3Subscription{{
+		Domain: &domain, Transport: "tcp", Product: string(protocol.ClaimRelay), RelayHostnameScope: "exact", SubscriptionID: testSubscriptionID1,
+		Edges: []provisioningV3Edge{{ID: v2Edge.ID, Endpoint: v2Edge.Endpoint, Claim: provisioningV3Claim{Kind: protocol.ClaimRelay, Domain: domain, Scope: "exact"}, Entitlement: v2Edge.Entitlement, PaidThrough: v2Edge.PaidThrough, GraceThrough: v2Edge.GraceThrough, Generation: v2Edge.Generation}},
+	}}}
+	coordinator := newMappingProvisioningCoordinator([]mapping{
+		{SubscriptionID: testSubscriptionID1, Upstream: "relay:80"},
+		{SubscriptionID: testSubscriptionID2, Upstream: "port:80"},
+	}, "", true)
+	for _, result := range []provisioningResult{{V2: &v2}, {V3: &v3}} {
+		plans, err := coordinator.plans(result)
+		if err != nil || len(plans) != 1 || plans[0].SubscriptionID != testSubscriptionID1 {
+			t.Fatalf("available plans = %+v, %v", plans, err)
+		}
+	}
+	v2.Subscriptions[0].Edges = nil
+	if _, err := coordinator.plans(provisioningResult{V2: &v2}); err == nil {
+		t.Fatal("invalid v2 subscription was silently skipped")
+	}
+	v3.Subscriptions[0].Edges = nil
+	if _, err := coordinator.plans(provisioningResult{V3: &v3}); err == nil {
+		t.Fatal("invalid v3 subscription was silently skipped")
+	}
+}
+
 func TestProvisioningFailureClassificationIsSanitized(t *testing.T) {
 	err := &provisioningFetchError{kind: provisioningTerminal, status: 429}
 	if provisioningFailure(err) != provisioningTerminal || errors.Is(err, context.Canceled) {

@@ -197,7 +197,7 @@ func (a *dockerAgent) reconcile(ctx context.Context) error {
 			strictMappings = append(strictMappings, item)
 		}
 	}
-	staticCoordinator := newMappingProvisioningCoordinator(strictMappings, a.relayOverride, false)
+	staticCoordinator := newMappingProvisioningCoordinator(strictMappings, a.relayOverride, true)
 	plans, err := staticCoordinator.plans(result)
 	if err == nil {
 		dynamicCoordinator := newMappingProvisioningCoordinator(optionalMappings, a.relayOverride, true)

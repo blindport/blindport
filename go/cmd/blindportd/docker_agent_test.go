@@ -380,6 +380,28 @@ func TestDockerAgentV2PlansFailureHandlingAndRecovery(t *testing.T) {
 	}
 }
 
+func TestDockerAgentKeepsAvailableStaticMapping(t *testing.T) {
+	reconciler := &recordingPlanReconciler{}
+	agent := &dockerAgent{
+		docker: &fakeDockerClient{},
+		static: []mapping{
+			{SubscriptionID: testSubscriptionID1, Upstream: "relay:80"},
+			{SubscriptionID: testSubscriptionID2, Upstream: "port:80"},
+		},
+		fetchConfig: func(context.Context) ([]provisioning, error) {
+			return []provisioning{{SubscriptionID: testSubscriptionID1, Product: "relay", Domain: "site.example", RelayEndpoint: "edge.example:5443"}}, nil
+		},
+		supervisor: reconciler, pollInterval: time.Second,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now, orderCache: make(map[string]*orderCacheEntry),
+	}
+	if err := agent.reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls := reconciler.snapshots(); len(calls) != 1 || len(calls[0]) != 1 || calls[0][0].SubscriptionID != testSubscriptionID1 {
+		t.Fatalf("available Docker plans = %+v", calls)
+	}
+}
+
 func TestDockerAgentKeepsChangedOrderFallbackButStillAppliesRemoval(t *testing.T) {
 	var puts int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
