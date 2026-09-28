@@ -167,13 +167,15 @@ The reconciler also creates due automatic renewals, using the same payment servi
 as manual `method=nwc` requests.
 
 Active expiration changes authorization to `EXPIRED` immediately but retains a
-dedicated Blindport IP or Blindport Port tuple until `RESOURCE_REUSE_QUARANTINE_SECONDS` elapses.
-The expired subscription cannot open a new payment during its quarantine. A
-historical framed IP cannot open another payment at all. At
-release, an open renewal payment is reconciled first; settlement reactivates the
-same assignment, while pending or uncertain provider state retains it until the
-payment can be resolved safely. For renewable products, a later payment after
-release reserves current capacity and may receive a different assignment.
+dedicated Blindport IP or Blindport Port tuple for at least seven days after the
+paid period ends (and for any longer configured reuse quarantine). The owner
+can open a payment during that hold and recover the same assignment after
+settlement; service does not continue while unpaid. A historical framed IP
+cannot open another payment at all. A failed invoice does not release an
+existing assignment. At release, an open renewal payment is reconciled first;
+settlement reactivates the same assignment, while pending or uncertain provider
+state retains it until the payment can be resolved safely. After release, a
+new payment reserves current capacity and may receive a different assignment.
 
 Database uniqueness constraints protect dedicated IPs, shared
 `(IP, port, transport)` tuples, and one open (`PENDING` or `PROCESSING`) payment

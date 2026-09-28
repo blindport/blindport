@@ -1061,7 +1061,7 @@ def test_payment_creation_failure_retains_outbox_and_retry_recovers(
     assert recovered.json()["invoice"]
 
 
-def test_expired_port_is_unauthorized_quarantined_then_reallocated(app_client) -> None:
+def test_expired_port_is_unauthorized_but_owner_can_renew_assignment(app_client) -> None:
     client, factory = app_client
     first_token = client.post("/api/v1/signup").json()["token"]
     sub = client.post(
@@ -1094,13 +1094,12 @@ def test_expired_port_is_unauthorized_quarantined_then_reallocated(app_client) -
     ).json()
     assert old_resolve["port_leases"] == []
 
-    retry_during_quarantine = client.post(
+    renewal = client.post(
         "/api/v1/payments",
         json={"subscription_id": sub["id"], "method": "lightning"},
         headers=_auth(first_token),
     )
-    assert retry_during_quarantine.status_code == 409
-    assert "assignment is quarantined; retry after" in retry_during_quarantine.json()["detail"]
+    assert renewal.status_code == 200, renewal.text
 
     second_token = client.post("/api/v1/signup").json()["token"]
     second_sub = client.post(
@@ -1117,22 +1116,12 @@ def test_expired_port_is_unauthorized_quarantined_then_reallocated(app_client) -
         10001,
     )
 
-    with Session(engine) as session:
-        stored = session.exec(
-            select(Subscription).where(Subscription.public_id == UUID(sub["id"]))
-        ).one()
-        assert stored is not None
-        stored.resource_quarantined_until = datetime.now(UTC) - timedelta(seconds=1)
-        session.add(stored)
-        session.commit()
-
-    released_retry = client.post(
-        "/api/v1/payments",
-        json={"subscription_id": sub["id"], "method": "lightning"},
-        headers=_auth(first_token),
-    )
-    assert released_retry.status_code == 200, released_retry.text
+    factory.get_lightning_adapter().mark_paid(renewal.json()["payment_hash"])
+    paid = client.get(f"/api/v1/payments/{renewal.json()['id']}", headers=_auth(first_token))
+    assert paid.status_code == 200
+    assert paid.json()["status"] == "paid"
     current = client.get("/api/v1/me", headers=_auth(first_token)).json()["subscriptions"][0]
+    assert current["status"] == "active"
     assert (current["assigned_ip"], current["assigned_port"]) == (
         "203.0.113.20",
         10000,

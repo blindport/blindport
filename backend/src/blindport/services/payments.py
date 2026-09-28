@@ -195,6 +195,11 @@ def _payment_eligibility_deadline(subscription: Subscription) -> datetime | None
         deadline
         for deadline in (
             _aware(subscription.reservation_expires_at),
+            (
+                _aware(subscription.resource_quarantined_until)
+                if subscription.status == SubscriptionStatus.EXPIRED
+                else None
+            ),
             subs.domain_payment_eligibility_deadline(subscription),
             (
                 _aware(subscription.upgrade_source_period_end)
@@ -1611,7 +1616,14 @@ def _finalize_payment(
         subscription.product in (ProductType.IP, ProductType.PORT)
         and subscription.resource_quarantined_until is not None
         and subscription.reservation_payment_id is None
-        and _payment_started_before_expiry(payment, subscription)
+        and (
+            _payment_started_before_expiry(payment, subscription)
+            or (
+                _aware(payment.created_at) is not None
+                and _aware(subscription.resource_quarantined_until) is not None
+                and _aware(payment.created_at) <= _aware(subscription.resource_quarantined_until)
+            )
+        )
     )
     if is_renewal:
         subs.renew_subscription(session, subscription, payment.period_days)

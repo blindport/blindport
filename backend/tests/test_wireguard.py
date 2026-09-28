@@ -724,7 +724,7 @@ def test_ip_lease_lifecycle_and_reassignment_history(app_client, monkeypatch) ->
         assert first_lease.public_id == first_id
         assert first_lease.state == IPLeaseState.ACTIVE
 
-        stored.current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+        stored.current_period_end = datetime.now(UTC) - timedelta(days=8)
         session.add(stored)
         session.commit()
         subscription_service.expire_elapsed_subscriptions(session, [stored])
@@ -755,6 +755,54 @@ def test_ip_lease_lifecycle_and_reassignment_history(app_client, monkeypatch) ->
         assert leases[0].released_at is not None
         assert leases[1].released_at is None
         assert leases[0].address == leases[1].address == "198.51.100.20"
+
+
+def test_expired_ip_owner_can_renew_the_existing_lease(app_client, monkeypatch) -> None:
+    client, factory = app_client
+    _configure_wireguard(monkeypatch)
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _activate_routed_ip(client, factory, token)
+
+    from blindport.core.models import IPLease, IPLeaseState
+    from blindport.db import engine
+    from blindport.services.subscriptions import expire_elapsed_subscriptions
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        lease = session.exec(select(IPLease)).one()
+        assert stored is not None
+        original_id = lease.public_id
+        stored.current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+        expire_elapsed_subscriptions(session, [stored])
+        session.refresh(stored)
+        session.refresh(lease)
+        assert lease.state == IPLeaseState.QUARANTINED
+        assert stored.resource_quarantined_until is not None
+        assert stored.resource_quarantined_until >= stored.current_period_end + timedelta(days=7)
+
+    renewal = client.post(
+        "/api/v1/payments",
+        json={"subscription_id": subscription["id"], "method": "lightning"},
+        headers=_auth(token),
+    )
+    assert renewal.status_code == 200, renewal.text
+    factory.get_lightning_adapter().mark_paid(renewal.json()["payment_hash"])
+    assert (
+        client.get(f"/api/v1/payments/{renewal.json()['id']}", headers=_auth(token)).json()[
+            "status"
+        ]
+        == "paid"
+    )
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        lease = session.exec(select(IPLease)).one()
+        assert stored is not None
+        assert stored.status.value == "active"
+        assert stored.assigned_ip == lease.address == "198.51.100.20"
+        assert lease.public_id == original_id
+        assert lease.state == IPLeaseState.ACTIVE
 
 
 def test_port_reservation_does_not_create_ip_lease(app_client) -> None:

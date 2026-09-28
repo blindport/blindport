@@ -254,8 +254,11 @@ for each distinct backend account. Without Docker discovery, every account must
 contain at least one static mapping. Version 3 does not support routed WireGuard
 or legacy single-subscription flags.
 
-Every configured subscription must appear in the backend's active provisioning
-response. Blindport Relay mappings create one independent tunnel worker for every
+Only subscriptions in the backend's active provisioning response start tunnel
+workers. An expired or otherwise unavailable static mapping is skipped without
+stopping other active mappings; it resumes after the subscription is renewed.
+Invalid provisioning still fails closed and stops that account's workers.
+Blindport Relay mappings create one independent tunnel worker for every
 provisioned relay endpoint. Blindport Port and already-active historical framed
 IP provisioning contains only the primary relay because those identities are
 tied to provider-specific IP/socket inventory. New WireGuard IP subscriptions do

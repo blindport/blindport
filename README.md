@@ -251,10 +251,11 @@ python3.14 -m piptools compile -Uv --generate-hashes --strip-extras --allow-unsa
 The backend reserves scarce capacity before creating an external payment
 request. Payment settlement commits that reservation into an active lease.
 Unpaid reservation timeouts release only the owning payment's hold. Active
-expiration removes authorization immediately, then quarantines dedicated Blindport IP and
-Blindport Port assignments before reuse. Expired Port and Relay subscriptions can
-be paid again after quarantine or renewal grace as applicable. Historical framed
-IP subscriptions cannot be paid again.
+expiration removes authorization immediately, then reserves dedicated Blindport
+IP and Blindport Port assignments for the owner to renew for at least seven days
+after expiry (or a longer reuse quarantine). Payment restores the same assignment;
+service does not continue while unpaid. Relay names have a separate renewal grace.
+Historical framed IP subscriptions cannot be paid again.
 
 Production receives payments through the fixed Coinos LNURL endpoint. It accepts only
 signed, exact-amount mainnet BOLT11 invoices with the expected LNURL metadata hash,

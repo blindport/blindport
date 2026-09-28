@@ -536,7 +536,12 @@ def expire_elapsed_subscriptions(
                 if sub.product == ProductType.IP
                 else settings.RESOURCE_REUSE_QUARANTINE_SECONDS
             )
-            quarantine_until = now + timedelta(seconds=quarantine_seconds)
+            # The safety quarantine and the owner's renewal opportunity serve
+            # different purposes. Neither may shorten the other.
+            quarantine_until = max(
+                now + timedelta(seconds=quarantine_seconds),
+                (period_end or now) + timedelta(days=7),
+            )
             values["resource_quarantined_until"] = quarantine_until
         elif sub.product == ProductType.RELAY:
             values["domain_renewal_grace_expires_at"] = (period_end or now) + timedelta(
@@ -1003,32 +1008,76 @@ def reap_elapsed_resource_holds(session: Session) -> None:
     ).all()
     for sub in quarantined:
         deadline = _aware(sub.resource_quarantined_until)
-        if sub.status != SubscriptionStatus.EXPIRED or deadline is None or deadline > now:
+        if sub.status != SubscriptionStatus.EXPIRED or deadline is None:
+            continue
+        period_end = _aware(sub.current_period_end)
+        if deadline > now and (
+            period_end is None
+            or deadline >= period_end + timedelta(days=7)
+            or not sub.assigned_ip
+            or (sub.product == ProductType.PORT and not sub.assigned_port)
+        ):
+            continue
+        if deadline <= now:
+            open_payment = session.exec(
+                select(Payment).where(
+                    Payment.subscription_id == sub.id,
+                    Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
+                )
+            ).first()
+            if open_payment is not None:
+                if open_payment.status == PaymentStatus.PROCESSING:
+                    continue
+                try:
+                    from .payments import check_and_settle_payment
+
+                    check_and_settle_payment(session, open_payment)
+                except Exception as e:
+                    session.rollback()
+                    logger.warning(
+                        "retaining expired {} assignment for subscription {} after payment "
+                        "reconciliation failed: {}",
+                        sub.product.value,
+                        sub.public_id,
+                        e,
+                    )
+                    continue
+
+        session.refresh(sub)
+        if sub.status != SubscriptionStatus.EXPIRED:
+            continue
+        # Old installations may have recorded only the shorter safety hold.
+        # Extend a provably owned assignment before considering its release.
+        if not sub.assigned_ip or (sub.product == ProductType.PORT and not sub.assigned_port):
+            continue
+        period_end = _aware(sub.current_period_end)
+        if period_end is None:
+            continue
+        renewal_end = period_end + timedelta(days=7)
+        if renewal_end > deadline:
+            result = session.execute(
+                update(Subscription)
+                .where(
+                    Subscription.id == sub.id,
+                    Subscription.status == SubscriptionStatus.EXPIRED,
+                    Subscription.resource_quarantined_until == sub.resource_quarantined_until,
+                )
+                .values(resource_quarantined_until=renewal_end, updated_at=now)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount == 1:
+                if sub.product == ProductType.IP:
+                    lease = ip_leases.current_lease(session, sub.id)
+                    if lease is not None and lease.address == sub.assigned_ip:
+                        lease.quarantine_until = renewal_end
+                        session.add(lease)
+                session.commit()
+            else:
+                session.rollback()
             continue
 
-        open_payment = session.exec(
-            select(Payment).where(
-                Payment.subscription_id == sub.id,
-                Payment.status.in_((PaymentStatus.PENDING, PaymentStatus.PROCESSING)),  # type: ignore[union-attr]
-            )
-        ).first()
-        if open_payment is not None:
-            if open_payment.status == PaymentStatus.PROCESSING:
-                continue
-            try:
-                from .payments import check_and_settle_payment
-
-                check_and_settle_payment(session, open_payment)
-            except Exception as e:
-                session.rollback()
-                logger.warning(
-                    "retaining expired {} assignment for subscription {} after payment "
-                    "reconciliation failed: {}",
-                    sub.product.value,
-                    sub.public_id,
-                    e,
-                )
-                continue
+        if deadline > now:
+            continue
 
         session.expire_all()
         open_payment_exists = (
@@ -1044,8 +1093,9 @@ def reap_elapsed_resource_holds(session: Session) -> None:
             .where(
                 Subscription.id == sub.id,
                 Subscription.status == SubscriptionStatus.EXPIRED,
-                Subscription.resource_quarantined_until.is_not(None),  # type: ignore[union-attr]
+                Subscription.resource_quarantined_until == sub.resource_quarantined_until,
                 Subscription.resource_quarantined_until <= now,  # type: ignore[operator]
+                Subscription.updated_at == sub.updated_at,
                 ~open_payment_exists,
             )
             .values(
@@ -1152,7 +1202,46 @@ def reserve_subscription_resource(
     if sub.status == SubscriptionStatus.ACTIVE or sub.product == ProductType.RELAY:
         return False
     quarantine_end = _aware(sub.resource_quarantined_until)
-    if sub.assigned_ip and quarantine_end and quarantine_end > _utcnow():
+    if sub.status == SubscriptionStatus.EXPIRED and sub.assigned_ip and quarantine_end:
+        if (
+            quarantine_end > _utcnow()
+            and (
+                sub.product == ProductType.IP
+                or (sub.product == ProductType.PORT and sub.assigned_port)
+            )
+            and sub.reservation_payment_id is None
+            and sub.reservation_expires_at is None
+        ):
+            if sub.product == ProductType.IP:
+                lease = ip_leases.current_lease(session, sub.id)
+                if lease is None or lease.address != sub.assigned_ip:
+                    raise NoCapacityError("Blindport IP lease is no longer available")
+            # Claim the existing hold conditionally before staging an invoice.
+            # An interleaved reaper may have released the assignment after the
+            # caller loaded it; a stale ORM write would create a payable invoice
+            # without the original tuple. This is not a payment reservation:
+            # failed invoices must not release the owner's existing hold.
+            now = _utcnow()
+            result = session.execute(
+                update(Subscription)
+                .where(
+                    Subscription.id == sub.id,
+                    Subscription.status == SubscriptionStatus.EXPIRED,
+                    Subscription.assigned_ip == sub.assigned_ip,
+                    Subscription.assigned_port == sub.assigned_port,
+                    Subscription.resource_quarantined_until == sub.resource_quarantined_until,
+                    Subscription.resource_quarantined_until > now,  # type: ignore[operator]
+                    Subscription.updated_at == sub.updated_at,
+                    Subscription.reservation_payment_id.is_(None),  # type: ignore[union-attr]
+                    Subscription.reservation_expires_at.is_(None),  # type: ignore[union-attr]
+                )
+                .values(updated_at=now)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise NoCapacityError("held assignment changed before renewal payment")
+            session.refresh(sub)
+            return True
         raise NoCapacityError(
             f"{sub.product.value} assignment is quarantined; retry after "
             f"{quarantine_end.isoformat()}"

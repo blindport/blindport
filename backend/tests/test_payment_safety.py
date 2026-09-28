@@ -285,6 +285,149 @@ def test_elapsed_quarantine_retains_assignment_for_open_renewal(app_client) -> N
         assert stored.resource_quarantined_until is not None
 
 
+@pytest.mark.parametrize("old_hold_seconds", [-1, 60])
+def test_legacy_short_port_hold_is_extended_before_payment(
+    app_client, old_hold_seconds: int
+) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _subscription(client, token)
+    initial = _payment(client, token, subscription["id"])
+    factory.get_lightning_adapter().mark_paid(initial["payment_hash"])
+    client.get(f"/api/v1/payments/{initial['id']}", headers=_auth(token))
+
+    from blindport.db import engine
+    from blindport.services.subscriptions import (
+        expire_elapsed_subscriptions,
+        reap_elapsed_resource_holds,
+    )
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.current_period_end = datetime.now(UTC) - timedelta(hours=1)
+        session.add(stored)
+        session.commit()
+        expire_elapsed_subscriptions(session, [stored])
+        old_hold = datetime.now(UTC) + timedelta(seconds=old_hold_seconds)
+        stored.resource_quarantined_until = old_hold
+        session.add(stored)
+        session.commit()
+        reap_elapsed_resource_holds(session)
+        session.refresh(stored)
+        assert stored.resource_quarantined_until is not None
+        assert stored.resource_quarantined_until.replace(tzinfo=UTC) > datetime.now(
+            UTC
+        ) + timedelta(days=6)
+
+    renewal = _payment(client, token, subscription["id"])
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        assert stored.assigned_port == 10000
+        assert stored.reservation_payment_id is None
+        assert stored.resource_quarantined_until is not None
+
+    from blindport.core.models import Payment
+
+    with Session(engine) as session:
+        payment = session.get(Payment, renewal["id"])
+        assert payment is not None
+        payment.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(payment)
+        session.commit()
+    expired = client.get(f"/api/v1/payments/{renewal['id']}", headers=_auth(token))
+    assert expired.json()["status"] == "expired"
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        assert stored.assigned_port == 10000
+        assert stored.resource_quarantined_until is not None
+    retry = _payment(client, token, subscription["id"])
+    factory.get_lightning_adapter().mark_paid(retry["payment_hash"])
+    assert (
+        client.get(f"/api/v1/payments/{retry['id']}", headers=_auth(token)).json()["status"]
+        == "paid"
+    )
+
+
+def test_port_hold_releases_only_after_renewal_window(app_client) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _subscription(client, token)
+    initial = _payment(client, token, subscription["id"])
+    factory.get_lightning_adapter().mark_paid(initial["payment_hash"])
+    client.get(f"/api/v1/payments/{initial['id']}", headers=_auth(token))
+
+    from blindport.db import engine
+    from blindport.services.subscriptions import (
+        expire_elapsed_subscriptions,
+        reap_elapsed_resource_holds,
+    )
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.current_period_end = datetime.now(UTC) - timedelta(days=8)
+        session.add(stored)
+        session.commit()
+        expire_elapsed_subscriptions(session, [stored])
+        # Expiration was processed late; the safety hold still runs from processing.
+        stored.resource_quarantined_until = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+        reap_elapsed_resource_holds(session)
+        session.refresh(stored)
+        assert stored.assigned_ip is None
+        assert stored.assigned_port is None
+        assert stored.resource_quarantined_until is None
+
+
+def test_stale_owner_cannot_start_payment_after_assignment_release(app_client) -> None:
+    client, factory = app_client
+    token = client.post("/api/v1/signup").json()["token"]
+    subscription = _subscription(client, token)
+    initial = _payment(client, token, subscription["id"])
+    factory.get_lightning_adapter().mark_paid(initial["payment_hash"])
+    client.get(f"/api/v1/payments/{initial['id']}", headers=_auth(token))
+
+    from sqlalchemy import update
+
+    from blindport.core.models import Subscription
+    from blindport.db import engine
+    from blindport.services.subscriptions import (
+        NoCapacityError,
+        expire_elapsed_subscriptions,
+        reserve_subscription_resource,
+    )
+
+    with Session(engine) as session:
+        stored = subscription_by_public_id(session, subscription["id"])
+        assert stored is not None
+        stored.current_period_end = datetime.now(UTC) - timedelta(seconds=1)
+        session.add(stored)
+        session.commit()
+        expire_elapsed_subscriptions(session, [stored])
+        session.refresh(stored)
+        assert stored.assigned_port == 10000
+        # Simulate a reaper changing the row after payment creation loaded it,
+        # without synchronizing the ORM's stale subscription object.
+        session.execute(
+            update(Subscription)
+            .where(Subscription.id == stored.id)
+            .values(
+                assigned_ip=None,
+                assigned_port=None,
+                resource_quarantined_until=None,
+                updated_at=datetime.now(UTC),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        with pytest.raises(NoCapacityError, match="held assignment changed"):
+            reserve_subscription_resource(session, stored, 12345)
+        session.rollback()
+
+
 @pytest.mark.parametrize("method", ["lightning", "nwc"])
 def test_relay_invoice_and_local_expiry_are_bounded_by_claim(
     app_client, monkeypatch, method: str
