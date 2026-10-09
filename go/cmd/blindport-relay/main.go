@@ -65,6 +65,7 @@ type relay struct {
 	handlers            handlerTracker
 	shutdownTimeout     time.Duration
 	maxStreamsPerTunnel int
+	streamEvictionIdle  time.Duration // zero disables Relay stream eviction
 	udpAssociationIdle  time.Duration
 	offlineEntitlements *offlineEntitlementConfig
 	bandwidth           *bandwidthReporter
@@ -223,6 +224,7 @@ func main() {
 		metrics:             metrics,
 		shutdownTimeout:     *shutdownTimeout,
 		maxStreamsPerTunnel: *maxStreamsPerTunnel,
+		streamEvictionIdle:  relayStreamEvictionIdle,
 		udpAssociationIdle:  *udpAssociationIdle,
 		offlineEntitlements: offlineEntitlements,
 		tunnels:             map[string]*tunnel.Conn{},
@@ -609,6 +611,15 @@ func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello
 	if flowControl {
 		t.EnableStreamFlowControl()
 	}
+	if hello.Claim.Kind == protocol.ClaimRelay && r.streamEvictionIdle > 0 {
+		// Relay claims carry HTTP(S), where idle keep-alive connections are
+		// routine and clients reconnect transparently. Without eviction, idle
+		// connections (or a client deliberately holding them) exhaust the stream
+		// limit and every new visitor is refused. Port and IP claims carry
+		// arbitrary protocols, such as SSH, whose idle sessions must survive.
+		index := claimKindIndex(protocol.ClaimRelay)
+		t.EnableIdleStreamEviction(r.streamEvictionIdle, func() { r.metrics.streamEvictions[index].Add(1) })
+	}
 	handshakeComplete()
 	key := claimKey(hello.Claim)
 	r.registerTunnel(key, hello.Claim.Kind, t, authorization.subscriptionID)
@@ -630,6 +641,10 @@ func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello
 	cancel()
 	<-reauthDone
 }
+
+// relayStreamEvictionIdle is the minimum payload idle time before a Relay
+// stream may be evicted to admit a new connection at the per-tunnel limit.
+const relayStreamEvictionIdle = 30 * time.Second
 
 func hasOfflineEntitlementCapability(hello *protocol.Frame, claim *protocol.Claim) bool {
 	if claim != nil && claim.Scope == protocol.RelayHostnameScopeWildcard {

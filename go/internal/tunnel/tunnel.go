@@ -31,6 +31,8 @@ type Conn struct {
 	onOpen       func(stream *Stream) // server-side handler
 	onUDPDrop    func()
 	onClose      func()
+	evictIdle    time.Duration
+	onEvict      func()
 	halfClose    bool
 	flowControl  bool
 	rxByteLimit  int64
@@ -83,6 +85,17 @@ func (c *Conn) SetUDPDropHandler(handler func()) {
 	c.onUDPDrop = handler
 }
 
+// EnableIdleStreamEviction lets a locally opened stream replace the stream with
+// the oldest payload activity when the stream limit is reached, provided that
+// stream has carried no payload for at least minIdle. Peer-opened streams never
+// evict. The evicted stream's reads fail with ErrStreamEvicted, so proxies close
+// both endpoints. onEvict, if set, observes each eviction. It must be called
+// before Run and before streams are opened.
+func (c *Conn) EnableIdleStreamEviction(minIdle time.Duration, onEvict func()) {
+	c.evictIdle = minIdle
+	c.onEvict = onEvict
+}
+
 // EnableTCPHalfClose enables the negotiated TCP half-close extension. It must
 // only be called when both peers selected protocol.CapabilityTCPHalfClose.
 func (c *Conn) EnableTCPHalfClose() {
@@ -130,8 +143,15 @@ func (c *Conn) OpenStreamWithDestinationAddress(proto, src, dst, destinationAddr
 	s.Source = src
 	s.Destination = dst
 	s.DestinationAddress = destinationAddress
-	if err := c.addStream(s); err != nil {
+	evicted, err := c.insertStream(s, c.evictIdle > 0)
+	if err != nil {
 		return nil, err
+	}
+	if evicted != nil {
+		evicted.evict()
+		if c.onEvict != nil {
+			c.onEvict()
+		}
 	}
 	if err := c.WriteFrame(&protocol.Frame{Type: protocol.TypeOpen, Stream: id, Proto: string(transport), Src: src, Dst: dst, DstAddr: destinationAddress}); err != nil {
 		c.removeStream(id)
@@ -278,19 +298,40 @@ func (c *Conn) closeStreams() {
 }
 
 func (c *Conn) addStream(s *Stream) error {
+	_, err := c.insertStream(s, false)
+	return err
+}
+
+// insertStream registers s. At the stream limit with evictIdle set, it
+// atomically replaces the least recently active stream idle for at least
+// c.evictIdle and returns it; the caller must call evict on it.
+func (c *Conn) insertStream(s *Stream, evictIdle bool) (*Stream, error) {
 	if s.ID == 0 {
-		return errors.New("zero stream ID")
+		return nil, errors.New("zero stream ID")
 	}
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 	if _, ok := c.streams[s.ID]; ok {
-		return fmt.Errorf("duplicate stream ID %d", s.ID)
+		return nil, fmt.Errorf("duplicate stream ID %d", s.ID)
 	}
+	var victim *Stream
 	if len(c.streams) >= c.maxStreams {
-		return fmt.Errorf("concurrent stream limit %d reached", c.maxStreams)
+		if evictIdle {
+			cutoff := time.Now().Add(-c.evictIdle).UnixNano()
+			for _, candidate := range c.streams {
+				last := candidate.lastActivity.Load()
+				if last <= cutoff && (victim == nil || last < victim.lastActivity.Load()) {
+					victim = candidate
+				}
+			}
+		}
+		if victim == nil {
+			return nil, fmt.Errorf("concurrent stream limit %d reached", c.maxStreams)
+		}
+		delete(c.streams, victim.ID)
 	}
 	c.streams[s.ID] = s
-	return nil
+	return victim, nil
 }
 
 func (c *Conn) getStream(id uint32) (*Stream, bool) {
@@ -346,6 +387,27 @@ type Stream struct {
 	windowMu           sync.Mutex
 	windowPending      uint32
 	windowSending      bool
+	lastActivity       atomic.Int64 // Unix nanoseconds of the latest payload in either direction
+	evicted            atomic.Bool
+}
+
+// ErrStreamEvicted is returned by reads on a stream evicted to admit a new one.
+var ErrStreamEvicted = errors.New("stream evicted after idling at the tunnel stream limit")
+
+func (s *Stream) touch() {
+	s.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (s *Stream) evict() {
+	s.evicted.Store(true)
+	s.abort()
+}
+
+func (s *Stream) closedReadError() error {
+	if s.evicted.Load() {
+		return ErrStreamEvicted
+	}
+	return io.EOF
 }
 
 func newStream(c *Conn, id uint32) *Stream {
@@ -356,6 +418,7 @@ func newStream(c *Conn, id uint32) *Stream {
 		doneCh:       make(chan struct{}),
 		creditNotify: make(chan struct{}, 1),
 	}
+	s.touch()
 	s.configureTransport(protocol.TransportTCP)
 	return s
 }
@@ -410,6 +473,7 @@ func (s *Stream) queuePayload(payload []byte, byteLimit int64, frameLimit int) b
 	s.rxQueue = append(s.rxQueue, payload)
 	s.rxQueued += int64(len(payload))
 	s.rxFrames++
+	s.touch()
 	s.notifyRead()
 	return true
 }
@@ -491,7 +555,7 @@ func (s *Stream) Read(p []byte) (int, error) {
 		closed := s.rxClosed.Load()
 		s.rxMu.Unlock()
 		if closed {
-			return 0, io.EOF
+			return 0, s.closedReadError()
 		}
 		<-s.rxNotify
 	}
@@ -528,6 +592,7 @@ func (s *Stream) WriteContext(ctx context.Context, p []byte) (int, error) {
 		if err := s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeData, Stream: s.ID, Data: p[:n]}); err != nil {
 			return written, err
 		}
+		s.touch()
 		written += n
 		p = p[n:]
 	}
@@ -626,7 +691,7 @@ func (s *Stream) ReadDatagram(p []byte) (int, error) {
 		closed := s.rxClosed.Load()
 		s.rxMu.Unlock()
 		if closed {
-			return 0, io.EOF
+			return 0, s.closedReadError()
 		}
 		<-s.rxNotify
 	}
@@ -653,6 +718,7 @@ func (s *Stream) WriteDatagramContext(ctx context.Context, p []byte) (int, error
 	if err := s.conn.WriteFrame(&protocol.Frame{Type: protocol.TypeDatagram, Stream: s.ID, Data: p}); err != nil {
 		return 0, err
 	}
+	s.touch()
 	return len(p), nil
 }
 

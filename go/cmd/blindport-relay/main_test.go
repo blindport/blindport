@@ -691,6 +691,106 @@ func TestForwardToRelayReportsTunnelStreamLimit(t *testing.T) {
 	}
 }
 
+func TestIdleStreamEvictionAppliesOnlyToRelayClaims(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		claim *protocol.Claim
+		evict bool
+	}{
+		{name: "relay", claim: &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "sensitive.example"}, evict: true},
+		{name: "ip", claim: &protocol.Claim{Kind: protocol.ClaimIP, IP: "203.0.113.10"}, evict: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := &relay{
+				log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+				metrics: &relayMetrics{health: newRelayHealth(false, time.Minute, time.Minute)},
+				tunnels: map[string]*tunnel.Conn{}, tunnelSubscriptions: map[*tunnel.Conn]string{},
+				allTunnels: map[*tunnel.Conn]struct{}{}, resolver: &allowedResolver{},
+				reauthInterval: time.Hour, reauthMaxStale: time.Hour,
+				maxStreamsPerTunnel: 1, streamEvictionIdle: time.Nanosecond,
+			}
+			agentRaw, relayRaw := net.Pipe()
+			established := make(chan struct{})
+			go func() {
+				r.establishControlTunnel(ctx, relayRaw, &protocol.Frame{Type: protocol.TypeHello, Claim: test.claim},
+					controlAuthorization{subscriptionID: testSubscriptionOne}, func() {})
+				close(established)
+			}()
+			if reply, err := protocol.ReadFrame(agentRaw); err != nil || reply.Type != protocol.TypeHelloOK {
+				t.Fatalf("HELLO reply = %+v, %v", reply, err)
+			}
+			agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) {})
+			go func() { _ = agent.Run() }()
+			defer func() {
+				_ = agent.Close()
+				<-established
+			}()
+			key := claimKey(test.claim)
+			deadline := time.Now().Add(time.Second)
+			for r.getTunnel(key) == nil {
+				if time.Now().After(deadline) {
+					t.Fatal("tunnel was not registered")
+				}
+				time.Sleep(time.Millisecond)
+			}
+
+			firstClient, firstIngress := net.Pipe()
+			defer firstClient.Close()
+			firstDone := make(chan bool, 1)
+			go func() { firstDone <- r.forwardTo(firstIngress, key, "destination") }()
+			for r.metrics.streams[claimKindIndex(test.claim.Kind)].total.Load() == 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("first stream was not opened")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			time.Sleep(time.Millisecond)
+
+			secondClient, secondIngress := net.Pipe()
+			defer secondClient.Close()
+			secondDone := make(chan bool, 1)
+			go func() { secondDone <- r.forwardTo(secondIngress, key, "destination") }()
+			index := claimKindIndex(test.claim.Kind)
+			if !test.evict {
+				select {
+				case ok := <-secondDone:
+					if ok {
+						t.Fatal("non-Relay claim admitted a stream beyond its limit")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("non-Relay claim admitted a stream beyond its limit")
+				}
+				if r.metrics.streamEvictions[index].Load() != 0 || r.metrics.streamOpenFailures[index].Load() != 1 {
+					t.Fatalf("evictions/open failures = %d/%d", r.metrics.streamEvictions[index].Load(), r.metrics.streamOpenFailures[index].Load())
+				}
+				return
+			}
+			select {
+			case ok := <-firstDone:
+				if !ok {
+					t.Fatal("evicted forward reported failure")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("evicted ingress connection remained open")
+			}
+			if r.metrics.streamEvictions[index].Load() != 1 || r.metrics.streamOpenFailures[index].Load() != 0 {
+				t.Fatalf("evictions/open failures = %d/%d", r.metrics.streamEvictions[index].Load(), r.metrics.streamOpenFailures[index].Load())
+			}
+			_ = secondClient.Close()
+			select {
+			case ok := <-secondDone:
+				if !ok {
+					t.Fatal("admitted forward reported failure")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("admitted forward did not finish")
+			}
+		})
+	}
+}
+
 func TestParseRelayConfig(t *testing.T) {
 	cfg, err := parseRelayConfig("203.0.113.10,203.0.113.11", "80,443", "203.0.113.20", "10000-10007", "11000-11007")
 	if err != nil {

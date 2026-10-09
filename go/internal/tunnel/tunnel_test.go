@@ -848,6 +848,105 @@ func TestConfiguredStreamLimit(t *testing.T) {
 	}
 }
 
+func TestIdleStreamEvictionReplacesLeastRecentlyActiveStream(t *testing.T) {
+	local, remote := net.Pipe()
+	connection, err := NewWithStreamLimit(local, nil, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evictions atomic.Int32
+	connection.EnableIdleStreamEviction(time.Minute, func() { evictions.Add(1) })
+	peerStreams := make(chan *Stream, 3)
+	peer := New(remote, func(stream *Stream) { peerStreams <- stream })
+	go func() { _ = connection.Run() }()
+	go func() { _ = peer.Run() }()
+	defer connection.Close()
+	defer peer.Close()
+
+	first, err := connection.OpenStream("tcp", "198.51.100.1:1000", "domain:example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := connection.OpenStream("tcp", "198.51.100.2:1000", "domain:example.test:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerFirst, peerSecond := <-peerStreams, <-peerStreams
+	if peerFirst.ID != first.ID || peerSecond.ID != second.ID {
+		t.Fatalf("peer stream IDs = %d, %d", peerFirst.ID, peerSecond.ID)
+	}
+
+	if _, err := connection.OpenStream("tcp", "198.51.100.3:1000", "domain:example.test:443"); err == nil || !strings.Contains(err.Error(), "concurrent stream limit 2 reached") {
+		t.Fatalf("open with only recently active streams = %v", err)
+	}
+	if evictions.Load() != 0 {
+		t.Fatal("recently active stream was evicted")
+	}
+
+	now := time.Now()
+	first.lastActivity.Store(now.Add(-3 * time.Minute).UnixNano())
+	second.lastActivity.Store(now.Add(-2 * time.Minute).UnixNano())
+	// Payload received from the peer refreshes the older stream, leaving the
+	// second stream as the least recently active one.
+	if _, err := peerFirst.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(first, make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+
+	admitted, err := connection.OpenStream("tcp", "198.51.100.3:1000", "domain:example.test:443")
+	if err != nil {
+		t.Fatalf("open with an idle stream at the limit = %v", err)
+	}
+	if evictions.Load() != 1 {
+		t.Fatalf("evictions = %d, want 1", evictions.Load())
+	}
+	if _, err := second.Read(make([]byte, 1)); !errors.Is(err, ErrStreamEvicted) {
+		t.Fatalf("evicted stream read error = %v", err)
+	}
+	for _, stream := range []*Stream{first, admitted} {
+		if _, ok := connection.getStream(stream.ID); !ok {
+			t.Fatalf("stream %d was removed", stream.ID)
+		}
+	}
+	peerClosed := make(chan error, 1)
+	go func() {
+		_, err := peerSecond.Read(make([]byte, 1))
+		peerClosed <- err
+	}()
+	select {
+	case err := <-peerClosed:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("peer evicted stream read error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("peer did not receive CLOSE for the evicted stream")
+	}
+	if peerAdmitted := <-peerStreams; peerAdmitted.ID != admitted.ID {
+		t.Fatalf("peer admitted stream ID = %d, want %d", peerAdmitted.ID, admitted.ID)
+	}
+}
+
+func TestPeerOpenedStreamsNeverEvict(t *testing.T) {
+	connection, err := NewWithStreamLimit(&bufferConn{}, func(*Stream) {}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.EnableIdleStreamEviction(time.Nanosecond, func() { t.Error("peer OPEN evicted a stream") })
+	idle := newStream(connection, 1)
+	idle.lastActivity.Store(time.Now().Add(-time.Hour).UnixNano())
+	if err := connection.addStream(idle); err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.addStream(newStream(connection, 2)); err == nil || !strings.Contains(err.Error(), "limit 1") {
+		t.Fatalf("peer stream beyond limit error = %v", err)
+	}
+	if _, ok := connection.getStream(idle.ID); !ok {
+		t.Fatal("idle stream was removed by a peer OPEN")
+	}
+}
+
 func TestFrameWriteFailureClosesTunnel(t *testing.T) {
 	local, peer := net.Pipe()
 	connection := New(local, nil)
