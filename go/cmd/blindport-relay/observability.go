@@ -56,15 +56,16 @@ type relayMetrics struct {
 		active   atomic.Int64
 		rejected atomic.Uint64
 	}
-	tunnels     [claimKindCount]metricPair
-	streams     [claimKindCount]metricPair
-	bytes       [claimKindCount][2]atomic.Uint64
-	control     [controlOutcomeCount]atomic.Uint64
-	auth        [authOutcomeCount]atomic.Uint64
-	entitlement [entitlementOutcomeCount]atomic.Uint64
-	sni         [sniOutcomeCount]atomic.Uint64
-	challenge   [challengeOutcomeCount]atomic.Uint64
-	udp         struct {
+	tunnels            [claimKindCount]metricPair
+	streams            [claimKindCount]metricPair
+	streamOpenFailures [claimKindCount]atomic.Uint64
+	bytes              [claimKindCount][2]atomic.Uint64
+	control            [controlOutcomeCount]atomic.Uint64
+	auth               [authOutcomeCount]atomic.Uint64
+	entitlement        [entitlementOutcomeCount]atomic.Uint64
+	sni                [sniOutcomeCount]atomic.Uint64
+	challenge          [challengeOutcomeCount]atomic.Uint64
+	udp                struct {
 		associations metricPair
 		rejected     atomic.Uint64
 		dropped      atomic.Uint64
@@ -272,6 +273,10 @@ func (m *relayMetrics) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 		writeMetric(w, "blindport_relay_tunnels_total", "claim", label, m.tunnels[kind].total.Load())
 		writeMetric(w, "blindport_relay_streams_active", "claim", label, m.streams[kind].active.Load())
 		writeMetric(w, "blindport_relay_streams_total", "claim", label, m.streams[kind].total.Load())
+	}
+	writeHelpType(w, "blindport_relay_stream_open_failures_total", "Ingress connections refused because the matching tunnel could not open a stream, such as at the per-tunnel stream limit.", "counter")
+	for kind, label := range claimKindLabels {
+		writeMetric(w, "blindport_relay_stream_open_failures_total", "claim", label, m.streamOpenFailures[kind].Load())
 	}
 	writeHelpType(w, "blindport_relay_bytes_total", "Forwarded application bytes.", "counter")
 	for kind, claim := range claimKindLabels {

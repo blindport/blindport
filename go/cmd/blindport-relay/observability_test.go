@@ -102,6 +102,7 @@ func TestAdminEndpointsAndMetricsUseFixedLabels(t *testing.T) {
 		`blindport_relay_connections_accepted_total{listener="sni"} 2000`,
 		`blindport_relay_connections_accepted_total{listener="http_challenge"} 0`,
 		`blindport_relay_streams_total{claim="relay"} 2000`,
+		`blindport_relay_stream_open_failures_total{claim="relay"} 0`,
 		"blindport_relay_udp_associations_active 0",
 		`blindport_relay_udp_datagrams_total{direction="ingress_to_tunnel"} 0`,
 		"blindport_relay_wireguard_peers_active 0",

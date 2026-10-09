@@ -1422,12 +1422,13 @@ func (r *relay) forwardTo(conn net.Conn, key, destination string) bool {
 		return false
 	}
 	src := conn.RemoteAddr().String()
+	index := claimKindIndexFromKey(key)
 	stream, err := t.OpenStreamWithDestinationAddress("tcp", src, destination, conn.LocalAddr().String())
 	if err != nil {
-		r.log.Warn("open ingress stream failed")
+		r.metrics.streamOpenFailures[index].Add(1)
+		r.log.Warn("open ingress stream failed", "claim", claimKindLabels[index], "error", err)
 		return false
 	}
-	index := claimKindIndexFromKey(key)
 	r.metrics.streams[index].active.Add(1)
 	r.metrics.streams[index].total.Add(1)
 	defer r.metrics.streams[index].active.Add(-1)

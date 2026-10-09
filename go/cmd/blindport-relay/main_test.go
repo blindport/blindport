@@ -636,6 +636,61 @@ func TestForwardToRelayUsesLogicalWildcardDestination(t *testing.T) {
 	}
 }
 
+func TestForwardToRelayReportsTunnelStreamLimit(t *testing.T) {
+	health := newRelayHealth(false, time.Minute, time.Minute)
+	var output bytes.Buffer
+	r := &relay{
+		log:                 slog.New(slog.NewTextHandler(&output, nil)),
+		metrics:             &relayMetrics{health: health},
+		tunnels:             make(map[string]*tunnel.Conn),
+		tunnelSubscriptions: make(map[*tunnel.Conn]string),
+		allTunnels:          make(map[*tunnel.Conn]struct{}),
+	}
+	relayRaw, agentRaw := net.Pipe()
+	opened := make(chan *tunnel.Stream, 2)
+	relayTunnel, err := tunnel.NewWithStreamLimit(relayRaw, nil, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := tunnel.New(agentRaw, func(stream *tunnel.Stream) { opened <- stream })
+	claim := &protocol.Claim{Kind: protocol.ClaimRelay, Domain: "sensitive.example"}
+	r.registerTunnel(claimKey(claim), claim.Kind, relayTunnel, testSubscriptionOne)
+	go func() { _ = relayTunnel.Run() }()
+	go func() { _ = agent.Run() }()
+	defer r.unregisterTunnel(claimKey(claim), claim.Kind, relayTunnel)
+	defer relayTunnel.Close()
+	defer agent.Close()
+
+	firstClient, firstIngress := net.Pipe()
+	defer firstClient.Close()
+	firstDone := make(chan bool, 1)
+	go func() { firstDone <- r.forwardToRelay(firstIngress, "sensitive.example", "443") }()
+	firstStream := <-opened
+
+	secondClient, secondIngress := net.Pipe()
+	defer secondClient.Close()
+	if r.forwardToRelay(secondIngress, "sensitive.example", "443") {
+		t.Fatal("forwardToRelay succeeded beyond the tunnel stream limit")
+	}
+	relayIndex := claimKindIndex(protocol.ClaimRelay)
+	if got := r.metrics.streamOpenFailures[relayIndex].Load(); got != 1 {
+		t.Fatalf("relay stream open failures = %d, want 1", got)
+	}
+	logged := output.String()
+	if !strings.Contains(logged, "concurrent stream limit 1 reached") || !strings.Contains(logged, "claim=relay") {
+		t.Fatalf("stream limit log = %q", logged)
+	}
+	if strings.Contains(logged, "sensitive.example") {
+		t.Fatalf("stream limit log exposed hostname: %q", logged)
+	}
+
+	_ = firstClient.Close()
+	_ = firstStream.Close()
+	if !<-firstDone {
+		t.Fatal("first forwardToRelay returned false")
+	}
+}
+
 func TestParseRelayConfig(t *testing.T) {
 	cfg, err := parseRelayConfig("203.0.113.10,203.0.113.11", "80,443", "203.0.113.20", "10000-10007", "11000-11007")
 	if err != nil {
