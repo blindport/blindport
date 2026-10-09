@@ -10,6 +10,7 @@ import (
 
 	"github.com/blindport/blindport/internal/protocol"
 	"github.com/blindport/blindport/internal/relayauth"
+	"github.com/blindport/blindport/internal/tunnel"
 )
 
 const (
@@ -38,6 +39,20 @@ const (
 	entitlementOutcomeCount
 )
 
+// streamEvictionReasons fixes the metric label order and relayMetrics.streamEvictions indexes.
+var streamEvictionReasons = []tunnel.EvictionReason{tunnel.EvictionIdle, tunnel.EvictionFairShare}
+
+const streamEvictionReasonCount = 2
+
+func (m *relayMetrics) observeStreamEviction(reason tunnel.EvictionReason) {
+	for index, known := range streamEvictionReasons {
+		if known == reason {
+			m.streamEvictions[index].Add(1)
+			return
+		}
+	}
+}
+
 const (
 	sniSuccess = iota
 	sniInvalid
@@ -59,7 +74,7 @@ type relayMetrics struct {
 	tunnels            [claimKindCount]metricPair
 	streams            [claimKindCount]metricPair
 	streamOpenFailures [claimKindCount]atomic.Uint64
-	streamEvictions    [claimKindCount]atomic.Uint64
+	streamEvictions    [streamEvictionReasonCount]atomic.Uint64
 	bytes              [claimKindCount][2]atomic.Uint64
 	control            [controlOutcomeCount]atomic.Uint64
 	auth               [authOutcomeCount]atomic.Uint64
@@ -279,9 +294,9 @@ func (m *relayMetrics) writeMetrics(w http.ResponseWriter, _ *http.Request) {
 	for kind, label := range claimKindLabels {
 		writeMetric(w, "blindport_relay_stream_open_failures_total", "claim", label, m.streamOpenFailures[kind].Load())
 	}
-	writeHelpType(w, "blindport_relay_stream_evictions_total", "Idle streams closed to admit a new ingress connection at the per-tunnel stream limit.", "counter")
-	for kind, label := range claimKindLabels {
-		writeMetric(w, "blindport_relay_stream_evictions_total", "claim", label, m.streamEvictions[kind].Load())
+	writeHelpType(w, "blindport_relay_stream_evictions_total", "Relay streams closed to admit a new ingress connection at the per-tunnel stream limit.", "counter")
+	for index, reason := range streamEvictionReasons {
+		writeMetric(w, "blindport_relay_stream_evictions_total", "reason", string(reason), m.streamEvictions[index].Load())
 	}
 	writeHelpType(w, "blindport_relay_bytes_total", "Forwarded application bytes.", "counter")
 	for kind, claim := range claimKindLabels {

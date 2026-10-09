@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,7 +33,7 @@ type Conn struct {
 	onUDPDrop    func()
 	onClose      func()
 	evictIdle    time.Duration
-	onEvict      func()
+	onEvict      func(EvictionReason)
 	halfClose    bool
 	flowControl  bool
 	rxByteLimit  int64
@@ -85,13 +86,28 @@ func (c *Conn) SetUDPDropHandler(handler func()) {
 	c.onUDPDrop = handler
 }
 
-// EnableIdleStreamEviction lets a locally opened stream replace the stream with
-// the oldest payload activity when the stream limit is reached, provided that
-// stream has carried no payload for at least minIdle. Peer-opened streams never
-// evict. The evicted stream's reads fail with ErrStreamEvicted, so proxies close
-// both endpoints. onEvict, if set, observes each eviction. It must be called
-// before Run and before streams are opened.
-func (c *Conn) EnableIdleStreamEviction(minIdle time.Duration, onEvict func()) {
+// EvictionReason explains why a stream was evicted to admit a new one.
+type EvictionReason string
+
+const (
+	// EvictionIdle replaced the least recently active stream that carried no
+	// payload for at least the configured idle time.
+	EvictionIdle EvictionReason = "idle"
+	// EvictionFairShare replaced a stream of the source group holding the most
+	// streams, because the requesting group held at least two fewer.
+	EvictionFairShare EvictionReason = "fair_share"
+)
+
+// EnableStreamEviction lets a locally opened stream replace an existing stream
+// when the stream limit is reached. It first selects the least recently active
+// stream idle for at least minIdle. Otherwise it applies max-min fairness by
+// source group (IPv4 address or IPv6 /64): if the group holding the most
+// streams holds at least two more than the requesting group, its least
+// recently active stream is replaced. Peer-opened streams never evict. The
+// evicted stream's reads fail with ErrStreamEvicted, so proxies close both
+// endpoints. onEvict, if set, observes each eviction. It must be called before
+// Run and before streams are opened.
+func (c *Conn) EnableStreamEviction(minIdle time.Duration, onEvict func(EvictionReason)) {
 	c.evictIdle = minIdle
 	c.onEvict = onEvict
 }
@@ -143,14 +159,18 @@ func (c *Conn) OpenStreamWithDestinationAddress(proto, src, dst, destinationAddr
 	s.Source = src
 	s.Destination = dst
 	s.DestinationAddress = destinationAddress
-	evicted, err := c.insertStream(s, c.evictIdle > 0)
+	evictionEnabled := c.evictIdle > 0
+	if evictionEnabled {
+		s.sourceGroup = sourceGroup(src)
+	}
+	evicted, reason, err := c.insertStream(s, evictionEnabled)
 	if err != nil {
 		return nil, err
 	}
 	if evicted != nil {
 		evicted.evict()
 		if c.onEvict != nil {
-			c.onEvict()
+			c.onEvict(reason)
 		}
 	}
 	if err := c.WriteFrame(&protocol.Frame{Type: protocol.TypeOpen, Stream: id, Proto: string(transport), Src: src, Dst: dst, DstAddr: destinationAddress}); err != nil {
@@ -298,40 +318,92 @@ func (c *Conn) closeStreams() {
 }
 
 func (c *Conn) addStream(s *Stream) error {
-	_, err := c.insertStream(s, false)
+	_, _, err := c.insertStream(s, false)
 	return err
 }
 
-// insertStream registers s. At the stream limit with evictIdle set, it
-// atomically replaces the least recently active stream idle for at least
-// c.evictIdle and returns it; the caller must call evict on it.
-func (c *Conn) insertStream(s *Stream, evictIdle bool) (*Stream, error) {
+// insertStream registers s. At the stream limit with evict set, it atomically
+// replaces a stream chosen by evictionVictimLocked and returns it; the caller
+// must call evict on it.
+func (c *Conn) insertStream(s *Stream, evict bool) (*Stream, EvictionReason, error) {
 	if s.ID == 0 {
-		return nil, errors.New("zero stream ID")
+		return nil, "", errors.New("zero stream ID")
 	}
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 	if _, ok := c.streams[s.ID]; ok {
-		return nil, fmt.Errorf("duplicate stream ID %d", s.ID)
+		return nil, "", fmt.Errorf("duplicate stream ID %d", s.ID)
 	}
 	var victim *Stream
+	var reason EvictionReason
 	if len(c.streams) >= c.maxStreams {
-		if evictIdle {
-			cutoff := time.Now().Add(-c.evictIdle).UnixNano()
-			for _, candidate := range c.streams {
-				last := candidate.lastActivity.Load()
-				if last <= cutoff && (victim == nil || last < victim.lastActivity.Load()) {
-					victim = candidate
-				}
-			}
+		if evict {
+			victim, reason = c.evictionVictimLocked(s.sourceGroup)
 		}
 		if victim == nil {
-			return nil, fmt.Errorf("concurrent stream limit %d reached", c.maxStreams)
+			return nil, "", fmt.Errorf("concurrent stream limit %d reached", c.maxStreams)
 		}
 		delete(c.streams, victim.ID)
 	}
 	c.streams[s.ID] = s
-	return victim, nil
+	return victim, reason, nil
+}
+
+// evictionVictimLocked implements the policy documented on EnableStreamEviction.
+// It runs only at the stream limit, so the linear scans are bounded by it.
+func (c *Conn) evictionVictimLocked(requester string) (*Stream, EvictionReason) {
+	cutoff := time.Now().Add(-c.evictIdle).UnixNano()
+	var idle *Stream
+	counts := make(map[string]int)
+	for _, candidate := range c.streams {
+		counts[candidate.sourceGroup]++
+		last := candidate.lastActivity.Load()
+		if last <= cutoff && (idle == nil || last < idle.lastActivity.Load()) {
+			idle = candidate
+		}
+	}
+	if idle != nil {
+		return idle, EvictionIdle
+	}
+	heaviest, heaviestCount := "", 0
+	for group, count := range counts {
+		if count > heaviestCount {
+			heaviest, heaviestCount = group, count
+		}
+	}
+	// Requiring a gap of two keeps two sources from repeatedly evicting each
+	// other: after the swap the heaviest group still holds at least as many
+	// streams as the requester.
+	if heaviest == requester || heaviestCount < counts[requester]+2 {
+		return nil, ""
+	}
+	var victim *Stream
+	for _, candidate := range c.streams {
+		if candidate.sourceGroup == heaviest && (victim == nil || candidate.lastActivity.Load() < victim.lastActivity.Load()) {
+			victim = candidate
+		}
+	}
+	return victim, EvictionFairShare
+}
+
+// sourceGroup identifies the client that owns an ingress stream for fairness:
+// the IPv4 address, or the /64 prefix of an IPv6 address, since one IPv6
+// subscriber typically controls a whole /64. Unparsable sources group by their
+// literal value.
+func sourceGroup(source string) string {
+	addrPort, err := netip.ParseAddrPort(source)
+	if err != nil {
+		return source
+	}
+	addr := addrPort.Addr().Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.WithZone("").Prefix(64)
+	if err != nil {
+		return addr.String()
+	}
+	return prefix.String()
 }
 
 func (c *Conn) getStream(id uint32) (*Stream, bool) {
@@ -388,6 +460,7 @@ type Stream struct {
 	windowPending      uint32
 	windowSending      bool
 	lastActivity       atomic.Int64 // Unix nanoseconds of the latest payload in either direction
+	sourceGroup        string       // fairness group, set only when eviction is enabled
 	evicted            atomic.Bool
 }
 

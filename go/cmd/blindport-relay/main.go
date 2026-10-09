@@ -614,11 +614,10 @@ func (r *relay) establishControlTunnel(ctx context.Context, conn net.Conn, hello
 	if hello.Claim.Kind == protocol.ClaimRelay && r.streamEvictionIdle > 0 {
 		// Relay claims carry HTTP(S), where idle keep-alive connections are
 		// routine and clients reconnect transparently. Without eviction, idle
-		// connections (or a client deliberately holding them) exhaust the stream
-		// limit and every new visitor is refused. Port and IP claims carry
-		// arbitrary protocols, such as SSH, whose idle sessions must survive.
-		index := claimKindIndex(protocol.ClaimRelay)
-		t.EnableIdleStreamEviction(r.streamEvictionIdle, func() { r.metrics.streamEvictions[index].Add(1) })
+		// connections, or one client deliberately holding many, exhaust the
+		// stream limit and every new visitor is refused. Port and IP claims
+		// carry arbitrary protocols, such as SSH, whose sessions must survive.
+		t.EnableStreamEviction(r.streamEvictionIdle, r.metrics.observeStreamEviction)
 	}
 	handshakeComplete()
 	key := claimKey(hello.Claim)

@@ -762,8 +762,8 @@ func TestIdleStreamEvictionAppliesOnlyToRelayClaims(t *testing.T) {
 				case <-time.After(time.Second):
 					t.Fatal("non-Relay claim admitted a stream beyond its limit")
 				}
-				if r.metrics.streamEvictions[index].Load() != 0 || r.metrics.streamOpenFailures[index].Load() != 1 {
-					t.Fatalf("evictions/open failures = %d/%d", r.metrics.streamEvictions[index].Load(), r.metrics.streamOpenFailures[index].Load())
+				if r.metrics.streamEvictions[0].Load() != 0 || r.metrics.streamOpenFailures[index].Load() != 1 {
+					t.Fatalf("evictions/open failures = %d/%d", r.metrics.streamEvictions[0].Load(), r.metrics.streamOpenFailures[index].Load())
 				}
 				return
 			}
@@ -775,8 +775,8 @@ func TestIdleStreamEvictionAppliesOnlyToRelayClaims(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("evicted ingress connection remained open")
 			}
-			if r.metrics.streamEvictions[index].Load() != 1 || r.metrics.streamOpenFailures[index].Load() != 0 {
-				t.Fatalf("evictions/open failures = %d/%d", r.metrics.streamEvictions[index].Load(), r.metrics.streamOpenFailures[index].Load())
+			if r.metrics.streamEvictions[0].Load() != 1 || r.metrics.streamOpenFailures[index].Load() != 0 {
+				t.Fatalf("evictions/open failures = %d/%d", r.metrics.streamEvictions[0].Load(), r.metrics.streamOpenFailures[index].Load())
 			}
 			_ = secondClient.Close()
 			select {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -855,7 +856,12 @@ func TestIdleStreamEvictionReplacesLeastRecentlyActiveStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	var evictions atomic.Int32
-	connection.EnableIdleStreamEviction(time.Minute, func() { evictions.Add(1) })
+	connection.EnableStreamEviction(time.Minute, func(reason EvictionReason) {
+		if reason != EvictionIdle {
+			t.Errorf("eviction reason = %q, want %q", reason, EvictionIdle)
+		}
+		evictions.Add(1)
+	})
 	peerStreams := make(chan *Stream, 3)
 	peer := New(remote, func(stream *Stream) { peerStreams <- stream })
 	go func() { _ = connection.Run() }()
@@ -933,7 +939,7 @@ func TestPeerOpenedStreamsNeverEvict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection.EnableIdleStreamEviction(time.Nanosecond, func() { t.Error("peer OPEN evicted a stream") })
+	connection.EnableStreamEviction(time.Nanosecond, func(EvictionReason) { t.Error("peer OPEN evicted a stream") })
 	idle := newStream(connection, 1)
 	idle.lastActivity.Store(time.Now().Add(-time.Hour).UnixNano())
 	if err := connection.addStream(idle); err != nil {
@@ -944,6 +950,89 @@ func TestPeerOpenedStreamsNeverEvict(t *testing.T) {
 	}
 	if _, ok := connection.getStream(idle.ID); !ok {
 		t.Fatal("idle stream was removed by a peer OPEN")
+	}
+}
+
+func TestFairShareEvictionReplacesHeaviestSourceStream(t *testing.T) {
+	local, remote := net.Pipe()
+	connection, err := NewWithStreamLimit(local, nil, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasons []EvictionReason
+	connection.EnableStreamEviction(time.Hour, func(reason EvictionReason) { reasons = append(reasons, reason) })
+	peer := New(remote, func(*Stream) {})
+	go func() { _ = connection.Run() }()
+	go func() { _ = peer.Run() }()
+	defer connection.Close()
+	defer peer.Close()
+
+	open := func(source string) (*Stream, error) {
+		return connection.OpenStream("tcp", source, "domain:example.test:443")
+	}
+	// One source holds three of four slots with active streams; none is idle.
+	var heavy []*Stream
+	for port := range 3 {
+		stream, err := open("198.51.100.1:" + strconv.Itoa(1000+port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		heavy = append(heavy, stream)
+	}
+	light, err := open("198.51.100.2:1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for index, stream := range heavy {
+		stream.lastActivity.Store(now.Add(time.Duration(index) * time.Second).UnixNano())
+	}
+
+	// The heavy source cannot take more slots from itself.
+	if _, err := open("198.51.100.1:2000"); err == nil {
+		t.Fatal("heaviest source evicted its own stream")
+	}
+	// A source holding one stream is within one of the heaviest after a swap:
+	// 3 versus 1 leaves 2 versus 2, so it is admitted once.
+	admitted, err := open("198.51.100.2:1001")
+	if err != nil {
+		t.Fatalf("lighter source open = %v", err)
+	}
+	if _, err := heavy[0].Read(make([]byte, 1)); !errors.Is(err, ErrStreamEvicted) {
+		t.Fatalf("least recently active heavy stream read error = %v", err)
+	}
+	for _, stream := range []*Stream{heavy[1], heavy[2], light, admitted} {
+		if _, ok := connection.getStream(stream.ID); !ok {
+			t.Fatalf("stream %d was removed", stream.ID)
+		}
+	}
+	// Two sources at two streams each must not keep evicting each other.
+	for _, source := range []string{"198.51.100.2:1002", "198.51.100.1:2001"} {
+		if _, err := open(source); err == nil || !strings.Contains(err.Error(), "concurrent stream limit 4 reached") {
+			t.Fatalf("balanced open from %s = %v", source, err)
+		}
+	}
+	// A new source with no streams may still claim a slot from a heaviest group.
+	if _, err := open("[2001:db8:1:2::5]:1000"); err != nil {
+		t.Fatalf("new source open = %v", err)
+	}
+	if len(reasons) != 2 || reasons[0] != EvictionFairShare || reasons[1] != EvictionFairShare {
+		t.Fatalf("eviction reasons = %v", reasons)
+	}
+}
+
+func TestSourceGroup(t *testing.T) {
+	for source, want := range map[string]string{
+		"198.51.100.7:443":           "198.51.100.7",
+		"[::ffff:198.51.100.7]:443":  "198.51.100.7",
+		"[2001:db8:1:2:3:4:5:6]:443": "2001:db8:1:2::/64",
+		"[2001:db8:1:2:ffff::1]:80":  "2001:db8:1:2::/64",
+		"[fe80::1%eth0]:443":         "fe80::/64",
+		"not-an-address":             "not-an-address",
+	} {
+		if got := sourceGroup(source); got != want {
+			t.Errorf("sourceGroup(%q) = %q, want %q", source, got, want)
+		}
 	}
 }
 
