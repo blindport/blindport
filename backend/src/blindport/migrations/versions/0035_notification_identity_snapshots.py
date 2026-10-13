@@ -45,9 +45,7 @@ def upgrade() -> None:
         op.add_column(
             "payment", sa.Column("automatic_renewal_period_end", sa.DateTime(timezone=True))
         )
-        op.add_column(
-            "notificationdelivery", sa.Column("resource_identity_ciphertext", sa.Text())
-        )
+        op.add_column("notificationdelivery", sa.Column("resource_identity_ciphertext", sa.Text()))
         op.add_column(
             "notificationdelivery", sa.Column("resource_identity_key_version", sa.String(length=32))
         )
@@ -93,7 +91,9 @@ def downgrade() -> None:
         sa.text("SELECT COUNT(*) FROM payment WHERE automatic_renewal_period_end IS NOT NULL")
     ).scalar_one()
     if new_kinds or identity_snapshots or renewal_periods:
-        raise RuntimeError("cannot downgrade while notification identity or renewal outcome data exists")
+        raise RuntimeError(
+            "cannot downgrade while notification identity or renewal outcome data exists"
+        )
 
     if bind.dialect.name != "postgresql":
         with op.batch_alter_table("notificationdelivery") as batch_op:
@@ -110,7 +110,9 @@ def downgrade() -> None:
         op.drop_constraint(_IDENTITY_PAIR_CONSTRAINT, "notificationdelivery", type_="check")
         op.drop_column("notificationdelivery", "resource_identity_key_version")
         op.drop_column("notificationdelivery", "resource_identity_ciphertext")
-        op.execute("ALTER TABLE notificationdelivery ALTER COLUMN kind TYPE VARCHAR(64) USING kind::text")
+        op.execute(
+            "ALTER TABLE notificationdelivery ALTER COLUMN kind TYPE VARCHAR(64) USING kind::text"
+        )
         postgresql.ENUM(name="notificationkind").drop(bind, checkfirst=False)
         postgresql.ENUM(*_OLD_KINDS, name="notificationkind").create(bind, checkfirst=False)
         op.execute(
